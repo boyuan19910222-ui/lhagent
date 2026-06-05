@@ -1,0 +1,12 @@
+{
+  "name": "lhagent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "install:openclaw-billing-guardian": "node scripts/install-openclaw-billing-guardian.mjs",
+    "patch:openclaw-billing": "node scripts/patch-openclaw-billing-message.mjs",
+    "verify:openclaw-billing": "node scripts/verify-openclaw-billing-message.mjs",
+    "test": "node --test"
+  }
+}
