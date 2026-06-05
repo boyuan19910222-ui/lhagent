@@ -12,29 +12,29 @@ const patchScript = path.join(repoRoot, "scripts", "patch-openclaw-billing-messa
 const replyFixture = `import { _ as isRateLimitErrorMessage, d as sanitizeUserFacingText, h as isOverloadedErrorMessage, i as formatRateLimitOrOverloadedErrorCopy, m as isBillingErrorMessage, t as BILLING_ERROR_USER_MESSAGE } from "./sanitize-user-facing-text-CY8fNjm7.js";
 
 function demo() {
-\treturn {
-\t\ttext: isBilling ? BILLING_ERROR_USER_MESSAGE : isRateLimit && !isOverloadedErrorMessage(message) ? buildRateLimitCooldownMessage(err) : "ok"
-\t};
+  return {
+    text: isBilling ? BILLING_ERROR_USER_MESSAGE : isRateLimit && !isOverloadedErrorMessage(message) ? buildRateLimitCooldownMessage(err) : "ok"
+  };
 }
 `;
 
 const sanitizeFixture = `function normalizeLowercaseStringOrEmpty(value) {
-\treturn String(value ?? "").toLowerCase();
+  return String(value ?? "").toLowerCase();
 }
 
 const ERROR_PATTERNS = {
-\tbilling: [
-\t\t"insufficient usd or diem balance",
-\t\t"欠费"
-\t]
+  billing: [
+    "insufficient usd or diem balance",
+    "欠费"
+  ]
 };
 
 function formatBillingErrorMessage(provider, model) {
-\tconst providerName = provider?.trim();
-\tconst modelName = model?.trim();
-\tconst providerLabel = providerName && modelName ? \`\${providerName} (\${modelName})\` : providerName || void 0;
-\tif (providerLabel) return \`⚠️ \${providerLabel} returned a billing error -- your API key has run out of credits or has an insufficient balance. Check your \${providerName} billing dashboard and top up or switch to a different API key.\`;
-\treturn "⚠️ API provider returned a billing error -- your API key has run out of credits or has an insufficient balance. Check your provider's billing dashboard and top up or switch to a different API key.";
+  const providerName = provider?.trim();
+  const modelName = model?.trim();
+  const providerLabel = providerName && modelName ? providerName + " (" + modelName + ")" : providerName || void 0;
+  if (providerLabel) return "billing error";
+  return "billing error";
 }
 const BILLING_ERROR_USER_MESSAGE = formatBillingErrorMessage();
 export { formatBillingErrorMessage as n };
