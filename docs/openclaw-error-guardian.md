@@ -135,6 +135,22 @@ flowchart LR
 - 火山引擎方舟/豆包专属中文处理说明和 API 管理入口
 - 非目标错误返回 `null`，表示继续透传
 
+为了避免把用户会话内容误判成模型错误，规则模块的新接入方式优先使用结构化 provider error：
+
+```js
+formatReadableProviderError({
+  provider: "minimax",
+  model: "abab6.5-chat",
+  error: {
+    source: "provider_error",
+    status: 402,
+    message: "MiniMax API error (402): insufficient balance"
+  }
+});
+```
+
+分类顺序是：先确认 `source` 是 `provider_error`，再优先读取 `status`、`code`、`type` 等结构化字段，最后才对 provider 返回的错误消息做关键词兜底。用户输入、聊天历史、普通回复文本即使包含 `HTTP 402`、`insufficient balance`、`余额不足` 等词，也应以 `source: "conversation"` 或不进入规则层的方式排除。
+
 运行测试：
 
 ```bash

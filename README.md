@@ -41,7 +41,21 @@ npm test
 src/openclaw-error-translator.js
 ```
 
-它可以把供应商原始错误翻译成更可读的中文提示；非目标错误会返回 `null`，由上层继续走原有逻辑。
+它可以把供应商原始错误翻译成更可读的中文提示；非目标错误会返回 `null`，由上层继续走原有逻辑。为了降低误判风险，规则模块支持结构化错误输入，并要求新接入优先传入 `source: "provider_error"`、`status`、`code`、`message` 等字段。用户会话文本、聊天历史和普通回复文本不应传给规则层；即使文本里提到 `HTTP 402` 或 `insufficient balance`，只要来源不是模型供应商错误，也不会被格式化成账单提示。
+
+推荐接入方式：
+
+```js
+formatReadableProviderError({
+  provider: "minimax",
+  model: "abab6.5-chat",
+  error: {
+    source: "provider_error",
+    status: 402,
+    message: "MiniMax API error (402): insufficient balance"
+  }
+});
+```
 
 ## OpenClaw 服务器补丁
 

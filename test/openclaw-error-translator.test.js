@@ -26,6 +26,28 @@ describe("OpenClaw provider error translator", () => {
     );
   });
 
+  it("does not classify billing-looking conversation text as provider billing", () => {
+    assert.equal(
+      classifyProviderError({
+        source: "conversation",
+        message: "用户在群里问：HTTP 402 insufficient balance 是什么意思？"
+      }).kind,
+      "unknown"
+    );
+  });
+
+  it("classifies structured provider errors by status before text fallback", () => {
+    assert.equal(
+      classifyProviderError({
+        source: "provider_error",
+        provider: "minimax",
+        status: 402,
+        message: "Payment required"
+      }).kind,
+      "billing"
+    );
+  });
+
   it("resolves MiniMax from provider id or raw error", () => {
     assert.equal(resolveProviderRule("minimax")?.id, "minimax");
     assert.equal(resolveProviderRule("", "MiniMax API error")?.id, "minimax");
@@ -35,7 +57,11 @@ describe("OpenClaw provider error translator", () => {
     const message = formatReadableProviderError({
       provider: "minimax",
       model: "abab6.5-chat",
-      rawError: "MiniMax API error (402): insufficient balance"
+      error: {
+        source: "provider_error",
+        status: 402,
+        message: "MiniMax API error (402): insufficient balance"
+      }
     });
 
     assert.match(message, /MiniMax 模型服务余额不足或账户欠费/u);
@@ -59,7 +85,23 @@ describe("OpenClaw provider error translator", () => {
     assert.equal(
       formatReadableProviderError({
         provider: "minimax",
-        rawError: "network timeout"
+        error: {
+          source: "provider_error",
+          message: "network timeout"
+        }
+      }),
+      null
+    );
+  });
+
+  it("does not format conversation text that mentions billing keywords", () => {
+    assert.equal(
+      formatReadableProviderError({
+        provider: "minimax",
+        error: {
+          source: "conversation",
+          message: "HTTP 402 insufficient balance 是什么报错？"
+        }
       }),
       null
     );

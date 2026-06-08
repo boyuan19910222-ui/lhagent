@@ -30,8 +30,67 @@ const PROVIDER_RULES = [
   }
 ];
 
+const BILLING_STATUS_CODES = new Set([402]);
+
+const BILLING_CODE_PATTERNS = [
+  /billing/i,
+  /payment[_\s-]*required/i,
+  /insufficient[_\s-]*(?:credits|quota|balance)/i,
+  /overdue[_\s-]*balance/i,
+  /quota[_\s-]*(?:exceeded|exhausted)/i
+];
+
+function normalizeProviderError(error) {
+  if (typeof error === "string") {
+    return {
+      source: "provider_error",
+      text: error
+    };
+  }
+
+  if (!error || typeof error !== "object") {
+    return {
+      source: "unknown",
+      text: ""
+    };
+  }
+
+  const source = error.source ?? "unknown";
+  const text = [
+    error.message,
+    error.rawError,
+    error.responseBody,
+    error.body,
+    error.detail,
+    error.details
+  ].filter(Boolean).join("\n");
+
+  return {
+    code: error.code ?? error.errorCode ?? error.type,
+    source,
+    status: error.status ?? error.statusCode ?? error.response?.status,
+    text
+  };
+}
+
+function isProviderErrorSource(source) {
+  return source === "provider_error";
+}
+
 export function classifyProviderError(rawError) {
-  const text = String(rawError ?? "").trim();
+  const error = normalizeProviderError(rawError);
+  if (!isProviderErrorSource(error.source)) return { kind: "unknown" };
+
+  if (BILLING_STATUS_CODES.has(Number(error.status))) {
+    return { kind: "billing" };
+  }
+
+  const code = String(error.code ?? "").trim();
+  if (code && BILLING_CODE_PATTERNS.some((pattern) => pattern.test(code))) {
+    return { kind: "billing" };
+  }
+
+  const text = String(error.text ?? "").trim();
   if (!text) return { kind: "unknown" };
 
   if (BILLING_PATTERNS.some((pattern) => pattern.test(text))) {
@@ -42,13 +101,14 @@ export function classifyProviderError(rawError) {
 }
 
 export function resolveProviderRule(provider, rawError = "") {
-  const haystack = `${provider ?? ""}\n${rawError ?? ""}`;
+  const { text } = normalizeProviderError(rawError);
+  const haystack = `${provider ?? ""}\n${text ?? ""}`;
   return PROVIDER_RULES.find((rule) => rule.match.test(haystack));
 }
 
-export function formatReadableProviderError({ rawError, provider, model }) {
-  const classification = classifyProviderError(rawError);
-  const rule = resolveProviderRule(provider, rawError);
+export function formatReadableProviderError({ rawError, error = rawError, provider, model }) {
+  const classification = classifyProviderError(error);
+  const rule = resolveProviderRule(provider, error);
 
   if (classification.kind === "billing") {
     if (rule?.id === "minimax") {
