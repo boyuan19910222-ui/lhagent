@@ -69,7 +69,7 @@ function requireValue(argv, index, arg) {
 
 function usage() {
   return [
-    "Usage: node scripts/install-openclaw-billing-guardian.mjs [options]",
+    "Usage: node experiments/openclaw-billing-guardian/scripts/install-openclaw-billing-guardian.mjs [options]",
     "",
     "Installs the LHAgent OpenClaw billing-message guardian as a user-systemd",
     "ExecStartPre hook for openclaw-gateway.service.",
