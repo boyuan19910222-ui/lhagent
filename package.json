@@ -4,9 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "install:openclaw-billing-guardian": "node scripts/install-openclaw-billing-guardian.mjs",
-    "patch:openclaw-billing": "node scripts/patch-openclaw-billing-message.mjs",
-    "verify:openclaw-billing": "node scripts/verify-openclaw-billing-message.mjs",
-    "test": "node --test"
+    "install:openclaw-billing-guardian": "node experiments/openclaw-billing-guardian/scripts/install-openclaw-billing-guardian.mjs",
+    "patch:openclaw-billing": "node experiments/openclaw-billing-guardian/scripts/patch-openclaw-billing-message.mjs",
+    "verify:openclaw-billing": "node experiments/openclaw-billing-guardian/scripts/verify-openclaw-billing-message.mjs",
+    "test": "npm run test:openclaw-billing-guardian && npm run test:review-room",
+    "test:openclaw-billing-guardian": "node --test experiments/openclaw-billing-guardian/test/*.test.js",
+    "test:review-room": "python3 -m unittest discover -s experiments/review-room/service/tests -v"
   }
 }

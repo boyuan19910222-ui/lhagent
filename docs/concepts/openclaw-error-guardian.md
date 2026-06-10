@@ -127,7 +127,7 @@ flowchart LR
 
 ## 原型代码
 
-`src/openclaw-error-translator.js` 提供一个可独立测试的规则模块，当前支持：
+`experiments/openclaw-billing-guardian/src/openclaw-error-translator.js` 提供一个可独立测试的规则模块，当前支持：
 
 - MiniMax 欠费/余额不足识别
 - 英文和中文账单错误关键词识别
@@ -159,7 +159,7 @@ npm test
 
 ## 服务器补丁脚本
 
-`scripts/patch-openclaw-billing-message.mjs` 可以在 OpenClaw 镜像服务器上重复应用这次最小补丁：
+`experiments/openclaw-billing-guardian/scripts/patch-openclaw-billing-message.mjs` 可以在 OpenClaw 镜像服务器上重复应用这次最小补丁：
 
 ```bash
 npm run patch:openclaw-billing -- --dry-run

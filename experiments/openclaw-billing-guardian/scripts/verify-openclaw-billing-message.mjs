@@ -60,7 +60,7 @@ function requireValue(argv, index, arg) {
 
 function usage() {
   return [
-    "Usage: node scripts/verify-openclaw-billing-message.mjs [--dist <openclaw-dist>]",
+    "Usage: node experiments/openclaw-billing-guardian/scripts/verify-openclaw-billing-message.mjs [--dist <openclaw-dist>]",
     "",
     "Verifies that patched OpenClaw billing error formatting is active.",
     "",

@@ -42,7 +42,7 @@ function parseArgs(argv) {
 
 function usage() {
   return [
-    "Usage: node scripts/patch-openclaw-billing-message.mjs [--dist <openclaw-dist>] [--dry-run] [--soft-fail]",
+    "Usage: node experiments/openclaw-billing-guardian/scripts/patch-openclaw-billing-message.mjs [--dist <openclaw-dist>] [--dry-run] [--soft-fail]",
     "",
     "Patches OpenClaw 2026.5.28 compiled gateway files so MiniMax billing errors",
     "are shown as beginner-readable Chinese guidance with a recharge link.",
