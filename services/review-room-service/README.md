@@ -165,6 +165,110 @@ Developer Agent：
 
 本地无真实 Codex 时可加 `--mock`，先验证 WebSocket 协作闭环。
 
+### 真实 Agent 接入测试
+
+真实接入时不要加 `--mock`。Review Room 只负责 Room 状态、WebSocket 和 connector token；两个 Agent 进程在各自工作区调用真实 `codex exec --json`。
+
+建议准备两个独立 checkout 或 worktree：
+
+- Reviewer checkout：只读评审，默认使用 `--sandbox read-only`。
+- Developer checkout：执行修复，默认使用 `--sandbox workspace-write`。
+
+先创建 Room 并注册两个 connector：
+
+```bash
+BASE=http://124.222.24.34
+REPO_NAME=boyuan19910222-ui/lhagent
+MR_URL=https://github.com/boyuan19910222-ui/lhagent
+
+ROOM_JSON=$(curl -sS -X POST "$BASE/api/rooms" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "title":"MR: real agent review",
+    "provider":"github",
+    "mrUrl":"'"$MR_URL"'",
+    "context":{"repository":"'"$REPO_NAME"'"}
+  }')
+
+ROOM_ID=$(jq -r '.id' <<< "$ROOM_JSON")
+OWNER_TOKEN=$(jq -r '.ownerToken' <<< "$ROOM_JSON")
+
+REVIEWER_JSON=$(curl -sS -X POST "$BASE/api/rooms/$ROOM_ID/connectors" \
+  -H "Authorization: Bearer $OWNER_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Reviewer Agent","kind":"remote-agent","role":"reviewer"}')
+
+DEVELOPER_JSON=$(curl -sS -X POST "$BASE/api/rooms/$ROOM_ID/connectors" \
+  -H "Authorization: Bearer $OWNER_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Developer Agent","kind":"local-agent","role":"developer"}')
+
+REVIEWER_TOKEN=$(jq -r '.connectorToken' <<< "$REVIEWER_JSON")
+DEVELOPER_TOKEN=$(jq -r '.connectorToken' <<< "$DEVELOPER_JSON")
+```
+
+启动真实 Reviewer Agent：
+
+```bash
+SERVICE=/Users/boyuan/Documents/Lighthouse/services/review-room-service
+REVIEW_REPO=/path/to/reviewer-checkout
+
+cd "$REVIEW_REPO"
+
+"$SERVICE/.venv/bin/python" "$SERVICE/codex_connector.py" \
+  --role reviewer \
+  --room-url "$BASE" \
+  --room-id "$ROOM_ID" \
+  --token "$REVIEWER_TOKEN" \
+  --workspace "$REVIEW_REPO" \
+  --repo "$REPO_NAME" \
+  --mr-url "$MR_URL" \
+  --task "对比 MR 分支与主干，评审鉴权、权限边界、数据一致性和可执行修复建议" \
+  --timeout 600
+```
+
+启动真实 Developer Agent：
+
+```bash
+SERVICE=/Users/boyuan/Documents/Lighthouse/services/review-room-service
+DEV_REPO=/path/to/developer-checkout
+
+cd "$DEV_REPO"
+
+"$SERVICE/.venv/bin/python" "$SERVICE/codex_connector.py" \
+  --role developer \
+  --room-url "$BASE" \
+  --room-id "$ROOM_ID" \
+  --token "$DEVELOPER_TOKEN" \
+  --workspace "$DEV_REPO" \
+  --repo "$REPO_NAME" \
+  --mr-url "$MR_URL" \
+  --task "针对 Reviewer Agent finding 进行真实修复，并回传修复摘要与验证结果" \
+  --timeout 600
+```
+
+owner 触发真实评审：
+
+```bash
+curl -sS -X POST "$BASE/api/rooms/$ROOM_ID/messages" \
+  -H "Authorization: Bearer $OWNER_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "senderType":"human",
+    "senderName":"review room owner",
+    "kind":"owner_topic",
+    "body":"请基于当前工作区，对比 MR 分支与主干，评审鉴权、权限边界、数据一致性和可执行修复建议。"
+  }'
+```
+
+查看两个 connector 是否真实在线：
+
+```bash
+curl -sS "$BASE/api/rooms/$ROOM_ID" \
+  -H "Authorization: Bearer $OWNER_TOKEN" \
+  | jq '.connectors[] | {name,agentRole,status,eventCount,lastSeenAt}'
+```
+
 ### Connector 写入消息
 
 ```bash
