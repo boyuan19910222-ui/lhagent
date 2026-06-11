@@ -1,0 +1,12 @@
+.DS_Store
+**/.DS_Store
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+tmp/
+*.sqlite3
+
+# Research checkouts live in their own Git repositories.
+remote-repos/

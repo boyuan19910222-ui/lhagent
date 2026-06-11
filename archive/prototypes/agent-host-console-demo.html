@@ -1,0 +1,2158 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Lighthouse Agent Host 控制台 Demo</title>
+    <style>
+      :root {
+        --bg: #f4f6fb;
+        --panel: #fff;
+        --panel-2: #f8fafd;
+        --line: #dde3ef;
+        --line-2: #edf1f7;
+        --text: #172033;
+        --muted: #667085;
+        --weak: #8a94a6;
+        --nav: #20242c;
+        --nav-2: #2a3040;
+        --blue: #1764e8;
+        --cyan: #0c8cae;
+        --green: #0f9f6e;
+        --amber: #b87509;
+        --red: #d14343;
+        --violet: #6b5bd2;
+        --teal: #0f766e;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      [hidden] {
+        display: none !important;
+      }
+
+      body {
+        margin: 0;
+        min-width: 1200px;
+        color: var(--text);
+        background: var(--bg);
+      }
+
+      button,
+      input,
+      select,
+      textarea {
+        font: inherit;
+      }
+
+      button {
+        cursor: pointer;
+      }
+
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      .shell {
+        display: grid;
+        grid-template-columns: 208px minmax(992px, 1fr);
+        min-height: 100vh;
+      }
+
+      .sidebar {
+        color: #d8deea;
+        background: var(--nav);
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        height: 50px;
+        padding: 0 18px;
+        border-bottom: 1px solid #303746;
+        color: #fff;
+        font-size: 17px;
+        font-weight: 700;
+      }
+
+      .mark {
+        width: 24px;
+        height: 24px;
+        border-radius: 5px;
+        background: linear-gradient(135deg, #2b7cff, #35c3ff);
+      }
+
+      .product {
+        padding: 20px 18px 12px;
+        color: #fff;
+        font-size: 18px;
+        font-weight: 700;
+      }
+
+      .nav {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        padding: 0 8px 24px;
+      }
+
+      .nav a,
+      .nav-title {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        min-height: 36px;
+        padding: 0 10px;
+      }
+
+      .nav a {
+        color: #d8deea;
+      }
+
+      .nav-title {
+        margin-top: 10px;
+        color: #8d96a8;
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .nav a.active {
+        background: var(--nav-2);
+        color: #fff;
+        font-weight: 700;
+      }
+
+      .nav-icon {
+        display: grid;
+        place-items: center;
+        width: 18px;
+        height: 18px;
+        border-radius: 4px;
+        background: #344057;
+        color: #cfe0ff;
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .main {
+        min-width: 992px;
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 50px;
+        padding: 0 24px;
+        background: #1e2025;
+        color: #c7cedb;
+      }
+
+      .global-search {
+        width: 480px;
+        height: 30px;
+        display: flex;
+        align-items: center;
+        padding: 0 12px;
+        border: 1px solid #3b414d;
+        color: #929cab;
+        background: #15171b;
+      }
+
+      .top-links {
+        display: flex;
+        gap: 26px;
+        font-size: 14px;
+        font-weight: 600;
+      }
+
+      .workspace {
+        padding: 18px 24px 30px;
+      }
+
+      .page-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 18px;
+        margin-bottom: 14px;
+      }
+
+      .eyebrow {
+        color: var(--blue);
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      h1 {
+        margin-top: 4px;
+        font-size: 24px;
+        line-height: 1.25;
+      }
+
+      .page-subtitle {
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .head-actions,
+      .btn-row,
+      .filters,
+      .inline-actions,
+      .segmented,
+      .status-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .btn {
+        height: 34px;
+        padding: 0 14px;
+        border: 1px solid var(--line);
+        background: #fff;
+        color: var(--text);
+        font-weight: 600;
+      }
+
+      .btn.primary {
+        border-color: var(--blue);
+        background: var(--blue);
+        color: #fff;
+      }
+
+      .btn.green {
+        border-color: var(--green);
+        background: var(--green);
+        color: #fff;
+      }
+
+      .btn.danger {
+        border-color: #f2c5c5;
+        color: var(--red);
+      }
+
+      .btn.small {
+        height: 28px;
+        padding: 0 10px;
+        font-size: 12px;
+      }
+
+      .summary-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+        margin-bottom: 14px;
+      }
+
+      .metric {
+        min-height: 90px;
+        padding: 14px;
+        border: 1px solid var(--line);
+        background: var(--panel);
+      }
+
+      .metric label {
+        display: block;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .metric strong {
+        display: block;
+        margin-top: 8px;
+        font-size: 24px;
+      }
+
+      .metric span {
+        display: block;
+        margin-top: 5px;
+        color: var(--weak);
+        font-size: 12px;
+      }
+
+      .view {
+        display: none;
+      }
+
+      .view.active {
+        display: block;
+      }
+
+      .tabs {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        height: 44px;
+        padding: 0 4px;
+        border: 1px solid var(--line);
+        background: var(--panel);
+      }
+
+      .tab,
+      .segment {
+        height: 34px;
+        padding: 0 16px;
+        border: 0;
+        border-bottom: 2px solid transparent;
+        background: transparent;
+        color: var(--muted);
+        font-weight: 700;
+      }
+
+      .tab.active,
+      .segment.active {
+        color: var(--blue);
+        border-bottom-color: var(--blue);
+        background: #f3f7ff;
+      }
+
+      .content {
+        margin-top: 12px;
+      }
+
+      .layout-2 {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 330px;
+        gap: 12px;
+      }
+
+      .layout-3 {
+        display: grid;
+        grid-template-columns: 1.1fr 0.9fr 330px;
+        gap: 12px;
+      }
+
+      .panel {
+        border: 1px solid var(--line);
+        background: var(--panel);
+      }
+
+      .panel-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        min-height: 48px;
+        padding: 0 14px;
+        border-bottom: 1px solid var(--line-2);
+      }
+
+      .panel-head h2 {
+        font-size: 16px;
+      }
+
+      .panel-body {
+        padding: 14px;
+      }
+
+      .grid-2 {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .grid-3 {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .card {
+        border: 1px solid var(--line);
+        background: #fff;
+      }
+
+      .card-pad {
+        padding: 14px;
+      }
+
+      .app-card {
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        min-height: 250px;
+        padding: 14px;
+        border: 1px solid var(--line);
+        background: #fff;
+      }
+
+      .app-top {
+        display: flex;
+        gap: 12px;
+      }
+
+      .app-logo {
+        display: grid;
+        place-items: center;
+        width: 42px;
+        height: 42px;
+        border-radius: 8px;
+        color: #fff;
+        font-size: 18px;
+        font-weight: 800;
+      }
+
+      .logo-blue {
+        background: linear-gradient(135deg, #1764e8, #0d9ac1);
+      }
+
+      .logo-green {
+        background: linear-gradient(135deg, #18a476, #45bd83);
+      }
+
+      .logo-violet {
+        background: linear-gradient(135deg, #6b5bd2, #119dcc);
+      }
+
+      .logo-amber {
+        background: linear-gradient(135deg, #b87509, #d49a35);
+      }
+
+      .app-title {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .app-title h3,
+      .card h3 {
+        font-size: 16px;
+      }
+
+      .app-desc,
+      .muted {
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.55;
+      }
+
+      .app-desc {
+        margin-top: 8px;
+      }
+
+      .cap-list {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        margin: 14px 0;
+      }
+
+      .cap {
+        padding: 8px;
+        border: 1px solid var(--line-2);
+        background: var(--panel-2);
+      }
+
+      .cap span,
+      .tiny {
+        display: block;
+        color: var(--weak);
+        font-size: 12px;
+      }
+
+      .cap strong {
+        display: block;
+        margin-top: 3px;
+        font-size: 13px;
+      }
+
+      .app-actions {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding-top: 12px;
+        border-top: 1px solid var(--line-2);
+      }
+
+      .chip,
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        height: 24px;
+        padding: 0 8px;
+        border: 1px solid var(--line);
+        color: var(--muted);
+        background: #fff;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .chip.active,
+      .badge.blue {
+        border-color: #bfd2ff;
+        color: var(--blue);
+        background: #f0f5ff;
+      }
+
+      .badge.green {
+        border-color: #bfe8d5;
+        color: var(--green);
+        background: #f0fbf6;
+      }
+
+      .badge.amber {
+        border-color: #f4dbaf;
+        color: var(--amber);
+        background: #fff8e9;
+      }
+
+      .badge.red {
+        border-color: #f2c5c5;
+        color: var(--red);
+        background: #fff2f2;
+      }
+
+      .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--green);
+        font-weight: 700;
+      }
+
+      .status.warn {
+        color: var(--amber);
+      }
+
+      .status.off {
+        color: var(--weak);
+      }
+
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: currentColor;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+
+      th,
+      td {
+        height: 54px;
+        padding: 0 12px;
+        border-bottom: 1px solid var(--line-2);
+        text-align: left;
+        vertical-align: middle;
+      }
+
+      th {
+        height: 40px;
+        color: var(--muted);
+        background: var(--panel-2);
+        font-weight: 700;
+      }
+
+      .name-cell strong,
+      .endpoint strong {
+        display: block;
+        font-size: 13px;
+      }
+
+      .name-cell span,
+      .endpoint span {
+        display: block;
+        margin-top: 3px;
+        color: var(--weak);
+        font-size: 12px;
+      }
+
+      .link {
+        border: 0;
+        background: transparent;
+        color: var(--blue);
+        font-weight: 700;
+      }
+
+      .timeline {
+        padding: 6px 14px 14px;
+      }
+
+      .timeline-item {
+        display: grid;
+        grid-template-columns: 24px 1fr auto;
+        gap: 10px;
+        min-height: 62px;
+        padding: 10px 0;
+        border-bottom: 1px solid var(--line-2);
+      }
+
+      .timeline-item:last-child {
+        border-bottom: 0;
+      }
+
+      .node {
+        display: grid;
+        place-items: center;
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        background: #e8f7f1;
+        color: var(--green);
+        font-size: 12px;
+        font-weight: 900;
+      }
+
+      .node.wait {
+        background: #fff7e8;
+        color: var(--amber);
+      }
+
+      .node.info {
+        background: #eef4ff;
+        color: var(--blue);
+      }
+
+      .timeline-item strong {
+        display: block;
+        font-size: 14px;
+      }
+
+      .timeline-item span {
+        display: block;
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .progress {
+        width: 100%;
+        height: 8px;
+        overflow: hidden;
+        background: #e9edf5;
+      }
+
+      .progress b {
+        display: block;
+        height: 100%;
+        width: var(--value, 45%);
+        background: var(--blue);
+      }
+
+      .form-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .field {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .field label {
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .field input,
+      .field select,
+      .field textarea {
+        min-height: 34px;
+        padding: 7px 9px;
+        border: 1px solid var(--line);
+        background: #fff;
+        color: var(--text);
+      }
+
+      .field textarea {
+        min-height: 84px;
+        resize: vertical;
+      }
+
+      .switch {
+        position: relative;
+        width: 42px;
+        height: 22px;
+        border: 0;
+        border-radius: 12px;
+        background: #c8cfdd;
+      }
+
+      .switch::after {
+        content: "";
+        position: absolute;
+        top: 3px;
+        left: 3px;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: #fff;
+        transition: transform 0.2s;
+      }
+
+      .switch.on {
+        background: var(--blue);
+      }
+
+      .switch.on::after {
+        transform: translateX(20px);
+      }
+
+      .drawer,
+      .modal {
+        position: fixed;
+        inset: 0;
+        z-index: 30;
+        background: rgba(14, 23, 39, 0.36);
+      }
+
+      .drawer-panel {
+        position: absolute;
+        right: 0;
+        top: 0;
+        width: 520px;
+        height: 100%;
+        overflow: auto;
+        background: #fff;
+        box-shadow: -10px 0 30px rgba(15, 23, 42, 0.15);
+      }
+
+      .modal-box {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: 560px;
+        max-height: 84vh;
+        overflow: auto;
+        transform: translate(-50%, -50%);
+        border: 1px solid var(--line);
+        background: #fff;
+        box-shadow: 0 20px 40px rgba(15, 23, 42, 0.18);
+      }
+
+      .drawer-head,
+      .modal-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        min-height: 56px;
+        padding: 0 18px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .drawer-body,
+      .modal-body {
+        padding: 18px;
+      }
+
+      .close {
+        border: 0;
+        background: transparent;
+        color: var(--muted);
+        font-size: 22px;
+      }
+
+      .steps {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 8px;
+        margin-bottom: 16px;
+      }
+
+      .step {
+        min-height: 48px;
+        padding: 8px;
+        border: 1px solid var(--line);
+        background: var(--panel-2);
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .step.active {
+        border-color: #bfd2ff;
+        color: var(--blue);
+        background: #f0f5ff;
+      }
+
+      .option-list {
+        display: grid;
+        gap: 8px;
+      }
+
+      .option {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 10px;
+        padding: 12px;
+        border: 1px solid var(--line);
+        background: #fff;
+      }
+
+      .option.selected {
+        border-color: var(--blue);
+        background: #f7faff;
+      }
+
+      .code {
+        min-height: 88px;
+        padding: 12px;
+        border: 1px solid #d8e0ed;
+        background: #111827;
+        color: #dbeafe;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+        line-height: 1.55;
+        white-space: pre-wrap;
+      }
+
+      .toast {
+        position: fixed;
+        right: 24px;
+        bottom: 24px;
+        z-index: 40;
+        min-width: 260px;
+        padding: 12px 14px;
+        border: 1px solid #bfe8d5;
+        background: #f0fbf6;
+        color: #0f6b4b;
+        box-shadow: 0 12px 28px rgba(15, 23, 42, 0.12);
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .log-box {
+        max-height: 220px;
+        overflow: auto;
+        border: 1px solid var(--line);
+        background: #0f172a;
+        color: #dbeafe;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+      }
+
+      .log-line {
+        padding: 8px 10px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      }
+
+      .meter-row {
+        display: grid;
+        grid-template-columns: 140px 1fr auto;
+        gap: 12px;
+        align-items: center;
+        min-height: 42px;
+      }
+
+      .range {
+        width: 100%;
+      }
+
+      .stack {
+        display: grid;
+        gap: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="mark"></div>
+          Lighthouse
+        </div>
+        <div class="product">Agent Host</div>
+        <nav class="nav" aria-label="Agent Host navigation">
+          <div class="nav-title">工作台</div>
+          <a href="#dashboard" class="active" data-view="dashboard"><span class="nav-icon">D</span>总览</a>
+          <a href="#apps" data-view="apps"><span class="nav-icon">A</span>Agent 应用</a>
+          <a href="#mcp" data-view="mcp"><span class="nav-icon">M</span>MCP Hub</a>
+          <a href="#runtime" data-view="runtime"><span class="nav-icon">R</span>Always-on Runtime</a>
+          <a href="#workspace" data-view="workspace"><span class="nav-icon">W</span>Agent Workspace</a>
+          <a href="#ops" data-view="ops"><span class="nav-icon">O</span>AgentOps Lite</a>
+          <a href="#gallery" data-view="gallery"><span class="nav-icon">G</span>Gallery</a>
+          <div class="nav-title">设置</div>
+          <a href="#cost" data-view="cost"><span class="nav-icon">C</span>成本与资源</a>
+          <a href="#team" data-view="team"><span class="nav-icon">T</span>Team Lite</a>
+        </nav>
+      </aside>
+
+      <main class="main">
+        <div class="topbar">
+          <div class="global-search">搜索 Agent、MCP Server、任务、模板</div>
+          <div class="top-links">
+            <span>费用</span>
+            <span>备案</span>
+            <span>文档</span>
+            <span>工单</span>
+          </div>
+        </div>
+
+        <section class="workspace">
+          <div class="page-head">
+            <div>
+              <div class="eyebrow">个人开发者云端 Agent 主机</div>
+              <h1 id="pageTitle">Agent Host 总览</h1>
+              <p class="page-subtitle" id="pageSubtitle">一键运行开源 Agent，集中管理 MCP 工具、模型配置、任务和分享入口。</p>
+            </div>
+            <div class="head-actions">
+              <button class="btn" id="copyDeployBtn">复制 Deploy 按钮</button>
+              <button class="btn primary" data-open-drawer="deploy">部署 Agent</button>
+            </div>
+          </div>
+
+          <div class="summary-grid">
+            <div class="metric">
+              <label>在线 Agent</label>
+              <strong id="metricAgents">6</strong>
+              <span>2 个公开 Demo，4 个私有运行</span>
+            </div>
+            <div class="metric">
+              <label>MCP 工具</label>
+              <strong id="metricMcp">18</strong>
+              <span>GitHub、Browser、DB、Cloud 已连接</span>
+            </div>
+            <div class="metric">
+              <label>今日任务</label>
+              <strong id="metricTasks">42</strong>
+              <span>8 个后台任务仍在运行</span>
+            </div>
+            <div class="metric">
+              <label>本月预估成本</label>
+              <strong id="metricCost">¥38.6</strong>
+              <span>低于个人预算 ¥80</span>
+            </div>
+          </div>
+
+          <section class="view active" id="view-dashboard">
+            <div class="layout-2">
+              <div class="stack">
+                <div class="panel">
+                  <div class="panel-head">
+                    <h2>推荐起步</h2>
+                    <div class="filters">
+                      <button class="chip active" data-filter-app="all">全部</button>
+                      <button class="chip" data-filter-app="coding">开发</button>
+                      <button class="chip" data-filter-app="automation">自动化</button>
+                      <button class="chip" data-filter-app="data">数据</button>
+                    </div>
+                  </div>
+                  <div class="panel-body">
+                    <div class="grid-2" id="quickApps"></div>
+                  </div>
+                </div>
+
+                <div class="panel">
+                  <div class="panel-head">
+                    <h2>正在运行的任务</h2>
+                    <button class="btn small" data-open-modal="task">新建任务</button>
+                  </div>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>任务</th>
+                        <th>Agent</th>
+                        <th>触发</th>
+                        <th>状态</th>
+                        <th>成本</th>
+                        <th>操作</th>
+                      </tr>
+                    </thead>
+                    <tbody id="taskTable"></tbody>
+                  </table>
+                </div>
+              </div>
+
+              <aside class="stack">
+                <div class="panel">
+                  <div class="panel-head">
+                    <h2>个人 MCP 工具箱</h2>
+                    <button class="link" data-view-jump="mcp">管理</button>
+                  </div>
+                  <div class="panel-body stack" id="mcpSummary"></div>
+                </div>
+
+                <div class="panel">
+                  <div class="panel-head">
+                    <h2>本周成本护栏</h2>
+                    <span class="badge green">正常</span>
+                  </div>
+                  <div class="panel-body stack">
+                    <div>
+                      <div class="status-row" style="justify-content: space-between">
+                        <span class="muted">预算使用</span>
+                        <strong id="budgetPct">48%</strong>
+                      </div>
+                      <div class="progress" style="margin-top: 8px"><b id="budgetBar" style="--value: 48%"></b></div>
+                    </div>
+                    <div class="meter-row">
+                      <span class="muted">空闲休眠</span>
+                      <button class="switch on" data-toggle="sleep"></button>
+                      <strong id="sleepState">已开启</strong>
+                    </div>
+                    <button class="btn" data-view-jump="cost">查看成本明细</button>
+                  </div>
+                </div>
+              </aside>
+            </div>
+          </section>
+
+          <section class="view" id="view-apps">
+            <div class="tabs">
+              <button class="tab active" data-app-category="all">全部模板</button>
+              <button class="tab" data-app-category="coding">开发 Agent</button>
+              <button class="tab" data-app-category="automation">自动化</button>
+              <button class="tab" data-app-category="data">数据分析</button>
+              <button class="tab" data-app-category="custom">自定义镜像</button>
+            </div>
+            <div class="content layout-2">
+              <div class="panel">
+                <div class="panel-head">
+                  <h2>Agent 应用主机</h2>
+                  <button class="btn small" data-open-drawer="deploy">导入 Agent</button>
+                </div>
+                <div class="panel-body">
+                  <div class="grid-2" id="appGrid"></div>
+                </div>
+              </div>
+              <aside class="panel">
+                <div class="panel-head">
+                  <h2>Manifest 预览</h2>
+                  <span class="badge blue">自动探测</span>
+                </div>
+                <div class="panel-body stack">
+                  <div class="code" id="manifestPreview"></div>
+                  <button class="btn" data-open-modal="manifest">查看完整 Manifest</button>
+                </div>
+              </aside>
+            </div>
+          </section>
+
+          <section class="view" id="view-mcp">
+            <div class="layout-2">
+              <div class="panel">
+                <div class="panel-head">
+                  <h2>Personal MCP Hub</h2>
+                  <div class="inline-actions">
+                    <button class="btn small" data-open-modal="mcpConfig">生成客户端配置</button>
+                    <button class="btn small primary" data-open-drawer="mcp">添加 MCP Server</button>
+                  </div>
+                </div>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>MCP Server</th>
+                      <th>工具组</th>
+                      <th>Endpoint</th>
+                      <th>状态</th>
+                      <th>复用</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="mcpTable"></tbody>
+                </table>
+              </div>
+              <aside class="panel">
+                <div class="panel-head">
+                  <h2>最近调用</h2>
+                  <button class="link" id="clearMcpLog">清空</button>
+                </div>
+                <div class="log-box" id="mcpLogs"></div>
+              </aside>
+            </div>
+          </section>
+
+          <section class="view" id="view-runtime">
+            <div class="layout-3">
+              <div class="panel">
+                <div class="panel-head">
+                  <h2>Always-on 任务</h2>
+                  <button class="btn small primary" data-open-modal="task">新建任务</button>
+                </div>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>任务</th>
+                      <th>触发方式</th>
+                      <th>进度</th>
+                      <th>状态</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="runtimeTable"></tbody>
+                </table>
+              </div>
+              <div class="panel">
+                <div class="panel-head">
+                  <h2>任务日志</h2>
+                  <span class="badge blue" id="selectedTaskBadge">morning-brief</span>
+                </div>
+                <div class="log-box" id="runtimeLogs"></div>
+              </div>
+              <aside class="panel">
+                <div class="panel-head">
+                  <h2>触发器</h2>
+                  <button class="link" data-open-modal="webhook">新增</button>
+                </div>
+                <div class="panel-body stack">
+                  <div class="card card-pad">
+                    <div class="status-row" style="justify-content: space-between">
+                      <strong>GitHub Issue</strong>
+                      <button class="switch on"></button>
+                    </div>
+                    <p class="muted" style="margin-top: 8px">收到 `agent-ready` 标签后自动启动代码分析。</p>
+                  </div>
+                  <div class="card card-pad">
+                    <div class="status-row" style="justify-content: space-between">
+                      <strong>每天 08:30</strong>
+                      <button class="switch on"></button>
+                    </div>
+                    <p class="muted" style="margin-top: 8px">生成个人技术日报，并保存为 Artifact。</p>
+                  </div>
+                  <div class="card card-pad">
+                    <div class="status-row" style="justify-content: space-between">
+                      <strong>RSS 监控</strong>
+                      <button class="switch"></button>
+                    </div>
+                    <p class="muted" style="margin-top: 8px">发现 Agent/MCP 新版本后写入 Workspace。</p>
+                  </div>
+                </div>
+              </aside>
+            </div>
+          </section>
+
+          <section class="view" id="view-workspace">
+            <div class="tabs">
+              <button class="tab active" data-workspace-tab="assets">资产库</button>
+              <button class="tab" data-workspace-tab="models">模型配置</button>
+              <button class="tab" data-workspace-tab="prompts">Prompt 与技能</button>
+            </div>
+            <div class="content layout-2">
+              <div class="panel">
+                <div class="panel-head">
+                  <h2 id="workspaceTitle">个人 Agent 资产库</h2>
+                  <button class="btn small primary" data-open-modal="asset">保存资产</button>
+                </div>
+                <div class="panel-body">
+                  <div class="grid-3" id="workspaceGrid"></div>
+                </div>
+              </div>
+              <aside class="panel">
+                <div class="panel-head">
+                  <h2>资产复用</h2>
+                  <span class="badge green">12 个 Agent 已挂载</span>
+                </div>
+                <div class="panel-body stack">
+                  <div class="card card-pad">
+                    <strong>GitHub + Browser 工具组</strong>
+                    <p class="muted" style="margin-top: 8px">被 OpenClaw、Code Reviewer、Daily Brief 复用。</p>
+                  </div>
+                  <div class="card card-pad">
+                    <strong>个人知识库 Memory</strong>
+                    <p class="muted" style="margin-top: 8px">跨 Agent 共享，只读挂载到公开 Demo。</p>
+                  </div>
+                  <button class="btn" id="attachAssetBtn">挂载到当前 Agent</button>
+                </div>
+              </aside>
+            </div>
+          </section>
+
+          <section class="view" id="view-ops">
+            <div class="layout-2">
+              <div class="panel">
+                <div class="panel-head">
+                  <h2>任务时间线</h2>
+                  <div class="inline-actions">
+                    <button class="btn small" id="replayStepBtn">Replay 下一步</button>
+                    <button class="btn small" data-open-modal="artifact">查看产物</button>
+                  </div>
+                </div>
+                <div class="timeline" id="opsTimeline"></div>
+              </div>
+              <aside class="panel">
+                <div class="panel-head">
+                  <h2>运行摘要</h2>
+                  <span class="badge blue">AgentOps Lite</span>
+                </div>
+                <div class="panel-body stack">
+                  <div class="metric">
+                    <label>本次耗时</label>
+                    <strong>12m 18s</strong>
+                    <span>模型 8 次，MCP 11 次，文件 4 个</span>
+                  </div>
+                  <div class="metric">
+                    <label>Token 成本</label>
+                    <strong>¥1.26</strong>
+                    <span>较上次低 18%</span>
+                  </div>
+                  <div class="card card-pad">
+                    <strong>失败定位</strong>
+                    <p class="muted" style="margin-top: 8px">Browser 截图步骤重试 1 次后恢复，最终任务完成。</p>
+                  </div>
+                </div>
+              </aside>
+            </div>
+          </section>
+
+          <section class="view" id="view-gallery">
+            <div class="layout-2">
+              <div class="panel">
+                <div class="panel-head">
+                  <h2>Agent Gallery</h2>
+                  <button class="btn small primary" data-open-modal="share">发布 Demo</button>
+                </div>
+                <div class="panel-body">
+                  <div class="grid-3" id="galleryGrid"></div>
+                </div>
+              </div>
+              <aside class="panel">
+                <div class="panel-head">
+                  <h2>分享面板</h2>
+                  <span class="badge green" id="shareBadge">公开</span>
+                </div>
+                <div class="panel-body stack">
+                  <div class="field">
+                    <label>Demo 链接</label>
+                    <input id="shareUrl" value="https://agent.lighthouse.dev/u/boyuan/code-reviewer" />
+                  </div>
+                  <div class="field">
+                    <label>Deploy 按钮</label>
+                    <textarea id="deploySnippet">[Deploy on Lighthouse](https://agent.lighthouse.dev/deploy?template=code-reviewer)</textarea>
+                  </div>
+                  <div class="meter-row">
+                    <span class="muted">公开访问</span>
+                    <button class="switch on" id="publicSwitch"></button>
+                    <strong id="publicState">已公开</strong>
+                  </div>
+                  <button class="btn primary" id="copyShareBtn">复制分享信息</button>
+                </div>
+              </aside>
+            </div>
+          </section>
+
+          <section class="view" id="view-cost">
+            <div class="layout-2">
+              <div class="panel">
+                <div class="panel-head">
+                  <h2>成本与资源护栏</h2>
+                  <span class="badge green">个人预算内</span>
+                </div>
+                <div class="panel-body stack">
+                  <div class="meter-row">
+                    <span>月预算</span>
+                    <input class="range" type="range" min="40" max="200" value="80" id="budgetRange" />
+                    <strong id="budgetValue">¥80</strong>
+                  </div>
+                  <div class="meter-row">
+                    <span>任务并发</span>
+                    <input class="range" type="range" min="1" max="8" value="3" id="concurrencyRange" />
+                    <strong id="concurrencyValue">3</strong>
+                  </div>
+                  <div class="meter-row">
+                    <span>空闲休眠</span>
+                    <button class="switch on" data-toggle="sleep"></button>
+                    <strong>15 分钟</strong>
+                  </div>
+                  <div class="grid-3">
+                    <div class="metric">
+                      <label>实例</label>
+                      <strong>¥16.8</strong>
+                      <span>轻量规格 2C2G</span>
+                    </div>
+                    <div class="metric">
+                      <label>模型</label>
+                      <strong>¥18.4</strong>
+                      <span>多模型 API 调用</span>
+                    </div>
+                    <div class="metric">
+                      <label>存储</label>
+                      <strong>¥3.4</strong>
+                      <span>Artifact 与 Memory</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <aside class="panel">
+                <div class="panel-head">
+                  <h2>自动动作</h2>
+                  <button class="link" id="applyGuardBtn">应用</button>
+                </div>
+                <div class="panel-body stack">
+                  <div class="card card-pad">
+                    <strong>预算超过 80%</strong>
+                    <p class="muted" style="margin-top: 8px">暂停低优先级定时任务，发送通知。</p>
+                  </div>
+                  <div class="card card-pad">
+                    <strong>单任务超过 ¥5</strong>
+                    <p class="muted" style="margin-top: 8px">进入人工确认后继续运行。</p>
+                  </div>
+                  <div class="card card-pad">
+                    <strong>实例空闲</strong>
+                    <p class="muted" style="margin-top: 8px">自动休眠，Webhook 到达时唤醒。</p>
+                  </div>
+                </div>
+              </aside>
+            </div>
+          </section>
+
+          <section class="view" id="view-team">
+            <div class="layout-2">
+              <div class="panel">
+                <div class="panel-head">
+                  <h2>Team Lite</h2>
+                  <button class="btn small primary" data-open-modal="invite">邀请成员</button>
+                </div>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>成员</th>
+                      <th>角色</th>
+                      <th>可访问 Agent</th>
+                      <th>成本额度</th>
+                      <th>状态</th>
+                    </tr>
+                  </thead>
+                  <tbody id="teamTable"></tbody>
+                </table>
+              </div>
+              <aside class="panel">
+                <div class="panel-head">
+                  <h2>项目权限</h2>
+                  <span class="badge amber">轻量协作</span>
+                </div>
+                <div class="panel-body stack">
+                  <div class="meter-row">
+                    <span class="muted">共享 MCP 工具组</span>
+                    <button class="switch on"></button>
+                    <strong>开启</strong>
+                  </div>
+                  <div class="meter-row">
+                    <span class="muted">共享模型配置</span>
+                    <button class="switch"></button>
+                    <strong>关闭</strong>
+                  </div>
+                  <div class="meter-row">
+                    <span class="muted">公开 Demo 发布</span>
+                    <button class="switch on"></button>
+                    <strong>需确认</strong>
+                  </div>
+                  <button class="btn" id="saveTeamBtn">保存团队设置</button>
+                </div>
+              </aside>
+            </div>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <div class="drawer" id="deployDrawer" hidden>
+      <div class="drawer-panel">
+        <div class="drawer-head">
+          <h2>部署 Agent</h2>
+          <button class="close" data-close>x</button>
+        </div>
+        <div class="drawer-body">
+          <div class="steps">
+            <div class="step active" data-step-label="0">1. 模板</div>
+            <div class="step" data-step-label="1">2. 运行时</div>
+            <div class="step" data-step-label="2">3. 工具</div>
+            <div class="step" data-step-label="3">4. 发布</div>
+          </div>
+          <div class="stack" id="deployStep"></div>
+          <div class="btn-row" style="justify-content: space-between; margin-top: 18px">
+            <button class="btn" id="deployBack">上一步</button>
+            <button class="btn primary" id="deployNext">下一步</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="drawer" id="mcpDrawer" hidden>
+      <div class="drawer-panel">
+        <div class="drawer-head">
+          <h2>添加 MCP Server</h2>
+          <button class="close" data-close>x</button>
+        </div>
+        <div class="drawer-body stack">
+          <div class="form-grid">
+            <div class="field">
+              <label>名称</label>
+              <input id="newMcpName" value="Notion Memory" />
+            </div>
+            <div class="field">
+              <label>工具组</label>
+              <select id="newMcpGroup">
+                <option>知识库</option>
+                <option>开发</option>
+                <option>浏览器</option>
+                <option>云资源</option>
+              </select>
+            </div>
+          </div>
+          <div class="field">
+            <label>启动命令</label>
+            <input id="newMcpCommand" value="npx @modelcontextprotocol/server-notion" />
+          </div>
+          <div class="field">
+            <label>Secret</label>
+            <input id="newMcpSecret" value="NOTION_TOKEN 已保存" />
+          </div>
+          <button class="btn primary" id="addMcpBtn">添加并测试</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal" id="genericModal" hidden>
+      <div class="modal-box">
+        <div class="modal-head">
+          <h2 id="modalTitle">Modal</h2>
+          <button class="close" data-close>x</button>
+        </div>
+        <div class="modal-body" id="modalBody"></div>
+      </div>
+    </div>
+
+    <div class="toast" id="toast" hidden></div>
+
+    <script>
+      const apps = [
+        {
+          id: "openclaw",
+          name: "OpenClaw Dev Agent",
+          desc: "面向代码仓库分析、插件调试、模型探测和开发任务的开源 Agent 应用。",
+          category: "coding",
+          logo: "O",
+          logoClass: "logo-blue",
+          model: "Claude / GPT / Qwen",
+          mcp: "GitHub + Browser",
+          runtime: "2C2G / Always-on",
+          cost: "¥0.12/h",
+          badge: "官方"
+        },
+        {
+          id: "hermes",
+          name: "Hermes Agent Host",
+          desc: "个人多模型通道、工具调用和轻量 Agent 面板，适合长期在线工作流。",
+          category: "automation",
+          logo: "H",
+          logoClass: "logo-green",
+          model: "OpenAI-compatible",
+          mcp: "Webhook + Memory",
+          runtime: "1C2G / 休眠唤醒",
+          cost: "¥0.06/h",
+          badge: "推荐"
+        },
+        {
+          id: "code-reviewer",
+          name: "Code Reviewer",
+          desc: "监听 GitHub issue 和 PR，自动分析变更、生成建议和测试清单。",
+          category: "coding",
+          logo: "C",
+          logoClass: "logo-violet",
+          model: "GPT-5 / Claude",
+          mcp: "GitHub + Filesystem",
+          runtime: "Webhook 触发",
+          cost: "按任务",
+          badge: "可分享"
+        },
+        {
+          id: "daily-brief",
+          name: "Daily Brief Agent",
+          desc: "每天聚合 RSS、GitHub、日历和收藏夹，生成个人技术日报。",
+          category: "automation",
+          logo: "D",
+          logoClass: "logo-amber",
+          model: "Gemini / Qwen",
+          mcp: "RSS + Browser",
+          runtime: "定时任务",
+          cost: "¥0.80/天",
+          badge: "模板"
+        },
+        {
+          id: "data-analyst",
+          name: "Data Analyst",
+          desc: "连接 SQLite、MySQL 和表格文件，生成分析报告和可下载 Artifact。",
+          category: "data",
+          logo: "S",
+          logoClass: "logo-green",
+          model: "GPT / DeepSeek",
+          mcp: "DB + Sheets",
+          runtime: "后台任务",
+          cost: "¥1.20/次",
+          badge: "数据"
+        },
+        {
+          id: "custom-image",
+          name: "Custom Agent Image",
+          desc: "导入自定义镜像或 GitHub 仓库，通过 probe 自动补全 Agent Manifest。",
+          category: "custom",
+          logo: "I",
+          logoClass: "logo-blue",
+          model: "自定义",
+          mcp: "自定义",
+          runtime: "自定义规格",
+          cost: "按实例",
+          badge: "高级"
+        }
+      ];
+
+      const mcpServers = [
+        { name: "GitHub Tools", group: "开发", endpoint: "/mcp/github", status: "online", reuse: 5 },
+        { name: "Browser Use", group: "浏览器", endpoint: "/mcp/browser", status: "online", reuse: 3 },
+        { name: "Tencent Cloud", group: "云资源", endpoint: "/mcp/tencent-cloud", status: "warn", reuse: 2 },
+        { name: "Personal Memory", group: "知识库", endpoint: "/mcp/memory", status: "online", reuse: 6 },
+        { name: "SQLite Lab", group: "数据", endpoint: "/mcp/sqlite", status: "offline", reuse: 1 }
+      ];
+
+      const tasks = [
+        { id: "morning-brief", name: "生成个人技术日报", agent: "Daily Brief", trigger: "每天 08:30", status: "running", cost: "¥0.42", progress: 72 },
+        { id: "issue-triage", name: "GitHub issue 分类", agent: "Code Reviewer", trigger: "Webhook", status: "running", cost: "¥0.18", progress: 44 },
+        { id: "mcp-upgrade", name: "MCP Server 版本巡检", agent: "Hermes", trigger: "每 6 小时", status: "paused", cost: "¥0.06", progress: 18 },
+        { id: "db-report", name: "SQLite 数据报告", agent: "Data Analyst", trigger: "手动", status: "done", cost: "¥1.26", progress: 100 }
+      ];
+
+      const workspaceData = {
+        assets: [
+          ["GitHub + Browser 工具组", "MCP 组合", "被 3 个 Agent 复用"],
+          ["个人技术知识库", "Memory", "只读挂载到 Daily Brief"],
+          ["Agent 发布模板", "Manifest", "包含 API/MCP/A2A 暴露方式"],
+          ["日报 Artifact", "产物", "最近 7 天自动归档"],
+          ["OpenClaw 配置快照", "配置", "可迁移到新实例"],
+          ["Agent CLI Profile", "开发配置", "本地 deploy 默认配置"]
+        ],
+        models: [
+          ["GPT-5 Main", "OpenAI-compatible", "默认代码分析模型"],
+          ["Claude Research", "Anthropic", "长文本研究任务"],
+          ["Qwen Local API", "OpenAI-compatible", "低成本中文任务"],
+          ["Gemini Fast", "Google", "快速摘要和网页理解"],
+          ["DeepSeek Coder", "OpenAI-compatible", "代码补全和审查"],
+          ["Fallback Chain", "策略", "失败后自动降级"]
+        ],
+        prompts: [
+          ["代码审查 System Prompt", "Prompt", "强调风险和测试缺口"],
+          ["日报写作风格", "Prompt", "适合个人技术简报"],
+          ["MCP 工具选择策略", "Skill", "优先最小权限工具"],
+          ["失败恢复策略", "Skill", "保留中间产物后重试"],
+          ["公开 Demo 安全提示", "Prompt", "隐藏 Secret 和私有路径"],
+          ["Agent Manifest 模板", "Template", "支持 Probe 自动补全"]
+        ]
+      };
+
+      const gallery = [
+        ["Code Reviewer", "公开 Demo", "Fork 128", "GitHub + Filesystem"],
+        ["Daily Brief", "模板", "Fork 76", "RSS + Browser"],
+        ["MCP Toolbox", "工具组", "Fork 214", "GitHub + Memory"],
+        ["Data Analyst", "数据", "Fork 52", "SQLite + Sheets"],
+        ["OpenClaw Starter", "官方", "Fork 318", "Dev Agent"],
+        ["Webhook Runner", "自动化", "Fork 41", "Webhook + Runtime"]
+      ];
+
+      const team = [
+        ["Boyuan", "Owner", "全部", "¥80", "在线"],
+        ["Ming", "Editor", "Code Reviewer, Daily Brief", "¥30", "已邀请"],
+        ["Guest Demo", "Viewer", "公开 Demo", "¥0", "只读"]
+      ];
+
+      let deployStepIndex = 0;
+      let selectedTemplate = "openclaw";
+      let budget = 80;
+      let opsReplayIndex = 0;
+
+      const toast = document.querySelector("#toast");
+
+      function showToast(message) {
+        toast.textContent = message;
+        toast.hidden = false;
+        clearTimeout(showToast.timer);
+        showToast.timer = setTimeout(() => {
+          toast.hidden = true;
+        }, 2200);
+      }
+
+      function appCard(app) {
+        return `
+          <div class="app-card" data-category="${app.category}">
+            <div class="app-top">
+              <div class="app-logo ${app.logoClass}">${app.logo}</div>
+              <div>
+                <div class="app-title">
+                  <h3>${app.name}</h3>
+                  <span class="badge blue">${app.badge}</span>
+                </div>
+                <p class="app-desc">${app.desc}</p>
+              </div>
+            </div>
+            <div class="cap-list">
+              <div class="cap"><span>模型</span><strong>${app.model}</strong></div>
+              <div class="cap"><span>MCP</span><strong>${app.mcp}</strong></div>
+              <div class="cap"><span>运行</span><strong>${app.runtime}</strong></div>
+              <div class="cap"><span>成本</span><strong>${app.cost}</strong></div>
+            </div>
+            <div class="app-actions">
+              <button class="link" data-manifest="${app.id}">Manifest</button>
+              <button class="btn primary small" data-deploy-template="${app.id}">部署</button>
+            </div>
+          </div>
+        `;
+      }
+
+      function renderApps(filter = "all") {
+        const list = apps.filter((app) => filter === "all" || app.category === filter);
+        document.querySelector("#appGrid").innerHTML = list.map(appCard).join("");
+        document.querySelector("#quickApps").innerHTML = apps.slice(0, 4).map(appCard).join("");
+        bindAppActions();
+      }
+
+      function renderManifest(id = selectedTemplate) {
+        const app = apps.find((item) => item.id === id) || apps[0];
+        document.querySelector("#manifestPreview").textContent = `name: ${app.name}
+runtime: lighthouse.agent-host/v1
+model: ${app.model}
+mcp: ${app.mcp}
+access:
+  web: enabled
+  api: private
+  mcp_tool: optional
+always_on:
+  trigger: ${app.runtime}`;
+      }
+
+      function bindAppActions() {
+        document.querySelectorAll("[data-deploy-template]").forEach((button) => {
+          button.addEventListener("click", () => {
+            selectedTemplate = button.dataset.deployTemplate;
+            deployStepIndex = 0;
+            renderDeployStep();
+            openDrawer("deploy");
+          });
+        });
+        document.querySelectorAll("[data-manifest]").forEach((button) => {
+          button.addEventListener("click", () => {
+            selectedTemplate = button.dataset.manifest;
+            renderManifest(selectedTemplate);
+            openModal("manifest");
+          });
+        });
+      }
+
+      function renderMcp() {
+        document.querySelector("#mcpTable").innerHTML = mcpServers
+          .map((server, index) => {
+            const statusClass = server.status === "online" ? "" : server.status === "warn" ? "warn" : "off";
+            const statusText = server.status === "online" ? "在线" : server.status === "warn" ? "需授权" : "离线";
+            return `
+              <tr>
+                <td class="name-cell"><strong>${server.name}</strong><span>${server.group}工具箱</span></td>
+                <td>${server.group}</td>
+                <td class="endpoint"><strong>${server.endpoint}</strong><span>remote MCP</span></td>
+                <td><span class="status ${statusClass}"><span class="dot"></span>${statusText}</span></td>
+                <td>${server.reuse} 个 Agent</td>
+                <td class="inline-actions">
+                  <button class="link" data-test-mcp="${index}">测试</button>
+                  <button class="switch ${server.status !== "offline" ? "on" : ""}" data-mcp-toggle="${index}"></button>
+                </td>
+              </tr>
+            `;
+          })
+          .join("");
+
+        document.querySelector("#mcpSummary").innerHTML = mcpServers
+          .slice(0, 4)
+          .map((server) => `<div class="card card-pad"><strong>${server.name}</strong><p class="muted" style="margin-top: 6px">${server.group} / ${server.reuse} 个 Agent 复用</p></div>`)
+          .join("");
+
+        document.querySelectorAll("[data-test-mcp]").forEach((button) => {
+          button.addEventListener("click", () => {
+            const server = mcpServers[Number(button.dataset.testMcp)];
+            addMcpLog(`[test] ${server.name} -> handshake ok, tools=${server.reuse + 2}`);
+            showToast(`${server.name} 测试通过`);
+          });
+        });
+
+        document.querySelectorAll("[data-mcp-toggle]").forEach((button) => {
+          button.addEventListener("click", () => {
+            const server = mcpServers[Number(button.dataset.mcpToggle)];
+            server.status = server.status === "offline" ? "online" : "offline";
+            renderMcp();
+            addMcpLog(`[state] ${server.name} ${server.status}`);
+          });
+        });
+      }
+
+      function addMcpLog(line) {
+        const logs = document.querySelector("#mcpLogs");
+        const entry = document.createElement("div");
+        entry.className = "log-line";
+        entry.textContent = `${new Date().toLocaleTimeString()} ${line}`;
+        logs.prepend(entry);
+      }
+
+      function renderTasks() {
+        const rows = tasks
+          .map((task, index) => {
+            const statusClass = task.status === "running" ? "" : task.status === "paused" ? "warn" : "off";
+            const statusText = task.status === "running" ? "运行中" : task.status === "paused" ? "已暂停" : "已完成";
+            return `
+              <tr>
+                <td class="name-cell"><strong>${task.name}</strong><span>${task.id}</span></td>
+                <td>${task.agent}</td>
+                <td>${task.trigger}</td>
+                <td><span class="status ${statusClass}"><span class="dot"></span>${statusText}</span></td>
+                <td>${task.cost}</td>
+                <td class="inline-actions">
+                  <button class="link" data-select-task="${index}">详情</button>
+                  <button class="link" data-toggle-task="${index}">${task.status === "paused" ? "恢复" : "暂停"}</button>
+                </td>
+              </tr>
+            `;
+          })
+          .join("");
+        document.querySelector("#taskTable").innerHTML = rows;
+
+        document.querySelector("#runtimeTable").innerHTML = tasks
+          .map((task, index) => `
+            <tr>
+              <td class="name-cell"><strong>${task.name}</strong><span>${task.agent}</span></td>
+              <td>${task.trigger}</td>
+              <td><div class="progress"><b style="--value: ${task.progress}%"></b></div></td>
+              <td>${task.status}</td>
+              <td class="inline-actions">
+                <button class="link" data-select-task="${index}">日志</button>
+                <button class="link" data-run-step="${index}">推进</button>
+              </td>
+            </tr>
+          `)
+          .join("");
+
+        document.querySelectorAll("[data-toggle-task]").forEach((button) => {
+          button.addEventListener("click", () => {
+            const task = tasks[Number(button.dataset.toggleTask)];
+            task.status = task.status === "paused" ? "running" : "paused";
+            showToast(`${task.name} 已${task.status === "running" ? "恢复" : "暂停"}`);
+            renderTasks();
+          });
+        });
+
+        document.querySelectorAll("[data-select-task]").forEach((button) => {
+          button.addEventListener("click", () => {
+            const task = tasks[Number(button.dataset.selectTask)];
+            renderRuntimeLogs(task);
+            switchView("runtime");
+          });
+        });
+
+        document.querySelectorAll("[data-run-step]").forEach((button) => {
+          button.addEventListener("click", () => {
+            const task = tasks[Number(button.dataset.runStep)];
+            task.progress = Math.min(100, task.progress + 12);
+            if (task.progress === 100) task.status = "done";
+            renderTasks();
+            renderRuntimeLogs(task);
+            showToast(`${task.name} 任务进度已更新`);
+          });
+        });
+      }
+
+      function renderRuntimeLogs(task = tasks[0]) {
+        document.querySelector("#selectedTaskBadge").textContent = task.id;
+        document.querySelector("#runtimeLogs").innerHTML = [
+          `[task] ${task.name}`,
+          `[agent] ${task.agent}`,
+          `[trigger] ${task.trigger}`,
+          `[mcp] GitHub Tools call completed`,
+          `[artifact] saved ${task.id}.md`,
+          `[cost] ${task.cost}, progress=${task.progress}%`
+        ].map((line) => `<div class="log-line">${line}</div>`).join("");
+      }
+
+      function renderWorkspace(tab = "assets") {
+        const title = tab === "assets" ? "个人 Agent 资产库" : tab === "models" ? "模型配置" : "Prompt 与技能";
+        document.querySelector("#workspaceTitle").textContent = title;
+        document.querySelector("#workspaceGrid").innerHTML = workspaceData[tab]
+          .map(([name, type, desc]) => `
+            <div class="card card-pad">
+              <div class="status-row" style="justify-content: space-between">
+                <strong>${name}</strong>
+                <span class="badge blue">${type}</span>
+              </div>
+              <p class="muted" style="margin-top: 10px">${desc}</p>
+              <div class="btn-row" style="margin-top: 12px">
+                <button class="btn small">复用</button>
+                <button class="link">导出</button>
+              </div>
+            </div>
+          `)
+          .join("");
+      }
+
+      function renderOps() {
+        const steps = [
+          ["目标解析", "生成个人技术日报，覆盖 Agent/MCP 更新和 GitHub 待办。", "完成", "info"],
+          ["MCP 调用", "调用 GitHub、RSS、Browser Use 和 Personal Memory。", "完成", ""],
+          ["网页抓取", "Browser 截图失败 1 次，自动重试后恢复。", "恢复", "wait"],
+          ["内容生成", "模型调用 8 次，合并为 Markdown 和 HTML Artifact。", "完成", ""],
+          ["成本检查", "本任务花费 ¥0.42，低于单任务上限 ¥5。", "完成", ""]
+        ];
+        const extra = [
+          ["分享准备", "生成公开 Demo 摘要和 Deploy on Lighthouse 按钮。", "新增", "info"],
+          ["Artifact 归档", "保存日报、截图、引用链接和运行摘要。", "新增", ""]
+        ];
+        document.querySelector("#opsTimeline").innerHTML = steps.concat(extra.slice(0, opsReplayIndex))
+          .map(([title, desc, status, type]) => `
+            <div class="timeline-item">
+              <div class="node ${type}">${type === "wait" ? "!" : "✓"}</div>
+              <div><strong>${title}</strong><span>${desc}</span></div>
+              <span class="badge ${type === "wait" ? "amber" : "green"}">${status}</span>
+            </div>
+          `)
+          .join("");
+      }
+
+      function renderGallery() {
+        document.querySelector("#galleryGrid").innerHTML = gallery
+          .map(([name, tag, fork, tools]) => `
+            <div class="card card-pad">
+              <div class="status-row" style="justify-content: space-between">
+                <strong>${name}</strong>
+                <span class="badge blue">${tag}</span>
+              </div>
+              <p class="muted" style="margin-top: 8px">${tools}</p>
+              <div class="cap-list">
+                <div class="cap"><span>Fork</span><strong>${fork}</strong></div>
+                <div class="cap"><span>访问</span><strong>公开 Demo</strong></div>
+              </div>
+              <div class="btn-row">
+                <button class="btn small primary" data-gallery-fork="${name}">Fork</button>
+                <button class="link" data-open-modal="share">分享</button>
+              </div>
+            </div>
+          `)
+          .join("");
+
+        document.querySelectorAll("[data-gallery-fork]").forEach((button) => {
+          button.addEventListener("click", () => {
+            showToast(`${button.dataset.galleryFork} 已复制到你的 Workspace`);
+            document.querySelector("#metricAgents").textContent = "7";
+          });
+        });
+      }
+
+      function renderTeam() {
+        document.querySelector("#teamTable").innerHTML = team
+          .map((member) => `
+            <tr>
+              <td class="name-cell"><strong>${member[0]}</strong><span>${member[0].toLowerCase().replaceAll(" ", "-")}@agent.host</span></td>
+              <td>${member[1]}</td>
+              <td>${member[2]}</td>
+              <td>${member[3]}</td>
+              <td><span class="status ${member[4] === "在线" ? "" : "warn"}"><span class="dot"></span>${member[4]}</span></td>
+            </tr>
+          `)
+          .join("");
+      }
+
+      function openDrawer(type) {
+        document.querySelector(type === "mcp" ? "#mcpDrawer" : "#deployDrawer").hidden = false;
+      }
+
+      function closeOverlay() {
+        document.querySelectorAll(".drawer, .modal").forEach((overlay) => {
+          overlay.hidden = true;
+        });
+      }
+
+      function openModal(type) {
+        const title = document.querySelector("#modalTitle");
+        const body = document.querySelector("#modalBody");
+        const app = apps.find((item) => item.id === selectedTemplate) || apps[0];
+        const content = {
+          manifest: [
+            "完整 Agent Manifest",
+            `<div class="code">name: ${app.name}
+version: 1.0.0
+author: lighthouse-official
+runtime:
+  image: lighthouse/${app.id}:latest
+  plan: ${app.runtime}
+model:
+  default: ${app.model}
+tools:
+  mcp: ${app.mcp}
+access:
+  web: enabled
+  api: private
+  mcp_tool: optional
+  a2a_card: optional
+assets:
+  prompts: reusable
+  memory: mountable
+cost_guard:
+  monthly_budget: ${budget}</div>`
+          ],
+          mcpConfig: [
+            "客户端配置",
+            `<div class="field"><label>Claude / Cursor / Codex</label><textarea>{"mcpServers":{"lighthouse":{"url":"https://agent.lighthouse.dev/mcp/boyuan","headers":{"Authorization":"Bearer lh_***"}}}}</textarea></div><div class="btn-row" style="margin-top: 12px"><button class="btn primary" id="copyMcpConfig">复制配置</button></div>`
+          ],
+          task: [
+            "新建 Always-on 任务",
+            `<div class="stack"><div class="field"><label>任务名称</label><input id="taskName" value="监控 Agent Infra 趋势"></div><div class="form-grid"><div class="field"><label>Agent</label><select id="taskAgent"><option>Daily Brief</option><option>Code Reviewer</option><option>Hermes</option></select></div><div class="field"><label>触发方式</label><select id="taskTrigger"><option>每天 08:30</option><option>Webhook</option><option>手动</option></select></div></div><button class="btn primary" id="createTaskBtn">创建任务</button></div>`
+          ],
+          webhook: [
+            "新增触发器",
+            `<div class="stack"><div class="field"><label>Webhook 名称</label><input value="GitHub Issue Ready"></div><div class="field"><label>触发地址</label><input value="https://agent.lighthouse.dev/hooks/issue-ready"></div><button class="btn primary" id="saveWebhookBtn">保存触发器</button></div>`
+          ],
+          asset: [
+            "保存 Agent 资产",
+            `<div class="stack"><div class="field"><label>资产名称</label><input id="assetName" value="MCP 调用安全策略"></div><div class="field"><label>类型</label><select><option>Prompt</option><option>Skill</option><option>MCP 工具组</option><option>Manifest</option></select></div><button class="btn primary" id="saveAssetBtn">保存到 Workspace</button></div>`
+          ],
+          artifact: [
+            "任务产物",
+            `<div class="stack"><div class="card card-pad"><strong>daily-brief-2026-06-05.md</strong><p class="muted" style="margin-top: 8px">包含 Agent/MCP 新闻摘要、GitHub 待办、引用链接。</p></div><div class="card card-pad"><strong>browser-capture.png</strong><p class="muted" style="margin-top: 8px">网页抓取中间产物，已归档。</p></div></div>`
+          ],
+          share: [
+            "发布 Demo",
+            `<div class="stack"><div class="field"><label>公开标题</label><input value="Code Reviewer Agent"></div><div class="field"><label>公开能力</label><select><option>只读 Demo</option><option>API + MCP Tool</option><option>A2A Agent Card</option></select></div><button class="btn primary" id="publishDemoBtn">发布</button></div>`
+          ],
+          invite: [
+            "邀请成员",
+            `<div class="stack"><div class="field"><label>邮箱</label><input id="inviteEmail" value="ming@example.com"></div><div class="field"><label>角色</label><select id="inviteRole"><option>Editor</option><option>Viewer</option></select></div><button class="btn primary" id="inviteBtn">发送邀请</button></div>`
+          ]
+        }[type];
+
+        title.textContent = content[0];
+        body.innerHTML = content[1];
+        document.querySelector("#genericModal").hidden = false;
+
+        setTimeout(() => {
+          const actionMap = {
+            copyMcpConfig: "客户端配置已复制",
+            createTaskBtn: "任务已创建并进入 Runtime",
+            saveWebhookBtn: "触发器已保存",
+            saveAssetBtn: "资产已保存到 Workspace",
+            publishDemoBtn: "公开 Demo 已发布",
+            inviteBtn: "邀请已发送"
+          };
+          Object.keys(actionMap).forEach((id) => {
+            const element = document.querySelector(`#${id}`);
+            if (element) {
+              element.addEventListener("click", () => {
+                showToast(actionMap[id]);
+                if (id === "createTaskBtn") {
+                  tasks.unshift({ id: "trend-watch", name: "监控 Agent Infra 趋势", agent: "Daily Brief", trigger: "每天 08:30", status: "running", cost: "¥0.00", progress: 4 });
+                  renderTasks();
+                  document.querySelector("#metricTasks").textContent = String(Number(document.querySelector("#metricTasks").textContent) + 1);
+                }
+                if (id === "inviteBtn") {
+                  team.push(["Ming", "Editor", "Daily Brief", "¥20", "已邀请"]);
+                  renderTeam();
+                }
+                closeOverlay();
+              });
+            }
+          });
+        });
+      }
+
+      function renderDeployStep() {
+        const stepBox = document.querySelector("#deployStep");
+        document.querySelectorAll("[data-step-label]").forEach((step, index) => {
+          step.classList.toggle("active", index === deployStepIndex);
+        });
+        document.querySelector("#deployBack").disabled = deployStepIndex === 0;
+        document.querySelector("#deployNext").textContent = deployStepIndex === 3 ? "发布 Agent" : "下一步";
+        const selected = apps.find((app) => app.id === selectedTemplate) || apps[0];
+        const steps = [
+          `<div class="option-list">${apps.slice(0, 4).map((app) => `<button class="option ${app.id === selectedTemplate ? "selected" : ""}" data-template-option="${app.id}"><span><strong>${app.name}</strong><span class="tiny">${app.desc}</span></span><span class="badge blue">${app.badge}</span></button>`).join("")}</div>`,
+          `<div class="stack"><div class="form-grid"><div class="field"><label>实例规格</label><select><option>轻量 2C2G</option><option>轻量 1C2G</option><option>按任务唤醒</option></select></div><div class="field"><label>运行模式</label><select><option>Always-on</option><option>空闲休眠</option><option>Webhook 唤醒</option></select></div></div><div class="field"><label>访问域名</label><input value="${selected.id}.agent.lighthouse.dev"></div></div>`,
+          `<div class="stack"><div class="form-grid"><div class="field"><label>模型配置</label><select><option>GPT-5 Main</option><option>Claude Research</option><option>Qwen Local API</option></select></div><div class="field"><label>MCP 工具组</label><select><option>GitHub + Browser</option><option>Memory + RSS</option><option>DB + Sheets</option></select></div></div><div class="field"><label>Secret</label><input value="从个人 Secret Vault 读取"></div></div>`,
+          `<div class="stack"><div class="card card-pad"><strong>${selected.name}</strong><p class="muted" style="margin-top: 8px">${selected.desc}</p></div><div class="code">deploy:
+  template: ${selected.id}
+  runtime: always-on
+  mcp_group: GitHub + Browser
+  cost_guard: ¥${budget}/month
+  share: private</div></div>`
+        ];
+        stepBox.innerHTML = steps[deployStepIndex];
+        document.querySelectorAll("[data-template-option]").forEach((button) => {
+          button.addEventListener("click", () => {
+            selectedTemplate = button.dataset.templateOption;
+            renderDeployStep();
+            renderManifest(selectedTemplate);
+          });
+        });
+      }
+
+      function switchView(view) {
+        document.querySelectorAll(".view").forEach((panel) => panel.classList.remove("active"));
+        document.querySelector(`#view-${view}`).classList.add("active");
+        document.querySelectorAll(".nav a").forEach((link) => link.classList.toggle("active", link.dataset.view === view));
+        const labels = {
+          dashboard: ["Agent Host 总览", "一键运行开源 Agent，集中管理 MCP 工具、模型配置、任务和分享入口。"],
+          apps: ["Agent 应用主机", "把开源 Agent 和自定义镜像部署为长期在线的云端 Agent 应用。"],
+          mcp: ["Personal MCP Hub", "我的工具只配一次，多个 Agent 和 AI 客户端复用。"],
+          runtime: ["Always-on Runtime", "定时任务、Webhook、后台执行和长任务产物都放在云端。"],
+          workspace: ["Agent Workspace", "管理 Prompt、模型配置、MCP 工具组、记忆、模板和产物。"],
+          ops: ["AgentOps Lite", "用任务时间线看懂 Agent 做了什么、卡在哪里、花了多少钱。"],
+          gallery: ["Agent Gallery", "发布 Demo、Fork 模板、生成 Deploy on Lighthouse 入口。"],
+          cost: ["成本与资源", "个人预算、空闲休眠、成本上限和任务级成本控制。"],
+          team: ["Team Lite", "个人项目自然扩展到小团队协作。"]
+        };
+        document.querySelector("#pageTitle").textContent = labels[view][0];
+        document.querySelector("#pageSubtitle").textContent = labels[view][1];
+      }
+
+      document.querySelectorAll(".nav a").forEach((link) => {
+        link.addEventListener("click", (event) => {
+          event.preventDefault();
+          switchView(link.dataset.view);
+        });
+      });
+
+      document.querySelectorAll("[data-view-jump]").forEach((button) => {
+        button.addEventListener("click", () => switchView(button.dataset.viewJump));
+      });
+
+      document.querySelectorAll("[data-open-drawer]").forEach((button) => {
+        button.addEventListener("click", () => {
+          if (button.dataset.openDrawer === "deploy") renderDeployStep();
+          openDrawer(button.dataset.openDrawer);
+        });
+      });
+
+      document.querySelectorAll("[data-open-modal]").forEach((button) => {
+        button.addEventListener("click", () => openModal(button.dataset.openModal));
+      });
+
+      document.querySelectorAll("[data-close]").forEach((button) => {
+        button.addEventListener("click", closeOverlay);
+      });
+
+      document.querySelectorAll(".drawer, .modal").forEach((overlay) => {
+        overlay.addEventListener("click", (event) => {
+          if (event.target === overlay) closeOverlay();
+        });
+      });
+
+      document.querySelector("#deployBack").addEventListener("click", () => {
+        deployStepIndex = Math.max(0, deployStepIndex - 1);
+        renderDeployStep();
+      });
+
+      document.querySelector("#deployNext").addEventListener("click", () => {
+        if (deployStepIndex < 3) {
+          deployStepIndex += 1;
+          renderDeployStep();
+        } else {
+          closeOverlay();
+          document.querySelector("#metricAgents").textContent = String(Number(document.querySelector("#metricAgents").textContent) + 1);
+          showToast("Agent 已发布为云端常驻应用");
+        }
+      });
+
+      document.querySelectorAll("[data-app-category]").forEach((button) => {
+        button.addEventListener("click", () => {
+          document.querySelectorAll("[data-app-category]").forEach((item) => item.classList.remove("active"));
+          button.classList.add("active");
+          renderApps(button.dataset.appCategory);
+        });
+      });
+
+      document.querySelectorAll("[data-filter-app]").forEach((button) => {
+        button.addEventListener("click", () => {
+          document.querySelectorAll("[data-filter-app]").forEach((item) => item.classList.remove("active"));
+          button.classList.add("active");
+          renderApps(button.dataset.filterApp);
+        });
+      });
+
+      document.querySelectorAll("[data-workspace-tab]").forEach((button) => {
+        button.addEventListener("click", () => {
+          document.querySelectorAll("[data-workspace-tab]").forEach((item) => item.classList.remove("active"));
+          button.classList.add("active");
+          renderWorkspace(button.dataset.workspaceTab);
+        });
+      });
+
+      document.querySelector("#addMcpBtn").addEventListener("click", () => {
+        mcpServers.unshift({
+          name: document.querySelector("#newMcpName").value,
+          group: document.querySelector("#newMcpGroup").value,
+          endpoint: "/mcp/notion-memory",
+          status: "online",
+          reuse: 0
+        });
+        renderMcp();
+        addMcpLog("[add] Notion Memory installed and tested");
+        closeOverlay();
+        showToast("MCP Server 已添加");
+        document.querySelector("#metricMcp").textContent = String(Number(document.querySelector("#metricMcp").textContent) + 1);
+      });
+
+      document.querySelector("#clearMcpLog").addEventListener("click", () => {
+        document.querySelector("#mcpLogs").innerHTML = "";
+      });
+
+      document.querySelector("#replayStepBtn").addEventListener("click", () => {
+        opsReplayIndex = Math.min(2, opsReplayIndex + 1);
+        renderOps();
+        showToast("已追加 Replay 步骤");
+      });
+
+      document.querySelector("#budgetRange").addEventListener("input", (event) => {
+        budget = Number(event.target.value);
+        document.querySelector("#budgetValue").textContent = `¥${budget}`;
+        const pct = Math.round((38.6 / budget) * 100);
+        document.querySelector("#budgetPct").textContent = `${pct}%`;
+        document.querySelector("#budgetBar").style.setProperty("--value", `${Math.min(100, pct)}%`);
+      });
+
+      document.querySelector("#concurrencyRange").addEventListener("input", (event) => {
+        document.querySelector("#concurrencyValue").textContent = event.target.value;
+      });
+
+      document.querySelectorAll(".switch").forEach((button) => {
+        button.addEventListener("click", () => {
+          button.classList.toggle("on");
+          if (button.dataset.toggle === "sleep") {
+            document.querySelector("#sleepState").textContent = button.classList.contains("on") ? "已开启" : "已关闭";
+          }
+        });
+      });
+
+      document.querySelector("#publicSwitch").addEventListener("click", () => {
+        const on = document.querySelector("#publicSwitch").classList.contains("on");
+        document.querySelector("#publicState").textContent = on ? "已公开" : "私有";
+        document.querySelector("#shareBadge").textContent = on ? "公开" : "私有";
+        document.querySelector("#shareBadge").className = `badge ${on ? "green" : "amber"}`;
+      });
+
+      document.querySelector("#copyShareBtn").addEventListener("click", () => showToast("分享链接和 Deploy 按钮已复制"));
+      document.querySelector("#copyDeployBtn").addEventListener("click", () => showToast("Deploy on Lighthouse 按钮已复制"));
+      document.querySelector("#attachAssetBtn").addEventListener("click", () => showToast("资产已挂载到当前 Agent"));
+      document.querySelector("#applyGuardBtn").addEventListener("click", () => showToast("成本护栏已应用"));
+      document.querySelector("#saveTeamBtn").addEventListener("click", () => showToast("Team Lite 设置已保存"));
+
+      renderApps();
+      renderManifest();
+      renderMcp();
+      renderTasks();
+      renderRuntimeLogs();
+      renderWorkspace();
+      renderOps();
+      renderGallery();
+      renderTeam();
+      addMcpLog("[ready] Lighthouse remote MCP endpoint online");
+      addMcpLog("[call] GitHub Tools used by Code Reviewer");
+    </script>
+  </body>
+</html>

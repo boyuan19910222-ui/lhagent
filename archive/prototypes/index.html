@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hermes Agent 版本呈现 Demo</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="console-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="menu-icon">☰</span>
+          <span class="cloud-mark">☁</span>
+          <span>腾讯云</span>
+        </div>
+        <div class="product-name">轻量云</div>
+        <nav class="side-nav" aria-label="轻量云导航">
+          <a class="nav-project" href="#">
+            <span class="avatar-mini">H</span>
+            <span>Hermes Agent</span>
+            <span class="external">↗</span>
+          </a>
+          <span class="section-title">轻量应用服务器</span>
+          <a class="active" href="#">服务器</a>
+          <a href="#">OrcaTerm <span class="external">↗</span></a>
+          <a href="#">自动化助手</a>
+          <a href="#">镜像</a>
+          <a href="#">云硬盘</a>
+          <a href="#">SSH密钥</a>
+          <a href="#">防火墙模板</a>
+          <a href="#">优选流量包 <span class="external">↗</span></a>
+        </nav>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div class="search">⌕ 支持通过实例ID、IP、名称等搜索资源</div>
+          <div class="top-links">
+            <span>集团账号</span>
+            <span>备案</span>
+            <span>工具</span>
+            <span>客服支持</span>
+            <span>费用</span>
+          </div>
+        </header>
+
+        <section class="promo">
+          <strong>⚡ 云点播</strong>
+          <span>长短视频一体化解决方案，图文/音视频类商品物料生成，全渠道一键分发</span>
+          <a href="#">查看详情 ›</a>
+        </section>
+
+        <section class="instance-bar">
+          <div class="instance-title">
+            <button class="back" aria-label="返回">‹</button>
+            <strong>boyuan_hermes</strong>
+            <span class="ip-label">IPv4</span>
+            <span class="ip-address">1.12.250.129</span>
+            <button class="ai">✦ AI助手</button>
+          </div>
+          <div class="actions">
+            <button class="primary">登录</button>
+            <button>关机</button>
+            <button>重启</button>
+            <button>更多操作</button>
+          </div>
+        </section>
+
+        <nav class="tabs" aria-label="实例详情标签页">
+          <a href="#">概要</a>
+          <a class="selected" href="#">应用管理</a>
+          <a href="#">域名解析</a>
+          <a href="#">云硬盘</a>
+          <a href="#">防火墙</a>
+          <a href="#">SSH密钥</a>
+          <a href="#">快照</a>
+          <a href="#">监控</a>
+          <a href="#">文件管理</a>
+          <a href="#">对象存储</a>
+          <a href="#">主机安全</a>
+        </nav>
+
+        <section class="demo-controls" aria-label="版本呈现方案">
+          <div>
+            <strong>版本号呈现方案</strong>
+            <span>在真实控制台标题区域里验证信息层级</span>
+          </div>
+          <div class="segmented" role="tablist" aria-label="切换呈现方式">
+            <button class="selected" data-mode="recommended">推荐</button>
+            <button data-mode="compact">紧凑</button>
+            <button data-mode="explicit">详情</button>
+          </div>
+        </section>
+
+        <section class="app-heading" aria-label="Hermes Agent 应用信息">
+          <div class="app-icon" aria-hidden="true">H</div>
+          <div class="app-copy">
+            <div class="title-row">
+              <h1>Hermes Agent</h1>
+              <div class="version-display recommended-mode">
+                <span class="version-chip">
+                  基于 Hermes v0.14.0
+                </span>
+                <span class="version-info">
+                  <button class="info-badge" aria-label="查看版本详情" aria-describedby="versionTip">!</button>
+                  <div class="tooltip" id="versionTip" role="tooltip">
+                    <strong>版本详情</strong>
+                    <dl class="tooltip-versions">
+                      <div>
+                        <dt>Hermes 社区版本更新日期</dt>
+                        <dd>2026.4.30</dd>
+                      </div>
+                      <div>
+                        <dt>腾讯云配置面板更新日期</dt>
+                        <dd>2026.5.19</dd>
+                      </div>
+                    </dl>
+                  </div>
+                </span>
+              </div>
+              <div class="version-display compact-mode" hidden>
+                <button class="version-chip" id="compactChip">
+                  Hermes v0.14.0 · 更新 2026.4.30 · 配置面板更新 2026.5.19
+                </button>
+              </div>
+              <div class="version-display explicit-mode" hidden>
+                <dl class="version-list">
+                  <div>
+                    <dt>Hermes官方项目版本</dt>
+                    <dd>v0.14.0</dd>
+                  </div>
+                  <div>
+                    <dt>Hermes 社区版本更新日期</dt>
+                    <dd>2026.4.30</dd>
+                  </div>
+                  <div>
+                    <dt>腾讯云配置面板更新日期</dt>
+                    <dd>2026.5.19</dd>
+                  </div>
+                </dl>
+              </div>
+            </div>
+            <div class="status-row">
+              <span class="status-dot"></span>
+              <span>运行中</span>
+              <button class="link-button">重启</button>
+              <button class="link-button doc-link">版本说明</button>
+            </div>
+          </div>
+          <div class="doc-actions">
+            <button>官方文档 ›</button>
+            <button>实践教程 ›</button>
+          </div>
+        </section>
+
+        <section class="content-grid">
+          <article class="config-card models">
+            <header>
+              <span class="step blue">1.</span>
+              <h2>模型 (Models)</h2>
+            </header>
+            <p>添加至少 1 个模型，Hermes 才能正常工作</p>
+            <div class="field">腾讯云 Hy Token Plan（个人版） <span>⌄</span></div>
+            <div class="field">Hy3 preview <span>⌄</span></div>
+            <button class="wide-button">一键添加为默认</button>
+            <p class="note">基于腾讯2026年4月最新自研混元模型打造：集成 Hy3 Preview 模型，面向 Agent 工作负载设计，适配 Coding Agent、文档自动化、多步工具调用等工作流。<a href="#">点此查看 ↗</a></p>
+            <div class="card-footer">
+              <span>切换模型</span>
+              <strong>腾讯云通用 Token Plan（个人版）</strong>
+              <span class="default-dot">● 当前默认</span>
+            </div>
+          </article>
+
+          <article class="config-card channels">
+            <header>
+              <span class="step green">2.</span>
+              <h2>通道 (Channels)</h2>
+            </header>
+            <p>配置通道后，即可在聊天软件中与 Hermes 对话</p>
+            <button class="agent-chat">使用 AgentChat 即刻开始对话 →</button>
+            <div class="field">微信 <span>⌄</span></div>
+            <button class="wide-button">授权接入</button>
+            <p class="note">微信是一款跨平台的通讯工具。<a href="#">查看详情 ↗</a></p>
+            <div class="card-footer">
+              <span>已接入通道</span>
+              <strong>QQ</strong>
+              <span class="default-dot">● 已接入</span>
+            </div>
+          </article>
+
+          <article class="config-card skills">
+            <header>
+              <span class="step purple">3.</span>
+              <h2>技能 (Skills)</h2>
+            </header>
+            <p>技能可拓展 Hermes 能力，可按需添加</p>
+            <p class="warning">⚠ 谨慎安装未知来源技能</p>
+            <div class="search-field">⌕ 输入 SkillHub 中上架的 Skill 名称搜索</div>
+            <button class="wide-button">安装技能</button>
+            <p class="note"><a href="#">前往 SkillHub ↗</a></p>
+            <div class="empty-state">暂无数据</div>
+          </article>
+        </section>
+      </main>
+    </div>
+
+    <dialog class="version-dialog" id="versionDialog" aria-labelledby="dialogTitle">
+      <button class="close" id="closeDialog" aria-label="关闭">×</button>
+      <h2 id="dialogTitle">版本说明</h2>
+      <p>当前实例基于 Hermes 官方项目版本运行，并包含腾讯云面板侧优化。</p>
+      <div class="version-table">
+        <div>
+          <span>Hermes 社区版本更新日期</span>
+          <strong>2026.4.30</strong>
+        </div>
+        <div>
+          <span>腾讯云配置面板更新日期</span>
+          <strong>2026.5.19</strong>
+        </div>
+      </div>
+    </dialog>
+
+    <script src="./script.js"></script>
+  </body>
+</html>
