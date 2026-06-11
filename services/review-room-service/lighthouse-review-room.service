@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 WorkingDirectory=/home/ubuntu/review-room-service
-ExecStart=/usr/bin/python3 /home/ubuntu/review-room-service/review_room_service.py --host 0.0.0.0 --port 8707 --db /home/ubuntu/review-room-service/review-room.sqlite3
+ExecStart=/home/ubuntu/review-room-service/.venv/bin/python /home/ubuntu/review-room-service/review_room_service.py --host 0.0.0.0 --port 8707 --db /home/ubuntu/review-room-service/review-room.sqlite3
 Restart=always
 RestartSec=3
 

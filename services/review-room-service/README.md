@@ -1,6 +1,6 @@
 # Lighthouse Review Room
 
-这是一个本地可运行的 Lighthouse Review Room 产品切片。它把 Lighthouse Review Room 后端、控制面页面、Connector 注册和 Agent 事件接入放在同一个无依赖服务里，方便先真实体验完整链路。
+这是一个本地可运行的 Lighthouse Review Room P0 产品切片。它把 Review Room 后端、Web 实时聊天室、WebSocket Connector 协议和 Agent 侧 Codex Connector 放在同一个服务目录里，方便先验证 Lighthouse 实例承载多 Agent 代码评审房间的能力。
 
 ## 定位
 
@@ -12,15 +12,18 @@
 本目录当前实现的是一个“单进程产品切片”：
 
 - 用 SQLite 模拟 Lighthouse Review Room 后端主状态源。
-- 用内置 HTML 页面模拟 Lighthouse Console 的 Review Room 控制面。
-- 用 Connector API 模拟本地 Agent 和远端 Agent 的接入层。
+- 用内置 HTML 页面提供纯 Review Room Web 聊天室。
+- 用 WebSocket 让 `review room owner`、`Reviewer Agent`、`Developer Agent` 实时进入同一个 Room。
+- 用 Connector token 区分不同 Agent，真实 Codex/远端 Agent 在各自环境运行 `codex_connector.py`。
 
-为了便于在全新 Lighthouse 实例或本机直接运行，它只依赖 Python 标准库和 SQLite。
+Review Room 后端不保存 OpenAI/Codex 密钥，不直接代跑 Agent；真实 Agent 执行发生在 Agent 侧 connector 环境。
 
 ## 启动
 
 ```bash
-python3 review_room_service.py --host 0.0.0.0 --port 8707 --db ./review-room.sqlite3
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python review_room_service.py --host 0.0.0.0 --port 8707 --db ./review-room.sqlite3
 ```
 
 健康检查：
@@ -39,11 +42,11 @@ http://127.0.0.1:8707
 
 真实路径：
 
-1. 点击“创建真实 Room”，填写或使用默认 MR 标题、仓库和 MR 地址。
-2. 在 Room 详情里点击“注册本地 Agent Connector”，生成本地 Agent 的 connector id 和 token。
-3. 点击“注册远端 Agent Connector”，生成远端 Review Agent 的 connector id 和 token。
-4. 在 Connector 卡片里点击“发送本地 Agent 消息”和“发送远端 Agent Finding”，观察它们进入同一个 Room 时间线。
-5. 对远端 Finding 点击“Developer Agent 回复”和“人工确认并同步”，完成 Review Room 状态闭环。
+1. 点击“创建真实 Room”，填写或使用默认 MR 标题、仓库和 MR 地址；服务返回 `ownerToken`，页面保存在本机 localStorage。
+2. 在 Room 里注册 `Reviewer Agent` 和 `Developer Agent` connector，分别生成 `connectorToken`。
+3. owner 页面通过 `GET /ws/rooms/{roomId}?token=<ownerToken>` 进入实时聊天室。
+4. 两个 Agent 在各自环境运行 `codex_connector.py`，用 connector token 进入同一个 WebSocket 房间。
+5. owner 发起代码评审话题，Reviewer Agent 产出 Finding，Developer Agent 回复修复计划，owner 对 Finding / Decision 确认或驳回。
 
 页面也保留一个“创建体验房间”按钮，用于快速注入样例数据：
 
@@ -52,7 +55,7 @@ http://127.0.0.1:8707
 3. 点击“Developer Agent 回复”，finding 会进入“等待人工确认”状态，并写入 Agent 回复消息。
 4. 点击“人工确认并同步”，系统会生成 MR 评论同步记录，Room 状态变为“已完成”。
 
-这个体验对应 C 路线：先从实例侧 Connector/Room 入口跑通真实协作闭环，后续再上升为 Lighthouse 托管控制面里的全局 Room 列表和详情页。
+这个体验对应 C 路线：先从实例侧 Connector/Room 入口跑通真实协作闭环，暂不接 Lighthouse 控制台，后续再上升为托管控制面里的全局 Room 列表、权限、审计和 MR 同步。
 
 ## API
 
@@ -81,33 +84,86 @@ curl -X POST http://127.0.0.1:8707/api/rooms \
   }'
 ```
 
-### 注册本地 Agent Connector
+返回值包含 `id` / `roomId` 和 `ownerToken`。读取 Room、注册 Connector、进入 owner WebSocket 都需要 owner token。
+
+### 读取房间快照
+
+```bash
+curl http://127.0.0.1:8707/api/rooms/<room_id> \
+  -H 'Authorization: Bearer <owner_token>'
+```
+
+### 注册 Developer Agent Connector
 
 ```bash
 curl -X POST http://127.0.0.1:8707/api/rooms/<room_id>/connectors \
+  -H 'Authorization: Bearer <owner_token>' \
   -H 'Content-Type: application/json' \
   -d '{
-    "name": "本地 Codex Agent",
+    "name": "Developer Agent",
     "kind": "local-agent",
-    "agentRole": "developer",
-    "endpoint": "http://127.0.0.1:8877/review-room"
+    "role": "developer"
   }'
 ```
 
-返回值里会包含 `id` 和 `token`。本地 Agent 后续用这个 token 写入 Room。
+返回值里会包含 `id`、`token` 和 `connectorToken`。Agent 侧 connector 用这个 token 进入 WebSocket。
 
-### 注册远端 Agent Connector
+### 注册 Reviewer Agent Connector
 
 ```bash
 curl -X POST http://127.0.0.1:8707/api/rooms/<room_id>/connectors \
+  -H 'Authorization: Bearer <owner_token>' \
   -H 'Content-Type: application/json' \
   -d '{
-    "name": "远端 Reviewer Agent",
+    "name": "Reviewer Agent",
     "kind": "remote-agent",
-    "agentRole": "reviewer",
-    "endpoint": "https://agent.example.com/review-room"
+    "role": "reviewer"
   }'
 ```
+
+### WebSocket 房间协议
+
+连接：
+
+```text
+GET /ws/rooms/<room_id>?token=<owner_or_connector_token>
+```
+
+核心事件：
+
+- `room.snapshot`：连接后服务下发完整 Room 快照。
+- `message.create`：owner 或 Agent 发消息。
+- `message.created`：服务广播已落库消息。
+- `finding.create`：Reviewer Agent 提交结构化 Finding。
+- `finding.created`：服务广播新 Finding。
+- `finding.respond` / `decision.propose`：Developer Agent 回复修复计划。
+- `finding.confirm` / `finding.reject`：owner 确认或驳回 Finding / Decision。
+- `finding.updated`：服务广播状态变化。
+- `presence.updated`：服务广播当前在线角色。
+
+### Agent 侧 Codex Connector
+
+Reviewer Agent：
+
+```bash
+.venv/bin/python codex_connector.py \
+  --role reviewer \
+  --room-url http://127.0.0.1:8707 \
+  --room-id <room_id> \
+  --token <reviewer_connector_token>
+```
+
+Developer Agent：
+
+```bash
+.venv/bin/python codex_connector.py \
+  --role developer \
+  --room-url http://127.0.0.1:8707 \
+  --room-id <room_id> \
+  --token <developer_connector_token>
+```
+
+本地无真实 Codex 时可加 `--mock`，先验证 WebSocket 协作闭环。
 
 ### Connector 写入消息
 
@@ -224,7 +280,7 @@ After=network.target
 
 [Service]
 WorkingDirectory=/home/ubuntu/review-room-service
-ExecStart=/usr/bin/python3 /home/ubuntu/review-room-service/review_room_service.py --host 0.0.0.0 --port 8707 --db /home/ubuntu/review-room-service/review-room.sqlite3
+ExecStart=/home/ubuntu/review-room-service/.venv/bin/python /home/ubuntu/review-room-service/review_room_service.py --host 0.0.0.0 --port 8707 --db /home/ubuntu/review-room-service/review-room.sqlite3
 Restart=always
 RestartSec=3
 
