@@ -16,7 +16,9 @@ From the repository root:
 
 ```bash
 npm run test:review-room
-python3 experiments/review-room/service/review_room_service.py --host 127.0.0.1 --port 8707
+python3 -m venv experiments/review-room/service/.venv
+experiments/review-room/service/.venv/bin/python -m pip install -r experiments/review-room/service/requirements.txt
+experiments/review-room/service/.venv/bin/python experiments/review-room/service/review_room_service.py --host 127.0.0.1 --port 8707
 ```
 
 Open:
@@ -28,15 +30,21 @@ http://127.0.0.1:8707
 From this experiment directory:
 
 ```bash
-python3 -m unittest discover -s service/tests -v
-python3 service/review_room_service.py --host 127.0.0.1 --port 8707
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python review_room_service.py --host 127.0.0.1 --port 8707
 ```
 
 ## Main Files
 
 ```text
 service/review_room_service.py
+service/codex_connector.py
+service/requirements.txt
 service/tests/test_review_room_service.py
+service/tests/test_review_room_p0.py
+service/tests/test_codex_connector.py
 service/README.md
 service/lighthouse-review-room.service
 ```
@@ -58,6 +66,6 @@ See [../../docs/concepts/review-room.md](../../docs/concepts/review-room.md).
 
 ## Next Steps
 
-- Add minimal room token and webhook secret validation.
+- Add webhook secret validation and connector token rotation.
 - Add MCP tools for `list_rooms`, `post_message`, `post_finding`, and `update_finding`.
 - Move Room listing and Finding state into a real Lighthouse control-plane surface.
