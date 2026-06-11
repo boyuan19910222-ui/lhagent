@@ -40,24 +40,25 @@ Local Developer Agents are better suited for source edits, tests, running servic
 
 ## Local product slice
 
-This repository includes a dependency-free product slice at:
+This repository includes a local product slice at:
 
 ```text
 experiments/review-room/service
 ```
 
-The service uses Python standard library `http.server` and `sqlite3` to model:
+The service uses SQLite for state, `aiohttp` for the realtime HTTP/WebSocket surface, and `codex_connector.py` as the Agent-side bridge to `codex exec --json`. It models:
 
 - Review Room storage.
 - Room messages.
 - Structured findings.
 - Local and remote Agent connectors.
 - Token-authenticated connector events.
+- Room-scoped owner and connector WebSocket identities.
 - Developer Agent responses.
 - Human confirmation and MR sync preview.
 - GitLab/GitHub-style merge request webhook ingestion.
 
-It is intentionally small enough to run on a fresh Lighthouse instance and concrete enough to validate the full Room -> Connector -> Finding -> Developer response -> human confirmation loop.
+It is intentionally small enough to run on a Lighthouse instance after installing the service requirements, and concrete enough to validate the full Room -> Connector -> Finding -> Developer response -> human confirmation loop with real Agent processes.
 
 ## API surface
 
@@ -74,14 +75,15 @@ It is intentionally small enough to run on a fresh Lighthouse instance and concr
 - `POST /api/findings/{id}/developer-response`
 - `POST /api/findings/{id}/confirm`
 - `POST /api/webhooks/merge-request`
+- `GET /ws/rooms/{id}?token=...`
 
 ## Productization path
 
 P0: Local research loop
 
 - Run the included connector service.
-- Exercise MR webhook -> Room -> Finding -> Developer Agent response -> human confirmation.
-- Add room token and webhook secret validation before public exposure.
+- Exercise MR webhook -> Room -> WebSocket connector -> Finding -> Developer Agent response -> human confirmation.
+- Add webhook secret validation and connector token rotation before public exposure.
 - Use SSH tunnel or HTTPS reverse proxy for controlled access.
 
 P1: Lighthouse control plane
