@@ -117,12 +117,34 @@ Verification:
 - Home page tests prove the task/run controls and API wiring are present.
 - End-to-end API smoke still proves the same task/run loop on the deployed service.
 
+### Slice 6: Connector token rotation
+
+User-visible result:
+
+- Owner can rotate an Agent connector token without deleting the connector record.
+- Old connector tokens stop working immediately.
+- Active connector WebSocket sessions are disconnected and must reconnect with the new token.
+- The Room timeline records an audit event without leaking the new token.
+
+Implementation:
+
+- Add `POST /api/rooms/{room_id}/connectors/{connector_id}/rotate-token`.
+- Return the new connector token and bootstrap command only in the owner-authenticated response.
+- Reset the connector to `invited` until it reconnects with the rotated token.
+
+Verification:
+
+- Store tests prove old token invalidation, new token authentication, and audit redaction.
+- HTTP tests prove old connector events fail and new connector events work.
+- WebSocket tests prove active old sessions receive a disconnect event.
+
 ## Current acceptance checklist
 
 - [ ] Local task/run tests pass.
 - [ ] Local connector task-assignment tests pass.
 - [ ] Home page exposes visible task/run controls.
+- [ ] Connector token rotation tests pass.
 - [ ] Full `npm test` passes.
 - [ ] Remote service updated.
-- [ ] Remote smoke test proves task/run loop.
+- [ ] Remote smoke test proves task/run loop and token rotation.
 - [ ] User receives public URL and curl verification commands.

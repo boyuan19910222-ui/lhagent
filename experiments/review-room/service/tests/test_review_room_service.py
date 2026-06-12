@@ -152,10 +152,13 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertIn("房间角色", html)
         self.assertIn("任务与运行", html)
         self.assertIn("分配结构化任务", html)
+        self.assertIn("轮换 token", html)
         self.assertIn("/api/rooms/${encodeURIComponent(state.room.id)}/invites", html)
         self.assertIn("/api/rooms/${encodeURIComponent(state.room.id)}/tasks", html)
+        self.assertIn("/rotate-token", html)
         self.assertIn("function submitMessage()", html)
         self.assertIn("function createTask()", html)
+        self.assertIn("function rotateConnectorToken", html)
         self.assertIn("agentRuns", html)
         self.assertIn("event.key !== 'Enter'", html)
         self.assertIn("event.isComposing", html)
@@ -247,6 +250,24 @@ class ReviewRoomStoreTest(unittest.TestCase):
 
         self.assertIsNone(reply)
         self.assertEqual(reloaded["connectors"][0]["status"], "revoked")
+
+    def test_rotate_connector_token_invalidates_old_token_without_leaking_audit_secret(self):
+        room = self.store.create_room({"title": "topic"})
+        connector = self.store.register_connector(room["id"], {"name": "Reviewer Agent", "role": "reviewer"})
+
+        rotated = self.store.rotate_connector_token(room["id"], connector["id"], {}, "https://review.example.com")
+        loaded = self.store.get_room(room["id"])
+
+        self.assertTrue(rotated["ok"])
+        self.assertNotEqual(rotated["connectorToken"], connector["connectorToken"])
+        self.assertIn(rotated["connectorToken"], rotated["bootstrap"]["command"])
+        self.assertEqual(loaded["connectors"][0]["status"], "invited")
+        self.assertEqual(loaded["messages"][-1]["kind"], "connector_token_rotated")
+        self.assertNotIn(rotated["connectorToken"], json.dumps(loaded["messages"][-1], ensure_ascii=False))
+        with self.assertRaises(PermissionError):
+            self.store.authenticate_room_token(room["id"], connector["connectorToken"])
+        identity = self.store.authenticate_room_token(room["id"], rotated["connectorToken"])
+        self.assertEqual(identity["connectorId"], connector["id"])
 
     def test_hosted_agent_does_not_reply_without_explicit_experience_mode(self):
         room = self.store.create_room({"title": "开放话题"})
@@ -488,6 +509,7 @@ class ReviewRoomHttpTest(unittest.TestCase):
         self.assertEqual(event["status"], "needs_developer_response")
         self.assertEqual(loaded["connectors"][0]["status"], "online")
         self.assertEqual(loaded["connectors"][0]["eventCount"], 1)
+        self.assertNotIn("connectorToken", loaded["connectors"][0])
         self.assertEqual(loaded["findings"][0]["claim"], "真实 connector 写入 finding")
 
     def test_http_rejects_connector_event_without_valid_token(self):
@@ -506,6 +528,37 @@ class ReviewRoomHttpTest(unittest.TestCase):
             )
 
         self.assertEqual(raised.exception.code, 403)
+
+    def test_http_owner_can_rotate_connector_token(self):
+        room = self.post_json("/api/rooms", {"title": "MR"})
+        connector = self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"name": "本地 Codex", "role": "reviewer"},
+            {"Authorization": "Bearer {}".format(room["ownerToken"])},
+        )
+
+        rotated = self.post_json(
+            "/api/rooms/{}/connectors/{}/rotate-token".format(room["id"], connector["id"]),
+            {},
+            {"Authorization": "Bearer {}".format(room["ownerToken"])},
+        )
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            self.post_json(
+                "/api/connectors/{}/events".format(connector["id"]),
+                {"type": "message", "body": "old token should fail"},
+                {"Authorization": "Bearer {}".format(connector["connectorToken"])},
+            )
+        event = self.post_json(
+            "/api/connectors/{}/events".format(connector["id"]),
+            {"type": "message", "body": "new token works"},
+            {"Authorization": "Bearer {}".format(rotated["connectorToken"])},
+        )
+
+        self.assertEqual(raised.exception.code, 403)
+        self.assertTrue(rotated["ok"])
+        self.assertNotEqual(rotated["connectorToken"], connector["connectorToken"])
+        self.assertIn(rotated["connectorToken"], rotated["bootstrap"]["command"])
+        self.assertEqual(event["body"], "new token works")
 
 
 if __name__ == "__main__":

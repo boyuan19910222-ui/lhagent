@@ -892,6 +892,59 @@ class ReviewRoomStore:
             },
         )
 
+    def rotate_connector_token(self, room_id: str, connector_id: str, payload: Optional[Dict[str, Any]] = None, base_url: str = "") -> Dict[str, Any]:
+        self.require_room(room_id)
+        payload = payload or {}
+        timestamp = now_ms()
+        new_token = payload.get("connectorToken") or payload.get("connector_token") or payload.get("token") or make_id("rrc")
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM connectors WHERE id = ? AND room_id = ?",
+                (connector_id, room_id),
+            ).fetchone()
+            if not row:
+                raise KeyError("connector not found")
+            connector = self._connector_from_row(row)
+            if connector["status"] == "revoked":
+                raise ValueError("revoked connector cannot rotate token")
+            conn.execute(
+                """
+                UPDATE connectors
+                SET token = ?, status = ?, last_seen_at = ?, heartbeat_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (new_token, "invited", None, None, timestamp, connector_id),
+            )
+            conn.execute("UPDATE rooms SET updated_at = ? WHERE id = ?", (timestamp, room_id))
+        connector["token"] = new_token
+        connector["connectorToken"] = new_token
+        connector["status"] = "invited"
+        connector["lastSeenAt"] = None
+        connector["heartbeatAt"] = None
+        connector["updatedAt"] = timestamp
+        connector["bootstrap"] = self.connector_bootstrap(connector, base_url)
+        self.add_message(
+            room_id,
+            {
+                "senderType": "system",
+                "senderName": "Review Room",
+                "kind": "connector_token_rotated",
+                "body": "{} token was rotated by the room owner.".format(connector["name"]),
+                "payload": {
+                    "connectorId": connector_id,
+                    "agentRole": connector["agentRole"],
+                    "adapterType": connector["adapterType"],
+                    "status": "invited",
+                },
+            },
+        )
+        return {
+            "ok": True,
+            "connector": connector,
+            "connectorToken": new_token,
+            "bootstrap": connector["bootstrap"],
+        }
+
     def create_task(self, room_id: str, payload: Dict[str, Any], created_by: str = "review room owner") -> Dict[str, Any]:
         self.require_room(room_id)
         timestamp = now_ms()
@@ -1722,6 +1775,15 @@ class ReviewRoomHandler(BaseHTTPRequestHandler):
                 require_owner_role(identity)
                 self.send_json(self.store.register_connector(match.group(1), body, self.base_url()), HTTPStatus.CREATED)
                 return
+            match = re.match(r"^/api/rooms/([^/]+)/connectors/([^/]+)/rotate-token$", parsed.path)
+            if match:
+                identity = self.store.authenticate_room_token(match.group(1), self.read_bearer_token(body))
+                require_owner_role(identity)
+                self.send_json(
+                    self.store.rotate_connector_token(match.group(1), match.group(2), body, self.base_url()),
+                    HTTPStatus.CREATED,
+                )
+                return
             match = re.match(r"^/api/rooms/([^/]+)/disconnect$", parsed.path)
             if match:
                 identity = self.store.authenticate_room_token(match.group(1), self.read_bearer_token(body))
@@ -1979,6 +2041,10 @@ def room_summary(room: Dict[str, Any]) -> Dict[str, Any]:
 def room_for_identity(room: Dict[str, Any], identity: Dict[str, Any]) -> Dict[str, Any]:
     result = dict(room)
     if identity["type"] == "owner":
+        result["connectors"] = [
+            {key: value for key, value in connector.items() if key not in {"token", "connectorToken"}}
+            for connector in result.get("connectors", [])
+        ]
         return result
     result.pop("ownerToken", None)
     result.pop("invites", None)
@@ -2268,6 +2334,25 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
         ensure_owner(identity)
         return json_response(app[STORE_KEY].register_connector(room_id, await request_json(request), base_url_from_aiohttp_request(request)), 201)
 
+    async def rotate_connector_token(request: web.Request) -> web.Response:
+        room_id = request.match_info["room_id"]
+        connector_id = request.match_info["connector_id"]
+        identity = require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
+        ensure_owner(identity)
+        body = await request_json(request)
+        try:
+            result = app[STORE_KEY].rotate_connector_token(room_id, connector_id, body, base_url_from_aiohttp_request(request))
+        except KeyError as exc:
+            raise web.HTTPNotFound(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        target = {"targetType": "connector", "connectorId": connector_id}
+        closed = await app[HUB_KEY].disconnect_identity(room_id, target, "Connector token rotated by room owner")
+        result["closedConnections"] = closed
+        await app[HUB_KEY].broadcast(room_id, {"type": "connector.token_rotated", "connectorId": connector_id})
+        await app[HUB_KEY].broadcast_snapshot(room_id)
+        return json_response(result, 201)
+
     async def create_task(request: web.Request) -> web.Response:
         room_id = request.match_info["room_id"]
         identity = require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
@@ -2492,6 +2577,7 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
     app.router.add_post("/api/rooms/{room_id}/messages", add_message)
     app.router.add_post("/api/rooms/{room_id}/findings", add_finding)
     app.router.add_post("/api/rooms/{room_id}/connectors", register_connector)
+    app.router.add_post("/api/rooms/{room_id}/connectors/{connector_id}/rotate-token", rotate_connector_token)
     app.router.add_post("/api/rooms/{room_id}/tasks", create_task)
     app.router.add_post("/api/rooms/{room_id}/disconnect", disconnect_member)
     app.router.add_post("/api/connectors/{connector_id}/events", connector_event)
@@ -2582,6 +2668,7 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
       currentToken: '',
       invite: window.REVIEW_ROOM_INVITE,
       lastInvite: null,
+      lastCredential: null,
       presence: [],
       ownerTokens: JSON.parse(localStorage.getItem('reviewRoomOwnerTokens') || '{}'),
       guestTokens: JSON.parse(localStorage.getItem('reviewRoomGuestTokens') || '{}')
@@ -2659,6 +2746,7 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
       state.room = await api(`/api/rooms/${encodeURIComponent(roomId)}`, {headers:{Authorization:`Bearer ${token}`}});
       state.identity = state.ownerTokens[roomId] === token ? {type:'owner', name:'review room owner', role:'owner'} : {type:'guest', name:'guest', role:'guest'};
       state.lastInvite = null;
+      state.lastCredential = null;
       state.presence = [];
       renderAll();
       connectSocket();
@@ -2751,7 +2839,7 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
     }
     function messageKindText(kind, message={}){
       if(message.payload && message.payload.hostedAgent) return '模拟 Agent';
-      return {room_created:'系统', invite_created:'邀请', member_joined:'加入', owner_topic:'owner', guest_message:'guest', connector_message:'Agent', agent_working:'处理中', review_finding:'Finding', developer_response:'回复', human_confirmation:'确认', mr_sync_preview:'同步预览', mr_webhook:'外部事件'}[kind] || kind;
+      return {room_created:'系统', invite_created:'邀请', member_joined:'加入', connector_registered:'Agent', connector_token_rotated:'凭据轮换', owner_topic:'owner', guest_message:'guest', connector_message:'Agent', agent_working:'处理中', review_finding:'Finding', developer_response:'回复', human_confirmation:'确认', mr_sync_preview:'同步预览', mr_webhook:'外部事件'}[kind] || kind;
     }
     function renderFindingCard(finding){
       const canConfirm = isOwner() && finding.status === 'developer_responded';
@@ -2786,6 +2874,7 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
       bindWorkControls();
       document.querySelectorAll('[data-confirm]').forEach(button => button.addEventListener('click', () => sendSocket({type:'finding.confirm', findingId:button.dataset.confirm, decision:'accepted', body:'确认采纳这个结论。'})));
       document.querySelectorAll('[data-reject]').forEach(button => button.addEventListener('click', () => sendSocket({type:'finding.reject', findingId:button.dataset.reject, decision:'rejected', body:'暂不采纳，继续讨论。'})));
+      document.querySelectorAll('[data-rotate-connector-id]').forEach(button => button.addEventListener('click', () => rotateConnectorToken(button.dataset.rotateConnectorId).catch(alert)));
       document.querySelectorAll('[data-disconnect-type]').forEach(button => button.addEventListener('click', () => disconnectMember(button).catch(alert)));
     }
     function renderMembers(presence=[]){
@@ -2805,7 +2894,12 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
     function memberRow(name, role, status, type, target){
       const label = type === 'agent' ? (agentStatusText[status] || status) : (role === 'owner' ? 'owner' : 'guest');
       const cls = status === 'online' || status === 'connected' ? 'online' : status === 'error' ? 'error' : 'waiting';
-      const action = target ? `<button class="danger" data-disconnect-type="${esc(target.type)}" data-connector-id="${esc(target.connectorId || '')}" data-participant-id="${esc(target.participantId || '')}">断开</button>` : '';
+      let action = '';
+      if(target){
+        const rotate = target.type === 'connector' ? `<button data-rotate-connector-id="${esc(target.connectorId || '')}">轮换 token</button>` : '';
+        const disconnect = `<button class="danger" data-disconnect-type="${esc(target.type)}" data-connector-id="${esc(target.connectorId || '')}" data-participant-id="${esc(target.participantId || '')}">断开</button>`;
+        action = `<div class="row">${rotate}${disconnect}</div>`;
+      }
       return `<div class="member"><div class="avatar">${esc(String(name || '?').slice(0,1).toUpperCase())}</div><div><strong>${esc(name)}</strong><p class="muted">${esc(role)}</p></div><span class="tag ${cls}">${esc(label)}</span>${action}</div>`;
     }
     function renderWorkPanel(){
@@ -2854,6 +2948,7 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
     function renderInviteControls(){
       if(!isOwner()) return '<div class="empty">你可以阅读和发言，邀请和确认操作由 owner 完成。</div>';
       const last = state.lastInvite ? `<div class="invite-box"><strong>邀请链接</strong><div class="invite-link">${esc(state.lastInvite.inviteUrl)}</div><button class="subtle" id="copyInvite">复制链接</button>${renderAdvancedInvite(state.lastInvite)}</div>` : '';
+      const credential = state.lastCredential ? renderConnectorCredential(state.lastCredential) : '';
       return `<div class="invite-box">
         <strong>分享给外部成员</strong>
         <button id="createGuestInvite">生成访客链接</button>
@@ -2863,7 +2958,18 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
         <div class="field"><label>角色</label><select id="agentRole"><option value="reviewer">Reviewer</option><option value="developer">Developer</option><option value="observer">Observer</option><option value="custom">Custom</option></select></div>
         <div class="field"><label>名称</label><input id="agentName" value="Reviewer Agent"></div>
         <button id="createAgentInvite">生成 Agent 链接</button>
-      </div>${last}`;
+      </div>${last}${credential}`;
+    }
+    function renderConnectorCredential(result){
+      const connector = result.connector || {};
+      const bootstrap = result.bootstrap || connector.bootstrap || {};
+      return `<div class="invite-box"><strong>新 Agent token</strong>
+        <div class="mono">connector: ${esc(connector.name || connector.id || '')}
+role: ${esc(connector.agentRole || '')}
+key: ${esc(result.connectorToken || connector.connectorToken || '')}
+command: ${esc(bootstrap.command || '')}</div>
+        <button class="subtle" id="copyConnectorCommand" ${bootstrap.command ? '' : 'disabled'}>复制启动命令</button>
+      </div>`;
     }
     function renderAdvancedInvite(invite){
       if(invite.type !== 'agent' || !invite.advanced) return '';
@@ -2880,11 +2986,22 @@ realtime: ${esc(roomUrl)}</div></details>`;
       if(agent) agent.addEventListener('click', () => createInvite({type:'agent', role:document.getElementById('agentRole').value, name:document.getElementById('agentName').value}).catch(alert));
       const copy = document.getElementById('copyInvite');
       if(copy) copy.addEventListener('click', () => navigator.clipboard && navigator.clipboard.writeText(state.lastInvite.inviteUrl));
+      const copyCommand = document.getElementById('copyConnectorCommand');
+      if(copyCommand) copyCommand.addEventListener('click', () => navigator.clipboard && navigator.clipboard.writeText((state.lastCredential.bootstrap || {}).command || ''));
     }
     async function createInvite(payload){
       const invite = await api(`/api/rooms/${encodeURIComponent(state.room.id)}/invites`, {method:'POST', headers:authHeaders(), body:JSON.stringify(payload)});
       await selectRoom(state.room.id);
       state.lastInvite = invite;
+      state.lastCredential = null;
+      renderSidePanels();
+    }
+    async function rotateConnectorToken(connectorId){
+      if(!state.room || !isOwner() || !connectorId) return;
+      const result = await api(`/api/rooms/${encodeURIComponent(state.room.id)}/connectors/${encodeURIComponent(connectorId)}/rotate-token`, {method:'POST', headers:authHeaders(), body:JSON.stringify({})});
+      await selectRoom(state.room.id);
+      state.lastCredential = result;
+      state.lastInvite = null;
       renderSidePanels();
     }
     async function disconnectMember(button){

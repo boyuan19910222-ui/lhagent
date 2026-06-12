@@ -79,6 +79,7 @@ It is intentionally small enough to run on a Lighthouse instance after installin
 - `POST /api/rooms/{id}/invites`
 - `POST /api/rooms/{id}/join`
 - `POST /api/rooms/{id}/connectors`
+- `POST /api/rooms/{id}/connectors/{connector_id}/rotate-token`
 - `POST /api/rooms/{id}/tasks`
 - `POST /api/rooms/{id}/disconnect`
 - `POST /api/connectors/{id}/events`
@@ -110,6 +111,7 @@ P0.5: Connector and execution hardening
 - Add connector metadata such as adapter type, protocol version, capabilities, forbidden actions, heartbeat, and version.
 - Add first-class `agent_runs` so background Agent work is visible even when a vendor session list is not.
 - Add `task.create` and direct `task.assigned` so normal room messages do not trigger Agent execution.
+- Add owner-triggered connector token rotation so leaked or stale connector credentials can be invalidated without deleting the connector record.
 - Extract a generic connector runtime or sidecar with adapter dispatch.
 - Add bootstrap commands, generated config, service setup, logs, reconnect policy, and token rotation.
 - Build a minimal MCP Gateway experiment for read-only room snapshots and structured finding submission.

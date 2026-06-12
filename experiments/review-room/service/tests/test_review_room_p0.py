@@ -271,6 +271,50 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         await guest_ws.close()
         await connector_ws.close()
 
+    async def test_owner_can_rotate_connector_token_and_disconnect_old_socket(self):
+        _, room = await self.post_json("/api/rooms", {"title": "Token rotation"})
+        _, connector = await self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"role": "reviewer", "name": "Reviewer Agent"},
+            room["ownerToken"],
+        )
+        connector_ws = await self.client.ws_connect("/ws/rooms/{}?token={}".format(room["id"], connector["connectorToken"]))
+        await self._drain_initial_events(connector_ws)
+
+        rotate_response, rotated = await self.post_json(
+            "/api/rooms/{}/connectors/{}/rotate-token".format(room["id"], connector["id"]),
+            {},
+            room["ownerToken"],
+        )
+        disconnect_event = await self._read_event(connector_ws, "room.disconnected")
+        denied_old_snapshot = await self.client.get(
+            "/api/rooms/{}".format(room["id"]),
+            headers={"Authorization": "Bearer {}".format(connector["connectorToken"])},
+        )
+        allowed_new_snapshot = await self.client.get(
+            "/api/rooms/{}".format(room["id"]),
+            headers={"Authorization": "Bearer {}".format(rotated["connectorToken"])},
+        )
+        allowed_new_snapshot_json = await allowed_new_snapshot.json()
+        new_event_response, new_event = await self.post_json(
+            "/api/connectors/{}/events".format(connector["id"]),
+            {"type": "message", "body": "new token works"},
+            rotated["connectorToken"],
+        )
+
+        self.assertEqual(rotate_response.status, 201)
+        self.assertEqual(rotated["closedConnections"], 1)
+        self.assertNotEqual(rotated["connectorToken"], connector["connectorToken"])
+        self.assertIn(rotated["connectorToken"], rotated["bootstrap"]["command"])
+        self.assertEqual(disconnect_event["target"]["targetType"], "connector")
+        self.assertEqual(denied_old_snapshot.status, 403)
+        self.assertEqual(allowed_new_snapshot.status, 200)
+        self.assertNotIn("connectorToken", allowed_new_snapshot_json["connectors"][0])
+        self.assertEqual(new_event_response.status, 201)
+        self.assertEqual(new_event["body"], "new token works")
+
+        await connector_ws.close()
+
     async def test_owner_task_assignment_tracks_agent_run_lifecycle(self):
         _, room = await self.post_json("/api/rooms", {"title": "Task control"})
         _, connector = await self.post_json(
@@ -495,8 +539,11 @@ class CodexConnectorClientTest(unittest.TestCase):
         self.assertIn("房间角色", html)
         self.assertIn("任务与运行", html)
         self.assertIn("分配任务", html)
+        self.assertIn("轮换 token", html)
         self.assertIn("function createTask()", html)
+        self.assertIn("function rotateConnectorToken", html)
         self.assertIn("/tasks", html)
+        self.assertIn("/rotate-token", html)
 
     def test_parse_room_url_converts_http_to_websocket_path(self):
         ws_url = parse_room_url("http://127.0.0.1:8707", "room_123", "token_abc")
