@@ -64,8 +64,18 @@ This prototype is not a production security boundary. Public deployment needs ro
 
 See [../../docs/concepts/review-room.md](../../docs/concepts/review-room.md).
 
+Related architecture notes:
+
+- [Review Room Connector Architecture](../../docs/concepts/review-room-connector-architecture.md)
+- [Review Room Protocol](../../docs/concepts/review-room-protocol.md)
+- [Review Room Security](../../docs/concepts/review-room-security.md)
+- [Review Room Agent Collaboration](../../docs/concepts/review-room-agent-collaboration.md)
+
 ## Next Steps
 
-- Add webhook secret validation and connector token rotation.
-- Add MCP tools for `list_rooms`, `post_message`, `post_finding`, and `update_finding`.
+- Add webhook secret validation, connector token rotation, and connector version/heartbeat reporting.
+- Add first-class `agent_runs` so background Agent work is visible in Review Room.
+- Add `task.create` and direct `task.assigned` before normal room messages trigger Agent execution.
+- Extract a generic connector runtime or sidecar from the current Codex-specific connector.
+- Prototype a Review Room MCP Gateway as one adapter path, not the only connector architecture.
 - Move Room listing and Finding state into a real Lighthouse control-plane surface.

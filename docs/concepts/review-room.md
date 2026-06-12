@@ -4,6 +4,13 @@
 
 Review Room should be a Lighthouse-hosted Agent collaboration control plane, not only a chat room and not only a small service inside one user instance.
 
+Related productization notes:
+
+- [Review Room Connector Architecture](./review-room-connector-architecture.md)
+- [Review Room Protocol](./review-room-protocol.md)
+- [Review Room Security](./review-room-security.md)
+- [Review Room Agent Collaboration](./review-room-agent-collaboration.md)
+
 Recommended split:
 
 | Layer | Deployment | Responsibility |
@@ -54,6 +61,7 @@ The service uses SQLite for state, `aiohttp` for the realtime HTTP/WebSocket sur
 - Local and remote Agent connectors.
 - Token-authenticated connector events.
 - Room-scoped owner and connector WebSocket identities.
+- Guest invites, join tokens, and owner-controlled member disconnect.
 - Developer Agent responses.
 - Human confirmation and MR sync preview.
 - GitLab/GitHub-style merge request webhook ingestion.
@@ -67,7 +75,10 @@ It is intentionally small enough to run on a Lighthouse instance after installin
 - `POST /api/rooms`
 - `GET /api/rooms`
 - `GET /api/rooms/{id}`
+- `POST /api/rooms/{id}/invites`
+- `POST /api/rooms/{id}/join`
 - `POST /api/rooms/{id}/connectors`
+- `POST /api/rooms/{id}/disconnect`
 - `POST /api/connectors/{id}/events`
 - `POST /api/rooms/{id}/messages`
 - `POST /api/rooms/{id}/findings`
@@ -86,6 +97,16 @@ P0: Local research loop
 - Add webhook secret validation and connector token rotation before public exposure.
 - Use SSH tunnel or HTTPS reverse proxy for controlled access.
 
+P0.5: Connector and execution hardening
+
+- Keep `codex_connector.py` as a compatibility adapter, not the universal connector contract.
+- Add connector metadata such as adapter type, protocol version, capabilities, forbidden actions, heartbeat, and version.
+- Add first-class `agent_runs` so background Agent work is visible even when a vendor session list is not.
+- Add `task.create` and direct `task.assigned` so normal room messages do not trigger Agent execution.
+- Extract a generic connector runtime or sidecar with adapter dispatch.
+- Add bootstrap commands, generated config, service setup, logs, reconnect policy, and token rotation.
+- Build a minimal MCP Gateway experiment for read-only room snapshots and structured finding submission.
+
 P1: Lighthouse control plane
 
 - Move Room state into Lighthouse backend.
@@ -95,5 +116,5 @@ P1: Lighthouse control plane
 P2: Agent protocol ecosystem
 
 - Add A2A adapter by mapping Room/Finding/Artifact to A2A Task/Message/Artifact.
-- Add MCP server tools such as `list_rooms`, `post_message`, `post_finding`, and `update_finding`.
+- Add MCP Gateway tools such as `get_snapshot`, `list_tasks`, `claim_task`, `start_run`, `post_message`, `create_finding`, `propose_handoff`, `complete_task`, and `request_owner_confirmation`.
 - Add IM and Git adapters for WeCom, Feishu, QQ, GitHub, GitLab, and Gongfeng MR comments.

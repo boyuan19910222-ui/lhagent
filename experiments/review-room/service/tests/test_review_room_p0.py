@@ -215,6 +215,62 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         await owner_ws.close()
         await guest_ws.close()
 
+    async def test_owner_can_disconnect_guest_and_connector(self):
+        _, room = await self.post_json("/api/rooms", {"title": "Room control"})
+        _, connector = await self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"role": "reviewer", "name": "Reviewer Agent"},
+            room["ownerToken"],
+        )
+        _, invite = await self.post_json(
+            "/api/rooms/{}/invites".format(room["id"]),
+            {"type": "guest"},
+            room["ownerToken"],
+        )
+        _, joined = await self.post_json(
+            "/api/rooms/{}/join".format(room["id"]),
+            {"inviteCode": invite["code"], "nickname": "Guest User"},
+        )
+
+        guest_ws = await self.client.ws_connect("/ws/rooms/{}?token={}".format(room["id"], joined["guestToken"]))
+        connector_ws = await self.client.ws_connect("/ws/rooms/{}?token={}".format(room["id"], connector["connectorToken"]))
+        await self._drain_initial_events(guest_ws, connector_ws)
+
+        guest_disconnect, guest_result = await self.post_json(
+            "/api/rooms/{}/disconnect".format(room["id"]),
+            {"targetType": "guest", "participantId": joined["identity"]["participantId"]},
+            room["ownerToken"],
+        )
+        guest_event = await self._read_event(guest_ws, "room.disconnected")
+        denied_guest_message, _ = await self.post_json(
+            "/api/rooms/{}/messages".format(room["id"]),
+            {"body": "still here"},
+            joined["guestToken"],
+        )
+
+        connector_disconnect, connector_result = await self.post_json(
+            "/api/rooms/{}/disconnect".format(room["id"]),
+            {"targetType": "connector", "connectorId": connector["id"]},
+            room["ownerToken"],
+        )
+        connector_event = await self._read_event(connector_ws, "room.disconnected")
+        denied_connector_snapshot = await self.client.get(
+            "/api/rooms/{}".format(room["id"]),
+            headers={"Authorization": "Bearer {}".format(connector["connectorToken"])},
+        )
+
+        self.assertEqual(guest_disconnect.status, 201)
+        self.assertEqual(guest_result["closedConnections"], 1)
+        self.assertEqual(guest_event["target"]["targetType"], "guest")
+        self.assertEqual(denied_guest_message.status, 403)
+        self.assertEqual(connector_disconnect.status, 201)
+        self.assertEqual(connector_result["closedConnections"], 1)
+        self.assertEqual(connector_event["target"]["targetType"], "connector")
+        self.assertEqual(denied_connector_snapshot.status, 403)
+
+        await guest_ws.close()
+        await connector_ws.close()
+
     async def test_rest_finding_mutations_require_matching_roles(self):
         _, room = await self.post_json("/api/rooms", {"title": "开放话题", "objective": "验证 REST 权限边界"})
         _, reviewer = await self.post_json(

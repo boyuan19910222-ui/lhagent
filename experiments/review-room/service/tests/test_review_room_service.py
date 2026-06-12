@@ -173,6 +173,26 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertEqual(loaded["participants"][-1]["name"], "外部用户")
         self.assertNotIn("token", loaded["participants"][-1])
 
+    def test_disconnect_guest_revokes_token_and_hides_participant(self):
+        room = self.store.create_room({"title": "topic"})
+        invite = self.store.create_invite(room["id"], {"type": "guest"}, "https://review.example.com")
+        joined = self.store.join_room(room["id"], {"inviteCode": invite["code"], "nickname": "Guest User"})
+        participant_id = joined["identity"]["participantId"]
+
+        result = self.store.disconnect_member(
+            room["id"],
+            {"targetType": "guest", "participantId": participant_id},
+        )
+        loaded = self.store.get_room(room["id"])
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["participant"]["status"], "removed")
+        self.assertEqual(len(loaded["participants"]), 1)
+        self.assertEqual(loaded["participants"][0]["role"], "owner")
+        self.assertEqual(loaded["messages"][-1]["kind"], "member_disconnected")
+        with self.assertRaises(PermissionError):
+            self.store.authenticate_room_token(room["id"], joined["guestToken"])
+
     def test_agent_invite_creates_invited_agent_member(self):
         room = self.store.create_room({"title": "开放话题"})
 
@@ -189,6 +209,39 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertEqual(loaded["status"], "waiting_for_agent")
         self.assertEqual(loaded["connectors"][0]["status"], "invited")
         self.assertEqual(loaded["connectors"][0]["name"], "Reviewer Agent")
+
+    def test_disconnect_connector_revokes_token(self):
+        room = self.store.create_room({"title": "topic"})
+        connector = self.store.register_connector(room["id"], {"name": "Reviewer Agent", "role": "reviewer"})
+
+        result = self.store.disconnect_member(
+            room["id"],
+            {"targetType": "connector", "connectorId": connector["id"]},
+        )
+        loaded = self.store.get_room(room["id"])
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(loaded["connectors"][0]["status"], "revoked")
+        self.assertEqual(loaded["connectors"][0]["connectorToken"], "")
+        self.assertEqual(loaded["messages"][-1]["kind"], "member_disconnected")
+        with self.assertRaises(PermissionError):
+            self.store.authenticate_room_token(room["id"], connector["connectorToken"])
+
+        owner_message = self.store.add_message(
+            room["id"],
+            {
+                "senderType": "human",
+                "senderName": "review room owner",
+                "kind": "owner_topic",
+                "body": "revoked connector should stay disconnected",
+            },
+        )
+        with patch.dict(os.environ, {"REVIEW_ROOM_ENABLE_HOSTED_AGENT": "true"}):
+            reply = self.store.create_hosted_agent_reply(room["id"], owner_message)
+        reloaded = self.store.get_room(room["id"])
+
+        self.assertIsNone(reply)
+        self.assertEqual(reloaded["connectors"][0]["status"], "revoked")
 
     def test_hosted_agent_does_not_reply_without_explicit_experience_mode(self):
         room = self.store.create_room({"title": "开放话题"})

@@ -397,6 +397,11 @@ WantedBy=default.target
 - 把当前 SQLite 后端迁移为 Lighthouse 托管后端。
 - 把当前内置 HTML 页面迁移为 Lighthouse Console Review Room 正式页面。
 - 增加更严格鉴权：房间 token、Webhook secret、Agent 身份签名、Connector token rotation。
+- 增加 `agent_runs`：记录每次 Agent 执行的状态、workspace、sandbox、日志或 transcript，避免后台工作不可见。
+- 增加结构化任务路由：用 `task.create` / `task.assigned` 驱动 Agent 执行，普通聊天消息默认不触发执行。
+- 抽象通用 Connector Runtime：把当前 `codex_connector.py` 保留为 Codex adapter 样例，后续支持 CLI、HTTP、A2A、MCP、vendor API 等 adapter。
 - 增加托管控制面同步：把本实例 Connector 中的事件转发到 Lighthouse 平台 Room。
 - 增加 A2A Adapter：把 `message`、`finding`、`artifact` 映射到 A2A Task/Message/Artifact。
-- 增加 MCP Server：给本地 Codex/CodeBuddy 暴露 `list_rooms`、`post_message`、`post_finding`、`update_finding` 工具。
+- 增加 MCP Gateway 实验：暴露 `get_snapshot`、`list_tasks`、`claim_task`、`start_run`、`create_finding`、`complete_task` 等工具，并验证远程 MCP、stdio MCP 和无 MCP Agent 的接入差异。
+
+更完整的架构说明见 `docs/concepts/review-room-connector-architecture.md`、`docs/concepts/review-room-protocol.md`、`docs/concepts/review-room-security.md` 和 `docs/concepts/review-room-agent-collaboration.md`。
