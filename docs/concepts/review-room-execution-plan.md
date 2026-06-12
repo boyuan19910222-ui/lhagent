@@ -98,10 +98,30 @@ Verification:
 - Smoke test response includes one task and one completed agent run.
 - The deployed systemd service is active.
 
+### Slice 5: Visible simple onboarding path
+
+User-visible result:
+
+- Owner can create a room, invite an Agent, and see the connector bootstrap path from the same page.
+- Owner can open the right-side `任务与运行` panel, choose a connector, and assign a structured task without calling curl manually.
+- The page shows current tasks and `agentRuns`, making Agent background work visible during the review.
+
+Implementation:
+
+- Add a right-side work panel to the built-in Review Room HTML.
+- Reuse `POST /api/rooms/{room_id}/tasks` for task assignment from the page.
+- Render task and run snapshots from `tasks` and `agentRuns`.
+
+Verification:
+
+- Home page tests prove the task/run controls and API wiring are present.
+- End-to-end API smoke still proves the same task/run loop on the deployed service.
+
 ## Current acceptance checklist
 
 - [ ] Local task/run tests pass.
 - [ ] Local connector task-assignment tests pass.
+- [ ] Home page exposes visible task/run controls.
 - [ ] Full `npm test` passes.
 - [ ] Remote service updated.
 - [ ] Remote smoke test proves task/run loop.

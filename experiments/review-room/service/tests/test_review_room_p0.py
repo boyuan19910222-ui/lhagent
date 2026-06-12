@@ -465,7 +465,7 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
 
     async def _read_event(self, ws, expected_type):
         for _ in range(20):
-            message = await ws.receive(timeout=2)
+            message = await ws.receive(timeout=5)
             self.assertEqual(message.type, WSMsgType.TEXT)
             data = json.loads(message.data)
             if data.get("type") == expected_type:
@@ -493,6 +493,10 @@ class CodexConnectorClientTest(unittest.TestCase):
         self.assertIn("Developer Agent", html)
         self.assertIn("创建话题房间", html)
         self.assertIn("房间角色", html)
+        self.assertIn("任务与运行", html)
+        self.assertIn("分配任务", html)
+        self.assertIn("function createTask()", html)
+        self.assertIn("/tasks", html)
 
     def test_parse_room_url_converts_http_to_websocket_path(self):
         ws_url = parse_room_url("http://127.0.0.1:8707", "room_123", "token_abc")

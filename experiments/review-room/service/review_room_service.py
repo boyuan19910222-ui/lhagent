@@ -2528,7 +2528,7 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
     .message{max-width:78%;border:1px solid var(--line);border-radius:8px;background:#fff;padding:10px 12px;box-shadow:0 1px 2px rgba(23,32,51,.04)}.message.owner{justify-self:end;background:#eef4ff;border-color:#c8d8ff}.message.agent{border-color:#dfe2ea}.message.system{justify-self:center;max-width:92%;background:#f0f2f5;color:#485266}.message.guest{background:#fff}.message-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:5px}.message-name{font-weight:700;font-size:13px}.message-body{white-space:pre-wrap;line-height:1.55}
     .finding-card{display:grid;gap:8px;border:1px solid #ecc77e;background:#fffaf0;border-radius:7px;padding:10px;margin-top:6px}.finding-card strong{font-size:13px}.finding-actions{display:flex;gap:8px;flex-wrap:wrap}
     .tag{display:inline-flex;align-items:center;min-height:22px;border:1px solid var(--line);border-radius:999px;background:#f7f8fb;padding:0 8px;color:var(--muted);font-size:12px;white-space:nowrap}.tag.open{border-color:#b8c7f5;background:#f4f7ff;color:var(--blue)}.tag.online{border-color:#99d8ca;background:#effaf7;color:var(--green)}.tag.waiting{border-color:#ecc77e;background:#fff8e8;color:var(--amber)}.tag.done{border-color:#a8d8c9;background:#effaf7;color:var(--green)}.tag.error{border-color:#edaaa8;background:#fff1f0;color:var(--red)}
-    .stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.stat{border:1px solid var(--line);border-radius:7px;background:var(--panel-soft);padding:10px}.stat strong{display:block;font-size:18px}.member-list{display:grid;gap:8px}.member{display:grid;grid-template-columns:32px minmax(0,1fr) auto auto;gap:9px;align-items:center;border:1px solid var(--line);border-radius:7px;background:#fff;padding:8px}.member button{min-height:28px;padding:0 8px}.avatar{width:32px;height:32px;border-radius:50%;background:#edf1f7;display:grid;place-items:center;font-weight:750;color:#3d4658}.invite-box{border:1px solid var(--line);border-radius:7px;background:var(--panel-soft);padding:10px;display:grid;gap:8px}.invite-link{word-break:break-all;border:1px dashed #bac2d0;border-radius:6px;background:#fff;padding:8px;color:#33405a}.empty{border:1px dashed var(--line);border-radius:8px;padding:18px;text-align:center;color:var(--muted);background:#fff}.hidden{display:none!important}details{border:1px solid var(--line);border-radius:7px;background:#fff;padding:8px}summary{cursor:pointer;font-weight:700}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;white-space:pre-wrap;word-break:break-all;color:#2a3447}
+    .stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.stat{border:1px solid var(--line);border-radius:7px;background:var(--panel-soft);padding:10px}.stat strong{display:block;font-size:18px}.member-list,.work-list{display:grid;gap:8px}.member{display:grid;grid-template-columns:32px minmax(0,1fr) auto auto;gap:9px;align-items:center;border:1px solid var(--line);border-radius:7px;background:#fff;padding:8px}.member button{min-height:28px;padding:0 8px}.work-item{border:1px solid var(--line);border-radius:7px;background:#fff;padding:9px;display:grid;gap:6px}.work-item strong{font-size:13px}.avatar{width:32px;height:32px;border-radius:50%;background:#edf1f7;display:grid;place-items:center;font-weight:750;color:#3d4658}.invite-box{border:1px solid var(--line);border-radius:7px;background:var(--panel-soft);padding:10px;display:grid;gap:8px}.invite-link{word-break:break-all;border:1px dashed #bac2d0;border-radius:6px;background:#fff;padding:8px;color:#33405a}.empty{border:1px dashed var(--line);border-radius:8px;padding:18px;text-align:center;color:var(--muted);background:#fff}.hidden{display:none!important}details{border:1px solid var(--line);border-radius:7px;background:#fff;padding:8px}summary{cursor:pointer;font-weight:700}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;white-space:pre-wrap;word-break:break-all;color:#2a3447}
     @media(max-width:1040px){.app{height:auto;min-height:100vh}.layout{grid-template-columns:1fr}.sidebar,.inspector{border-right:0;border-left:0;border-bottom:1px solid var(--line)}.message{max-width:96%}}
   </style>
 </head>
@@ -2565,7 +2565,10 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
       </section>
       <aside class="inspector">
         <div class="section" id="statusPanel"></div>
-        <div class="section" style="overflow:auto" id="membersPanel"></div>
+        <div style="overflow:auto">
+          <div class="section" id="membersPanel"></div>
+          <div class="section" id="workPanel"></div>
+        </div>
       </aside>
     </main>
   </div>
@@ -2764,6 +2767,7 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
       if(!state.room){
         document.getElementById('statusPanel').innerHTML = '<div class="empty">房间状态会显示在这里。</div>';
         document.getElementById('membersPanel').innerHTML = '<div class="empty">成员列表会显示在这里。</div>';
+        document.getElementById('workPanel').innerHTML = '<div class="empty">任务和运行记录会显示在这里。</div>';
         return;
       }
       const summary = state.room.statusSummary || {};
@@ -2777,7 +2781,9 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
         </div>
         <div class="stack" style="margin-top:12px">${renderInviteControls()}</div>`;
       document.getElementById('membersPanel').innerHTML = `<div class="section-title"><h2>房间角色</h2><span class="tag">${presence.length || 0} 在线</span></div><div class="member-list">${renderMembers(presence)}</div>`;
+      document.getElementById('workPanel').innerHTML = renderWorkPanel();
       bindInviteControls();
+      bindWorkControls();
       document.querySelectorAll('[data-confirm]').forEach(button => button.addEventListener('click', () => sendSocket({type:'finding.confirm', findingId:button.dataset.confirm, decision:'accepted', body:'确认采纳这个结论。'})));
       document.querySelectorAll('[data-reject]').forEach(button => button.addEventListener('click', () => sendSocket({type:'finding.reject', findingId:button.dataset.reject, decision:'rejected', body:'暂不采纳，继续讨论。'})));
       document.querySelectorAll('[data-disconnect-type]').forEach(button => button.addEventListener('click', () => disconnectMember(button).catch(alert)));
@@ -2801,6 +2807,49 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
       const cls = status === 'online' || status === 'connected' ? 'online' : status === 'error' ? 'error' : 'waiting';
       const action = target ? `<button class="danger" data-disconnect-type="${esc(target.type)}" data-connector-id="${esc(target.connectorId || '')}" data-participant-id="${esc(target.participantId || '')}">断开</button>` : '';
       return `<div class="member"><div class="avatar">${esc(String(name || '?').slice(0,1).toUpperCase())}</div><div><strong>${esc(name)}</strong><p class="muted">${esc(role)}</p></div><span class="tag ${cls}">${esc(label)}</span>${action}</div>`;
+    }
+    function renderWorkPanel(){
+      const connectors = (state.room.connectors || []).filter(item => item.status !== 'revoked');
+      const connectorOptions = connectors.map(item => `<option value="${esc(item.id)}">${esc(item.name)} · ${esc(item.agentRole)}</option>`).join('');
+      const taskForm = isOwner() ? `<div class="invite-box">
+        <strong>分配结构化任务</strong>
+        <div class="field"><label>目标 Agent</label><select id="taskConnector">${connectorOptions || '<option value="">暂无 Agent</option>'}</select></div>
+        <div class="field"><label>任务内容</label><textarea id="taskInstruction">评审当前上下文，输出一个结构化 finding。</textarea></div>
+        <button class="primary" id="createTask" ${connectorOptions ? '' : 'disabled'}>分配任务</button>
+      </div>` : '';
+      return `<div class="section-title"><h2>任务与运行</h2><span class="tag">${(state.room.tasks || []).length} tasks</span></div>
+        <div class="stack">
+          ${taskForm}
+          <div class="work-list">${renderTasks()}${renderAgentRuns()}</div>
+        </div>`;
+    }
+    function renderTasks(){
+      const tasks = state.room.tasks || [];
+      if(!tasks.length) return '<div class="empty">还没有结构化任务。普通聊天不会自动触发 Agent。</div>';
+      return tasks.slice().reverse().map(task => {
+        const connector = (state.room.connectors || []).find(item => item.id === task.assignedConnectorId);
+        return `<div class="work-item">
+          <div class="row between"><strong>${esc(task.kind)}</strong><span class="tag waiting">${esc(task.status)}</span></div>
+          <div>${esc(task.instruction)}</div>
+          <div class="muted">目标：${esc(connector ? connector.name : task.target && (task.target.role || task.target.mode) || '未分配')}</div>
+        </div>`;
+      }).join('');
+    }
+    function renderAgentRuns(){
+      const runs = state.room.agentRuns || [];
+      if(!runs.length) return '';
+      return `<div class="section-title" style="margin-top:4px"><h3>Agent Runs</h3><span class="tag">${runs.length}</span></div>` + runs.slice().reverse().map(run => {
+        const connector = (state.room.connectors || []).find(item => item.id === run.connectorId);
+        return `<div class="work-item">
+          <div class="row between"><strong>${esc(connector ? connector.name : run.connectorId)}</strong><span class="tag ${run.status === 'completed' ? 'done' : 'waiting'}">${esc(run.status)}</span></div>
+          <div class="muted">${esc(run.adapterType)} · ${esc(run.sandbox || 'sandbox')}</div>
+          ${run.finalMessage ? `<div>${esc(run.finalMessage)}</div>` : `<div>${esc(run.promptSummary || '')}</div>`}
+        </div>`;
+      }).join('');
+    }
+    function bindWorkControls(){
+      const create = document.getElementById('createTask');
+      if(create) create.addEventListener('click', () => createTask().catch(alert));
     }
     function renderInviteControls(){
       if(!isOwner()) return '<div class="empty">你可以阅读和发言，邀请和确认操作由 owner 完成。</div>';
@@ -2844,6 +2893,14 @@ realtime: ${esc(roomUrl)}</div></details>`;
       if(button.dataset.connectorId) payload.connectorId = button.dataset.connectorId;
       if(button.dataset.participantId) payload.participantId = button.dataset.participantId;
       await api(`/api/rooms/${encodeURIComponent(state.room.id)}/disconnect`, {method:'POST', headers:authHeaders(), body:JSON.stringify(payload)});
+      await selectRoom(state.room.id);
+    }
+    async function createTask(){
+      if(!state.room || !isOwner()) return;
+      const connectorId = document.getElementById('taskConnector').value;
+      const instruction = document.getElementById('taskInstruction').value.trim();
+      if(!connectorId || !instruction) return;
+      await api(`/api/rooms/${encodeURIComponent(state.room.id)}/tasks`, {method:'POST', headers:authHeaders(), body:JSON.stringify({kind:'review', instruction, target:{mode:'connector', connectorId}})});
       await selectRoom(state.room.id);
     }
     document.getElementById('createRoom').addEventListener('click', () => createRoom().catch(alert));

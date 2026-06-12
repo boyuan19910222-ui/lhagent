@@ -42,11 +42,11 @@ http://127.0.0.1:8707
 
 真实路径：
 
-1. 点击“创建真实 Room”，填写或使用默认 MR 标题、仓库和 MR 地址；服务返回 `ownerToken`，页面保存在本机 localStorage。
-2. 在 Room 里注册 `Reviewer Agent` 和 `Developer Agent` connector，分别生成 `connectorToken`。
-3. owner 页面通过 `GET /ws/rooms/{roomId}?token=<ownerToken>` 进入实时聊天室。
-4. 两个 Agent 在各自环境运行 `codex_connector.py`，用 connector token 进入同一个 WebSocket 房间。
-5. owner 发起代码评审话题，Reviewer Agent 产出 Finding，Developer Agent 回复修复计划，owner 对 Finding / Decision 确认或驳回。
+1. 点击“创建话题房间”，服务返回 `ownerToken`，页面保存在本机 localStorage。
+2. 在右侧“邀请 Agent”里生成 Reviewer 或 Developer connector，并读取返回的 `bootstrap.command`。
+3. Agent 在自己的工作区运行 `codex_connector.py`，用 connector token 进入同一个 WebSocket 房间。
+4. owner 在右侧“任务与运行”里选择目标 Agent，填写任务内容，然后点击“分配任务”。
+5. 页面会展示 `tasks` 和 `agentRuns`；Agent 完成后，Finding、回复和人工确认仍在同一条 Room 时间线里处理。
 
 页面也保留一个“创建体验房间”按钮，用于快速注入样例数据：
 
@@ -189,7 +189,7 @@ curl -X POST http://127.0.0.1:8707/api/rooms/<room_id>/tasks \
   }'
 ```
 
-已连接的 connector 收到 `task.assigned` 后会先发送 `agent_run.start`，完成后发送 finding/message/response 和 `task.complete`。Room 快照里的 `tasks` 和 `agentRuns` 会展示当前任务和后台执行状态。
+已连接的 connector 收到 `task.assigned` 后会先发送 `agent_run.start`，完成后发送 finding/message/response 和 `task.complete`。Room 快照里的 `tasks` 和 `agentRuns` 会展示当前任务和后台执行状态。内置 Web 页面右侧的“任务与运行”面板调用同一个接口，可作为最简接入路径，不必先手写 curl。
 
 ### 真实 Agent 接入测试
 
@@ -231,6 +231,8 @@ DEVELOPER_JSON=$(curl -sS -X POST "$BASE/api/rooms/$ROOM_ID/connectors" \
 
 REVIEWER_TOKEN=$(jq -r '.connectorToken' <<< "$REVIEWER_JSON")
 DEVELOPER_TOKEN=$(jq -r '.connectorToken' <<< "$DEVELOPER_JSON")
+REVIEWER_ID=$(jq -r '.id' <<< "$REVIEWER_JSON")
+DEVELOPER_ID=$(jq -r '.id' <<< "$DEVELOPER_JSON")
 ```
 
 启动真实 Reviewer Agent：
@@ -276,14 +278,13 @@ cd "$DEV_REPO"
 owner 触发真实评审：
 
 ```bash
-curl -sS -X POST "$BASE/api/rooms/$ROOM_ID/messages" \
+curl -sS -X POST "$BASE/api/rooms/$ROOM_ID/tasks" \
   -H "Authorization: Bearer $OWNER_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
-    "senderType":"human",
-    "senderName":"review room owner",
-    "kind":"owner_topic",
-    "body":"请基于当前工作区，对比 MR 分支与主干，评审鉴权、权限边界、数据一致性和可执行修复建议。"
+    "kind":"review",
+    "instruction":"请基于当前工作区，对比 MR 分支与主干，评审鉴权、权限边界、数据一致性和可执行修复建议。",
+    "target":{"mode":"connector","connectorId":"'"$REVIEWER_ID"'"}
   }'
 ```
 
@@ -457,8 +458,8 @@ WantedBy=default.target
 - 把当前 SQLite 后端迁移为 Lighthouse 托管后端。
 - 把当前内置 HTML 页面迁移为 Lighthouse Console Review Room 正式页面。
 - 增加更严格鉴权：房间 token、Webhook secret、Agent 身份签名、Connector token rotation。
-- 增加 `agent_runs`：记录每次 Agent 执行的状态、workspace、sandbox、日志或 transcript，避免后台工作不可见。
-- 增加结构化任务路由：用 `task.create` / `task.assigned` 驱动 Agent 执行，普通聊天消息默认不触发执行。
+- 把当前 `tasks` / `agent_runs` 正式迁移到 Lighthouse 托管控制面，继续记录 workspace、sandbox、日志或 transcript，避免后台工作不可见。
+- 把结构化任务路由沉淀为正式执行模型：用 `task.create` / `task.assigned` 驱动 Agent 执行，普通聊天消息默认不触发执行。
 - 抽象通用 Connector Runtime：把当前 `codex_connector.py` 保留为 Codex adapter 样例，后续支持 CLI、HTTP、A2A、MCP、vendor API 等 adapter。
 - 增加托管控制面同步：把本实例 Connector 中的事件转发到 Lighthouse 平台 Room。
 - 增加 A2A Adapter：把 `message`、`finding`、`artifact` 映射到 A2A Task/Message/Artifact。
