@@ -6,6 +6,7 @@ Review Room should be a Lighthouse-hosted Agent collaboration control plane, not
 
 Related productization notes:
 
+- [Review Room Execution Plan](./review-room-execution-plan.md)
 - [Review Room Connector Architecture](./review-room-connector-architecture.md)
 - [Review Room Protocol](./review-room-protocol.md)
 - [Review Room Security](./review-room-security.md)
@@ -78,14 +79,20 @@ It is intentionally small enough to run on a Lighthouse instance after installin
 - `POST /api/rooms/{id}/invites`
 - `POST /api/rooms/{id}/join`
 - `POST /api/rooms/{id}/connectors`
+- `POST /api/rooms/{id}/tasks`
 - `POST /api/rooms/{id}/disconnect`
 - `POST /api/connectors/{id}/events`
+- `POST /api/tasks/{id}/runs`
+- `POST /api/tasks/{id}/complete`
 - `POST /api/rooms/{id}/messages`
 - `POST /api/rooms/{id}/findings`
 - `PATCH /api/findings/{id}`
 - `POST /api/findings/{id}/developer-response`
 - `POST /api/findings/{id}/confirm`
 - `POST /api/webhooks/merge-request`
+- `GET /api/mcp/tools`
+- `POST /api/mcp/tools/get_snapshot`
+- `POST /api/mcp/tools/create_finding`
 - `GET /ws/rooms/{id}?token=...`
 
 ## Productization path

@@ -307,6 +307,29 @@ async def run_connector_once(args: argparse.Namespace) -> None:
                     continue
                 event = json.loads(message.data)
                 remember_room_event(args, event)
+                if is_assigned_task_event(args, event):
+                    task = event.get("task") or {}
+                    await ws.send_json(
+                        {
+                            "type": "agent_run.start",
+                            "taskId": task.get("id"),
+                            "workspace": args.workspace,
+                            "model": args.model,
+                            "sandbox": args.sandbox or default_sandbox_for_role(args.role),
+                            "promptSummary": task.get("instruction", "")[:500],
+                        }
+                    )
+                    response = await await_response_with_keepalive(build_task_response(args, event), ws)
+                    if response:
+                        await ws.send_json(response)
+                    await ws.send_json(
+                        {
+                            "type": "task.complete",
+                            "taskId": task.get("id"),
+                            "finalMessage": summarize_connector_response(response),
+                        }
+                    )
+                    continue
                 if should_send_working_notice(args, event):
                     await ws.send_json(
                         {
@@ -338,6 +361,9 @@ async def load_room_history(session: Any, args: argparse.Namespace) -> list[Dict
 
 
 def remember_room_event(args: argparse.Namespace, event: Dict[str, Any]) -> None:
+    if event.get("type") == "room.snapshot":
+        args.identity = event.get("identity") or {}
+        return
     if not getattr(args, "room_history_enabled", True):
         return
     if event.get("type") != "message.created":
@@ -442,6 +468,65 @@ async def maybe_build_response(args: argparse.Namespace, event: Dict[str, Any]) 
     return None
 
 
+def is_assigned_task_event(args: argparse.Namespace, event: Dict[str, Any]) -> bool:
+    if event.get("type") != "task.assigned":
+        return False
+    task = event.get("task") or {}
+    identity = getattr(args, "identity", {}) or {}
+    assigned_connector_id = task.get("assignedConnectorId") or ""
+    if assigned_connector_id:
+        return identity.get("connectorId") == assigned_connector_id
+    target = task.get("target") or {}
+    if target.get("role") and target.get("role") != args.role:
+        return False
+    capability = target.get("capability") or ""
+    capabilities = identity.get("capabilities") or []
+    return not capability or capability in capabilities
+
+
+async def build_task_response(args: argparse.Namespace, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    task = event.get("task") or {}
+    instruction = task.get("instruction") or ""
+    source = task.get("source") or {}
+    if args.mock:
+        if args.role == "reviewer":
+            return build_agent_response("reviewer", instruction, mock=True)
+        if args.role == "developer" and source.get("findingId"):
+            return build_agent_response("developer", instruction, mock=True, finding_id=source.get("findingId"))
+        return build_chat_event("我已完成任务：{}。".format(instruction))
+    prompt = task_prompt(task, args)
+    codex_text = await asyncio.to_thread(
+        run_codex_command,
+        args.codex_command,
+        prompt,
+        args.timeout,
+        args.role,
+        args.workspace,
+        args.sandbox,
+        args.model,
+        getattr(args, "reasoning_effort", ""),
+        getattr(args, "ignore_user_config", False),
+        getattr(args, "ignore_rules", False),
+        getattr(args, "ephemeral", False),
+        getattr(args, "skip_git_repo_check", False),
+    )
+    if args.role == "reviewer":
+        return build_reviewer_finding_event(codex_text)
+    if args.role == "developer" and source.get("findingId"):
+        return {"type": "finding.respond", "findingId": source["findingId"], "body": codex_text}
+    return build_chat_event(codex_text)
+
+
+def summarize_connector_response(response: Optional[Dict[str, Any]]) -> str:
+    if not response:
+        return "Connector completed without output."
+    if response.get("type") == "finding.create":
+        return response.get("claim") or "Reviewer Agent created a finding."
+    if response.get("type") == "finding.respond":
+        return response.get("body") or "Developer Agent responded to finding."
+    return response.get("body") or response.get("type") or "Connector completed task."
+
+
 def should_send_working_notice(args: argparse.Namespace, event: Dict[str, Any]) -> bool:
     if getattr(args, "mock", False) or not getattr(args, "working_notice", True):
         return False
@@ -486,6 +571,24 @@ def developer_prompt(finding: Dict[str, Any], args: Optional[argparse.Namespace]
         "请在当前可写工作区针对下面 finding 进行真实修复；如无法安全修改，请说明阻塞原因。"
         "完成后输出修复摘要、验证命令和结果。\n"
         "{}".format(prompt_context(args), json.dumps(finding, ensure_ascii=False))
+    )
+
+
+def task_prompt(task: Dict[str, Any], args: Optional[argparse.Namespace] = None) -> str:
+    role = getattr(args, "role", "reviewer") if args else "reviewer"
+    if role == "reviewer":
+        return (
+            "你是 Lighthouse Review Room 的 Reviewer Agent。\n"
+            "{}\n"
+            "下面是 Review Room 分配给你的结构化任务。只读分析，不要修改文件。"
+            "请只输出一个 JSON object，字段包含 severity, filePath, line, claim, evidence, suggestedFix。\n"
+            "{}".format(prompt_context(args), json.dumps(task, ensure_ascii=False))
+        )
+    return (
+        "你是 Lighthouse Review Room 的 Developer Agent。\n"
+        "{}\n"
+        "下面是 Review Room 分配给你的结构化任务。按本地工作区权限执行，完成后输出简洁的修复摘要和验证结果。\n"
+        "{}".format(prompt_context(args), json.dumps(task, ensure_ascii=False))
     )
 
 

@@ -128,6 +128,12 @@ class ReviewRoomStore:
                   status TEXT NOT NULL,
                   event_count INTEGER NOT NULL,
                   last_seen_at INTEGER,
+                  adapter_type TEXT NOT NULL DEFAULT 'codex-sidecar',
+                  protocol_version TEXT NOT NULL DEFAULT 'review-room.v1',
+                  capabilities_json TEXT NOT NULL DEFAULT '[]',
+                  forbidden_json TEXT NOT NULL DEFAULT '[]',
+                  version TEXT NOT NULL DEFAULT '',
+                  heartbeat_at INTEGER,
                   created_at INTEGER NOT NULL,
                   updated_at INTEGER NOT NULL,
                   FOREIGN KEY(room_id) REFERENCES rooms(id)
@@ -149,6 +155,45 @@ class ReviewRoomStore:
                   updated_at INTEGER NOT NULL,
                   FOREIGN KEY(room_id) REFERENCES rooms(id)
                 );
+
+                CREATE TABLE IF NOT EXISTS tasks (
+                  id TEXT PRIMARY KEY,
+                  room_id TEXT NOT NULL,
+                  kind TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  instruction TEXT NOT NULL,
+                  target_json TEXT NOT NULL,
+                  source_json TEXT NOT NULL,
+                  created_by TEXT NOT NULL,
+                  assigned_connector_id TEXT NOT NULL,
+                  lease_expires_at INTEGER,
+                  created_at INTEGER NOT NULL,
+                  updated_at INTEGER NOT NULL,
+                  FOREIGN KEY(room_id) REFERENCES rooms(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS agent_runs (
+                  id TEXT PRIMARY KEY,
+                  room_id TEXT NOT NULL,
+                  task_id TEXT NOT NULL,
+                  connector_id TEXT NOT NULL,
+                  adapter_type TEXT NOT NULL,
+                  external_session_id TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  prompt_summary TEXT NOT NULL,
+                  workspace TEXT NOT NULL,
+                  model TEXT NOT NULL,
+                  sandbox TEXT NOT NULL,
+                  final_message TEXT NOT NULL,
+                  error TEXT NOT NULL,
+                  log_path TEXT NOT NULL,
+                  transcript_url TEXT NOT NULL,
+                  started_at INTEGER,
+                  finished_at INTEGER,
+                  created_at INTEGER NOT NULL,
+                  updated_at INTEGER NOT NULL,
+                  FOREIGN KEY(room_id) REFERENCES rooms(id)
+                );
                 """
             )
             room_columns = {
@@ -162,6 +207,21 @@ class ReviewRoomStore:
                         "UPDATE rooms SET owner_token = ? WHERE id = ?",
                         (make_id("rro"), row["id"]),
                     )
+            connector_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(connectors)").fetchall()
+            }
+            connector_migrations = {
+                "adapter_type": "ALTER TABLE connectors ADD COLUMN adapter_type TEXT NOT NULL DEFAULT 'codex-sidecar'",
+                "protocol_version": "ALTER TABLE connectors ADD COLUMN protocol_version TEXT NOT NULL DEFAULT 'review-room.v1'",
+                "capabilities_json": "ALTER TABLE connectors ADD COLUMN capabilities_json TEXT NOT NULL DEFAULT '[]'",
+                "forbidden_json": "ALTER TABLE connectors ADD COLUMN forbidden_json TEXT NOT NULL DEFAULT '[]'",
+                "version": "ALTER TABLE connectors ADD COLUMN version TEXT NOT NULL DEFAULT ''",
+                "heartbeat_at": "ALTER TABLE connectors ADD COLUMN heartbeat_at INTEGER",
+            }
+            for column, statement in connector_migrations.items():
+                if column not in connector_columns:
+                    conn.execute(statement)
 
     def create_room(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         timestamp = now_ms()
@@ -248,11 +308,21 @@ class ReviewRoomStore:
                 "SELECT * FROM invites WHERE room_id = ? ORDER BY created_at ASC",
                 (room_id,),
             ).fetchall()
+            task_rows = conn.execute(
+                "SELECT * FROM tasks WHERE room_id = ? ORDER BY created_at ASC",
+                (room_id,),
+            ).fetchall()
+            run_rows = conn.execute(
+                "SELECT * FROM agent_runs WHERE room_id = ? ORDER BY created_at ASC",
+                (room_id,),
+            ).fetchall()
         room = self._room_from_row(room_row)
         room["messages"] = [self._message_from_row(row) for row in message_rows]
         room["findings"] = [self._finding_from_row(row) for row in finding_rows]
         room["connectors"] = [self._connector_from_row(row) for row in connector_rows]
         room["invites"] = [self._invite_from_row(row) for row in invite_rows]
+        room["tasks"] = [self._task_from_row(row) for row in task_rows]
+        room["agentRuns"] = [self._agent_run_from_row(row) for row in run_rows]
         room["statusSummary"] = self.room_status_summary(room_id)
         return room
 
@@ -278,6 +348,7 @@ class ReviewRoomStore:
                     "connectorToken": token,
                     "status": "invited",
                 },
+                base_url,
             )
             connector_id = connector["id"]
             token = connector["token"]
@@ -677,12 +748,15 @@ class ReviewRoomStore:
         self.refresh_room_status(updated["roomId"])
         return self.get_finding(finding_id)
 
-    def register_connector(self, room_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def register_connector(self, room_id: str, payload: Dict[str, Any], base_url: str = "") -> Dict[str, Any]:
         self.require_room(room_id)
         timestamp = now_ms()
         role = payload.get("role") or payload.get("agentRole") or payload.get("agent_role")
         kind = payload.get("kind") or ("remote-agent" if role == "reviewer" else "local-agent")
         agent_role = role or self.default_agent_role(kind)
+        adapter_type = payload.get("adapterType") or payload.get("adapter_type") or ("codex-sidecar" if "agent" in kind else kind)
+        capabilities = payload.get("capabilities") or self.default_connector_capabilities(agent_role)
+        forbidden = payload.get("forbidden") or self.default_connector_forbidden(agent_role)
         connector = {
             "id": make_id("connector"),
             "roomId": room_id,
@@ -694,16 +768,25 @@ class ReviewRoomStore:
             "status": payload.get("status") or "invited",
             "eventCount": 0,
             "lastSeenAt": None,
+            "adapterType": adapter_type,
+            "protocolVersion": payload.get("protocolVersion") or payload.get("protocol_version") or "review-room.v1",
+            "capabilities": capabilities,
+            "forbidden": forbidden,
+            "version": payload.get("version") or "",
+            "heartbeatAt": None,
             "createdAt": timestamp,
             "updatedAt": timestamp,
         }
         connector["connectorToken"] = connector["token"]
+        connector["bootstrap"] = self.connector_bootstrap(connector, base_url)
         with self.connect() as conn:
             conn.execute(
                 """
                 INSERT INTO connectors
-                  (id, room_id, name, kind, agent_role, endpoint, token, status, event_count, last_seen_at, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  (id, room_id, name, kind, agent_role, endpoint, token, status, event_count, last_seen_at,
+                   adapter_type, protocol_version, capabilities_json, forbidden_json, version, heartbeat_at,
+                   created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     connector["id"],
@@ -716,6 +799,12 @@ class ReviewRoomStore:
                     connector["status"],
                     connector["eventCount"],
                     connector["lastSeenAt"],
+                    connector["adapterType"],
+                    connector["protocolVersion"],
+                    json_dumps(connector["capabilities"]),
+                    json_dumps(connector["forbidden"]),
+                    connector["version"],
+                    connector["heartbeatAt"],
                     connector["createdAt"],
                     connector["updatedAt"],
                 ),
@@ -728,10 +817,44 @@ class ReviewRoomStore:
                 "senderName": "Review Room",
                 "kind": "connector_registered",
                 "body": "{} 已加入 Agent 邀请列表。".format(connector["name"]),
-                "payload": {"connectorId": connector["id"], "kind": connector["kind"], "agentRole": connector["agentRole"]},
+                "payload": {
+                    "connectorId": connector["id"],
+                    "kind": connector["kind"],
+                    "agentRole": connector["agentRole"],
+                    "adapterType": connector["adapterType"],
+                    "capabilities": connector["capabilities"],
+                },
             },
         )
         return connector
+
+    @staticmethod
+    def connector_bootstrap(connector: Dict[str, Any], base_url: str = "") -> Dict[str, Any]:
+        room_url = base_url.rstrip("/") if base_url else "<review-room-base-url>"
+        service_dir = "<path-to-lhagent>/experiments/review-room/service"
+        command = (
+            "python {service}/codex_connector.py --role {role} --room-url {url} "
+            "--room-id {room_id} --token {token}"
+        ).format(
+            service=service_dir,
+            role=connector["agentRole"],
+            url=room_url,
+            room_id=connector["roomId"],
+            token=connector["token"],
+        )
+        return {
+            "adapterType": connector["adapterType"],
+            "protocolVersion": connector["protocolVersion"],
+            "roomUrl": room_url,
+            "roomId": connector["roomId"],
+            "connectorId": connector["id"],
+            "role": connector["agentRole"],
+            "command": command,
+            "env": {
+                "REVIEW_ROOM_URL": room_url,
+                "REVIEW_ROOM_WORKSPACE": "<path-to-target-checkout>",
+            },
+        }
 
     def ingest_connector_event(self, connector_id: str, token: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         connector = self.get_connector(connector_id)
@@ -768,6 +891,260 @@ class ReviewRoomStore:
                 },
             },
         )
+
+    def create_task(self, room_id: str, payload: Dict[str, Any], created_by: str = "review room owner") -> Dict[str, Any]:
+        self.require_room(room_id)
+        timestamp = now_ms()
+        target = dict(payload.get("target") or {})
+        connector_id = payload.get("connectorId") or payload.get("connector_id") or target.get("connectorId") or target.get("connector_id")
+        role = payload.get("role") or target.get("role")
+        if connector_id:
+            target["mode"] = "connector"
+            target["connectorId"] = connector_id
+        elif role:
+            target["mode"] = target.get("mode") or "role"
+            target["role"] = role
+        else:
+            target["mode"] = target.get("mode") or "claim"
+
+        assigned_connector_id = ""
+        if target.get("mode") == "connector":
+            connector = self.get_connector(target["connectorId"])
+            if connector["roomId"] != room_id:
+                raise PermissionError("connector does not belong to this room")
+            if connector["status"] == "revoked":
+                raise PermissionError("connector is revoked")
+            assigned_connector_id = connector["id"]
+        elif target.get("mode") == "role":
+            assigned_connector_id = self.find_assignable_connector(room_id, target.get("role") or "", target.get("capability") or "")
+
+        status = "assigned" if assigned_connector_id else "open"
+        task = {
+            "id": make_id("task"),
+            "roomId": room_id,
+            "kind": payload.get("kind") or "review",
+            "status": status,
+            "instruction": payload.get("instruction") or payload.get("body") or "",
+            "target": target,
+            "source": payload.get("source") or {},
+            "createdBy": created_by,
+            "assignedConnectorId": assigned_connector_id,
+            "leaseExpiresAt": payload.get("leaseExpiresAt") or payload.get("lease_expires_at") or (timestamp + 30 * 60 * 1000 if assigned_connector_id else None),
+            "createdAt": timestamp,
+            "updatedAt": timestamp,
+        }
+        if not task["instruction"].strip():
+            raise ValueError("instruction required")
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO tasks
+                  (id, room_id, kind, status, instruction, target_json, source_json, created_by,
+                   assigned_connector_id, lease_expires_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    task["id"],
+                    task["roomId"],
+                    task["kind"],
+                    task["status"],
+                    task["instruction"],
+                    json_dumps(task["target"]),
+                    json_dumps(task["source"]),
+                    task["createdBy"],
+                    task["assignedConnectorId"],
+                    task["leaseExpiresAt"],
+                    task["createdAt"],
+                    task["updatedAt"],
+                ),
+            )
+            conn.execute("UPDATE rooms SET status = ?, updated_at = ? WHERE id = ?", ("task_assigned" if assigned_connector_id else "task_open", timestamp, room_id))
+        self.add_message(
+            room_id,
+            {
+                "senderType": "system",
+                "senderName": "Review Room",
+                "kind": "task_assigned" if assigned_connector_id else "task_created",
+                "body": task["instruction"],
+                "payload": {
+                    "taskId": task["id"],
+                    "kind": task["kind"],
+                    "status": task["status"],
+                    "target": task["target"],
+                    "assignedConnectorId": assigned_connector_id,
+                },
+            },
+        )
+        return task
+
+    def find_assignable_connector(self, room_id: str, role: str, capability: str = "") -> str:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM connectors
+                WHERE room_id = ? AND status != 'revoked'
+                ORDER BY
+                  CASE status
+                    WHEN 'online' THEN 0
+                    WHEN 'connected' THEN 1
+                    WHEN 'working' THEN 2
+                    WHEN 'invited' THEN 3
+                    ELSE 4
+                  END,
+                  created_at ASC
+                """,
+                (room_id,),
+            ).fetchall()
+        for row in rows:
+            connector = self._connector_from_row(row)
+            if role and connector["agentRole"] != role:
+                continue
+            if capability and capability not in connector["capabilities"]:
+                continue
+            return connector["id"]
+        return ""
+
+    def get_task(self, task_id: str) -> Dict[str, Any]:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if not row:
+            raise KeyError("task not found")
+        return self._task_from_row(row)
+
+    def start_agent_run(self, task_id: str, connector_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        task = self.get_task(task_id)
+        connector = self.get_connector(connector_id)
+        if connector["roomId"] != task["roomId"]:
+            raise PermissionError("connector does not belong to task room")
+        if connector["status"] == "revoked":
+            raise PermissionError("connector is revoked")
+        if task["assignedConnectorId"] and task["assignedConnectorId"] != connector_id:
+            raise PermissionError("task is assigned to another connector")
+        timestamp = now_ms()
+        run = {
+            "id": make_id("run"),
+            "roomId": task["roomId"],
+            "taskId": task_id,
+            "connectorId": connector_id,
+            "adapterType": connector["adapterType"],
+            "externalSessionId": payload.get("externalSessionId") or payload.get("external_session_id") or "",
+            "status": payload.get("status") or "running",
+            "promptSummary": payload.get("promptSummary") or payload.get("prompt_summary") or task["instruction"][:500],
+            "workspace": payload.get("workspace") or "",
+            "model": payload.get("model") or "",
+            "sandbox": payload.get("sandbox") or "",
+            "finalMessage": "",
+            "error": "",
+            "logPath": payload.get("logPath") or payload.get("log_path") or "",
+            "transcriptUrl": payload.get("transcriptUrl") or payload.get("transcript_url") or "",
+            "startedAt": payload.get("startedAt") or payload.get("started_at") or timestamp,
+            "finishedAt": None,
+            "createdAt": timestamp,
+            "updatedAt": timestamp,
+        }
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO agent_runs
+                  (id, room_id, task_id, connector_id, adapter_type, external_session_id, status,
+                   prompt_summary, workspace, model, sandbox, final_message, error, log_path,
+                   transcript_url, started_at, finished_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run["id"],
+                    run["roomId"],
+                    run["taskId"],
+                    run["connectorId"],
+                    run["adapterType"],
+                    run["externalSessionId"],
+                    run["status"],
+                    run["promptSummary"],
+                    run["workspace"],
+                    run["model"],
+                    run["sandbox"],
+                    run["finalMessage"],
+                    run["error"],
+                    run["logPath"],
+                    run["transcriptUrl"],
+                    run["startedAt"],
+                    run["finishedAt"],
+                    run["createdAt"],
+                    run["updatedAt"],
+                ),
+            )
+            conn.execute(
+                "UPDATE tasks SET status = ?, assigned_connector_id = ?, updated_at = ? WHERE id = ?",
+                ("running", connector_id, timestamp, task_id),
+            )
+            conn.execute(
+                "UPDATE connectors SET status = ?, last_seen_at = ?, heartbeat_at = ?, updated_at = ? WHERE id = ?",
+                ("working", timestamp, timestamp, timestamp, connector_id),
+            )
+            conn.execute("UPDATE rooms SET status = ?, updated_at = ? WHERE id = ?", ("agent_working", timestamp, task["roomId"]))
+        self.add_message(
+            task["roomId"],
+            {
+                "senderType": "system",
+                "senderName": "Review Room",
+                "kind": "agent_run_started",
+                "body": "{} started {}".format(connector["name"], task["kind"]),
+                "payload": {"taskId": task_id, "runId": run["id"], "connectorId": connector_id},
+            },
+        )
+        return run
+
+    def complete_task(self, task_id: str, connector_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        task = self.get_task(task_id)
+        if task["assignedConnectorId"] and task["assignedConnectorId"] != connector_id:
+            raise PermissionError("task is assigned to another connector")
+        timestamp = now_ms()
+        status = payload.get("status") or ("failed" if payload.get("error") else "completed")
+        if status not in {"completed", "failed", "cancelled"}:
+            raise ValueError("task completion status must be completed, failed, or cancelled")
+        with self.connect() as conn:
+            run_row = conn.execute(
+                """
+                SELECT * FROM agent_runs
+                WHERE task_id = ? AND connector_id = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (task_id, connector_id),
+            ).fetchone()
+            if run_row:
+                conn.execute(
+                    """
+                    UPDATE agent_runs
+                    SET status = ?, final_message = ?, error = ?, finished_at = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        "failed" if status == "failed" else "completed",
+                        payload.get("finalMessage") or payload.get("final_message") or payload.get("body") or "",
+                        payload.get("error") or "",
+                        timestamp,
+                        timestamp,
+                        run_row["id"],
+                    ),
+                )
+            conn.execute("UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?", (status, timestamp, task_id))
+            conn.execute(
+                "UPDATE connectors SET status = ?, last_seen_at = ?, heartbeat_at = ?, updated_at = ? WHERE id = ?",
+                ("online" if status == "completed" else "needs_input", timestamp, timestamp, timestamp, connector_id),
+            )
+            conn.execute("UPDATE rooms SET status = ?, updated_at = ? WHERE id = ?", ("needs_owner_decision" if status == "completed" else "agent_working", timestamp, task["roomId"]))
+        self.add_message(
+            task["roomId"],
+            {
+                "senderType": "system",
+                "senderName": "Review Room",
+                "kind": "task_completed" if status == "completed" else "task_failed",
+                "body": payload.get("finalMessage") or payload.get("final_message") or payload.get("body") or status,
+                "payload": {"taskId": task_id, "connectorId": connector_id, "status": status},
+            },
+        )
+        return self.get_task(task_id)
 
     def ingest_merge_request_webhook(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         attrs = payload.get("object_attributes") or payload.get("pull_request") or {}
@@ -946,6 +1323,8 @@ class ReviewRoomStore:
                 "name": data["name"],
                 "role": data["agentRole"],
                 "kind": data["kind"],
+                "adapterType": data["adapterType"],
+                "capabilities": data["capabilities"],
                 "token": token,
             }
         raise PermissionError("invalid room token")
@@ -1018,11 +1397,15 @@ class ReviewRoomStore:
                 raise KeyError("room not found")
             connectors = conn.execute("SELECT status FROM connectors WHERE room_id = ?", (room_id,)).fetchall()
             findings = conn.execute("SELECT status FROM findings WHERE room_id = ?", (room_id,)).fetchall()
+            tasks = conn.execute("SELECT status FROM tasks WHERE room_id = ?", (room_id,)).fetchall()
+            runs = conn.execute("SELECT status FROM agent_runs WHERE room_id = ?", (room_id,)).fetchall()
             messages = conn.execute("SELECT COUNT(*) AS count FROM messages WHERE room_id = ?", (room_id,)).fetchone()
         participants = self.sanitize_participants(json_loads(room_row["participants_json"], []))
         online_agents = sum(1 for row in connectors if row["status"] in {"online", "working", "needs_input", "connected"})
         active_agents = sum(1 for row in connectors if row["status"] in {"online", "working", "needs_input", "connected", "invited", "joining"})
         pending_findings = sum(1 for row in findings if row["status"] not in {"accepted", "rejected"})
+        active_tasks = sum(1 for row in tasks if row["status"] in {"open", "assigned", "claimed", "running"})
+        running_agent_runs = sum(1 for row in runs if row["status"] in {"created", "running", "streaming"})
         return {
             "memberCount": len(participants) + len(connectors),
             "humanCount": len(participants),
@@ -1030,6 +1413,8 @@ class ReviewRoomStore:
             "activeAgentCount": active_agents,
             "onlineAgentCount": online_agents,
             "pendingFindingCount": pending_findings,
+            "activeTaskCount": active_tasks,
+            "runningAgentRunCount": running_agent_runs,
             "messageCount": messages["count"] if messages else 0,
             "lastActiveAt": room_row["updated_at"],
         }
@@ -1043,6 +1428,29 @@ class ReviewRoomStore:
         if role == "developer":
             return ["read", "message", "finding:respond"]
         return ["read", "message"]
+
+    @staticmethod
+    def default_connector_capabilities(role: str) -> List[str]:
+        common = ["room:read", "message:reply", "task:execute", "agent_run:create"]
+        if role == "reviewer":
+            return common + ["finding:create", "verify:run"]
+        if role == "developer":
+            return common + ["finding:respond", "repo:write"]
+        if role == "observer":
+            return ["room:read", "message:reply", "task:observe", "agent_run:create"]
+        if role == "sync":
+            return ["room:read", "external:sync"]
+        return common
+
+    @staticmethod
+    def default_connector_forbidden(role: str) -> List[str]:
+        if role == "reviewer":
+            return ["repo:write", "external:sync", "deploy:execute", "secret:read"]
+        if role == "developer":
+            return ["external:sync", "deploy:execute", "secret:read"]
+        if role == "sync":
+            return ["repo:write", "deploy:execute", "secret:read"]
+        return ["external:sync", "deploy:execute", "secret:read"]
 
     @staticmethod
     def with_invite_url(invite: Dict[str, Any], base_url: str = "") -> Dict[str, Any]:
@@ -1153,6 +1561,53 @@ class ReviewRoomStore:
             "status": row["status"],
             "eventCount": row["event_count"],
             "lastSeenAt": row["last_seen_at"],
+            "adapterType": row["adapter_type"],
+            "protocolVersion": row["protocol_version"],
+            "capabilities": json_loads(row["capabilities_json"], []),
+            "forbidden": json_loads(row["forbidden_json"], []),
+            "version": row["version"],
+            "heartbeatAt": row["heartbeat_at"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+
+    @staticmethod
+    def _task_from_row(row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "id": row["id"],
+            "roomId": row["room_id"],
+            "kind": row["kind"],
+            "status": row["status"],
+            "instruction": row["instruction"],
+            "target": json_loads(row["target_json"], {}),
+            "source": json_loads(row["source_json"], {}),
+            "createdBy": row["created_by"],
+            "assignedConnectorId": row["assigned_connector_id"],
+            "leaseExpiresAt": row["lease_expires_at"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+
+    @staticmethod
+    def _agent_run_from_row(row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "id": row["id"],
+            "roomId": row["room_id"],
+            "taskId": row["task_id"],
+            "connectorId": row["connector_id"],
+            "adapterType": row["adapter_type"],
+            "externalSessionId": row["external_session_id"],
+            "status": row["status"],
+            "promptSummary": row["prompt_summary"],
+            "workspace": row["workspace"],
+            "model": row["model"],
+            "sandbox": row["sandbox"],
+            "finalMessage": row["final_message"],
+            "error": row["error"],
+            "logPath": row["log_path"],
+            "transcriptUrl": row["transcript_url"],
+            "startedAt": row["started_at"],
+            "finishedAt": row["finished_at"],
             "createdAt": row["created_at"],
             "updatedAt": row["updated_at"],
         }
@@ -1265,7 +1720,7 @@ class ReviewRoomHandler(BaseHTTPRequestHandler):
             if match:
                 identity = self.store.authenticate_room_token(match.group(1), self.read_bearer_token(body))
                 require_owner_role(identity)
-                self.send_json(self.store.register_connector(match.group(1), body), HTTPStatus.CREATED)
+                self.send_json(self.store.register_connector(match.group(1), body, self.base_url()), HTTPStatus.CREATED)
                 return
             match = re.match(r"^/api/rooms/([^/]+)/disconnect$", parsed.path)
             if match:
@@ -1685,6 +2140,55 @@ async def handle_ws_event(
         await hub.broadcast(room_id, {"type": "finding.updated", "finding": finding})
         return
 
+    if event_type == "task.create":
+        if identity["type"] != "owner":
+            await websocket.send_json({"type": "error", "error": "owner token required"})
+            return
+        try:
+            task = store.create_task(room_id, payload, identity["name"])
+        except (KeyError, PermissionError, ValueError) as exc:
+            await websocket.send_json({"type": "error", "error": str(exc)})
+            return
+        await hub.broadcast(room_id, {"type": "task.created", "task": task})
+        if task.get("assignedConnectorId"):
+            await hub.broadcast(room_id, {"type": "task.assigned", "task": task})
+        await hub.broadcast_snapshot(room_id)
+        return
+
+    if event_type == "agent_run.start":
+        if identity["type"] != "connector":
+            await websocket.send_json({"type": "error", "error": "connector token required"})
+            return
+        task_id = payload.get("taskId") or payload.get("task_id")
+        if not task_id:
+            await websocket.send_json({"type": "error", "error": "taskId required"})
+            return
+        try:
+            run = store.start_agent_run(task_id, identity["connectorId"], payload)
+        except (KeyError, PermissionError, ValueError) as exc:
+            await websocket.send_json({"type": "error", "error": str(exc)})
+            return
+        await hub.broadcast(room_id, {"type": "agent_run.started", "agentRun": run})
+        await hub.broadcast_snapshot(room_id)
+        return
+
+    if event_type == "task.complete":
+        if identity["type"] != "connector":
+            await websocket.send_json({"type": "error", "error": "connector token required"})
+            return
+        task_id = payload.get("taskId") or payload.get("task_id")
+        if not task_id:
+            await websocket.send_json({"type": "error", "error": "taskId required"})
+            return
+        try:
+            task = store.complete_task(task_id, identity["connectorId"], payload)
+        except (KeyError, PermissionError, ValueError) as exc:
+            await websocket.send_json({"type": "error", "error": str(exc)})
+            return
+        await hub.broadcast(room_id, {"type": "task.completed", "task": task})
+        await hub.broadcast_snapshot(room_id)
+        return
+
     if event_type == "member.disconnect":
         if identity["type"] != "owner":
             await websocket.send_json({"type": "error", "error": "owner token required"})
@@ -1762,7 +2266,25 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
         room_id = request.match_info["room_id"]
         identity = require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
         ensure_owner(identity)
-        return json_response(app[STORE_KEY].register_connector(room_id, await request_json(request)), 201)
+        return json_response(app[STORE_KEY].register_connector(room_id, await request_json(request), base_url_from_aiohttp_request(request)), 201)
+
+    async def create_task(request: web.Request) -> web.Response:
+        room_id = request.match_info["room_id"]
+        identity = require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
+        ensure_owner(identity)
+        try:
+            task = app[STORE_KEY].create_task(room_id, await request_json(request), identity["name"])
+        except KeyError as exc:
+            raise web.HTTPNotFound(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        except PermissionError as exc:
+            raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        await app[HUB_KEY].broadcast(room_id, {"type": "task.created", "task": task})
+        if task.get("assignedConnectorId"):
+            await app[HUB_KEY].broadcast(room_id, {"type": "task.assigned", "task": task})
+        await app[HUB_KEY].broadcast_snapshot(room_id)
+        return json_response(task, 201)
 
     async def disconnect_member(request: web.Request) -> web.Response:
         room_id = request.match_info["room_id"]
@@ -1794,6 +2316,41 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
             raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
         await app[HUB_KEY].broadcast_snapshot(result["roomId"])
         return json_response(result, 201)
+
+    async def start_agent_run(request: web.Request) -> web.Response:
+        try:
+            task = app[STORE_KEY].get_task(request.match_info["task_id"])
+        except KeyError as exc:
+            raise web.HTTPNotFound(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        identity = require_identity(app[STORE_KEY], task["roomId"], bearer_token_from_request(request))
+        if identity["type"] != "connector":
+            raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": "connector token required"}), content_type="application/json")
+        try:
+            run = app[STORE_KEY].start_agent_run(task["id"], identity["connectorId"], await request_json(request))
+        except PermissionError as exc:
+            raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        await app[HUB_KEY].broadcast(task["roomId"], {"type": "agent_run.started", "agentRun": run})
+        await app[HUB_KEY].broadcast_snapshot(task["roomId"])
+        return json_response(run, 201)
+
+    async def complete_task(request: web.Request) -> web.Response:
+        try:
+            task = app[STORE_KEY].get_task(request.match_info["task_id"])
+        except KeyError as exc:
+            raise web.HTTPNotFound(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        identity = require_identity(app[STORE_KEY], task["roomId"], bearer_token_from_request(request))
+        if identity["type"] != "connector":
+            raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": "connector token required"}), content_type="application/json")
+        body = await request_json(request)
+        try:
+            completed = app[STORE_KEY].complete_task(task["id"], identity["connectorId"], body)
+        except PermissionError as exc:
+            raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        await app[HUB_KEY].broadcast(task["roomId"], {"type": "task.completed", "task": completed})
+        await app[HUB_KEY].broadcast_snapshot(task["roomId"])
+        return json_response(completed, 201)
 
     async def add_message(request: web.Request) -> web.Response:
         room_id = request.match_info["room_id"]
@@ -1843,6 +2400,59 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
     async def merge_request_webhook(request: web.Request) -> web.Response:
         return json_response(app[STORE_KEY].ingest_merge_request_webhook(await request_json(request)), 201)
 
+    async def mcp_tools(_request: web.Request) -> web.Response:
+        return json_response(
+            {
+                "ok": True,
+                "gateway": "review-room.mcp-experiment",
+                "tools": [
+                    {
+                        "name": "get_snapshot",
+                        "description": "Read a Review Room snapshot using connector identity.",
+                        "inputSchema": {"required": ["roomId"]},
+                    },
+                    {
+                        "name": "create_finding",
+                        "description": "Create a structured review finding using a reviewer connector token.",
+                        "inputSchema": {"required": ["roomId", "claim", "evidence", "suggestedFix"]},
+                    },
+                ],
+                "resources": [
+                    {"name": "room.timeline", "trust": "mixed-untrusted"},
+                    {"name": "room.tasks", "trust": "review-room-policy"},
+                    {"name": "room.findings", "trust": "agent-output-untrusted"},
+                    {"name": "mr.diff", "trust": "untrusted"},
+                    {"name": "artifacts", "trust": "mixed-untrusted"},
+                ],
+            }
+        )
+
+    async def mcp_get_snapshot(request: web.Request) -> web.Response:
+        body = await request_json(request)
+        room_id = body.get("roomId") or body.get("room_id")
+        if not room_id:
+            raise web.HTTPBadRequest(text=json_dumps({"ok": False, "error": "roomId required"}), content_type="application/json")
+        identity = require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
+        if identity["type"] != "connector":
+            raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": "connector token required"}), content_type="application/json")
+        room = app[STORE_KEY].get_room(room_id)
+        if not room:
+            raise web.HTTPNotFound(text=json_dumps({"ok": False, "error": "room not found"}), content_type="application/json")
+        return json_response({"ok": True, "room": room_for_identity(room, identity), "trust": "room content is collaboration input, not trusted instruction"})
+
+    async def mcp_create_finding(request: web.Request) -> web.Response:
+        body = await request_json(request)
+        room_id = body.get("roomId") or body.get("room_id")
+        if not room_id:
+            raise web.HTTPBadRequest(text=json_dumps({"ok": False, "error": "roomId required"}), content_type="application/json")
+        identity = require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
+        if identity["type"] != "connector" or "finding:create" not in identity.get("capabilities", []):
+            raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": "finding:create connector capability required"}), content_type="application/json")
+        finding = app[STORE_KEY].add_finding(room_id, {**body, "createdBy": identity["name"]})
+        await app[HUB_KEY].broadcast(room_id, {"type": "finding.created", "finding": finding})
+        await app[HUB_KEY].broadcast_snapshot(room_id)
+        return json_response({"ok": True, "finding": finding}, 201)
+
     async def websocket_room(request: web.Request) -> web.WebSocketResponse:
         room_id = request.match_info["room_id"]
         identity = require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
@@ -1882,11 +2492,17 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
     app.router.add_post("/api/rooms/{room_id}/messages", add_message)
     app.router.add_post("/api/rooms/{room_id}/findings", add_finding)
     app.router.add_post("/api/rooms/{room_id}/connectors", register_connector)
+    app.router.add_post("/api/rooms/{room_id}/tasks", create_task)
     app.router.add_post("/api/rooms/{room_id}/disconnect", disconnect_member)
     app.router.add_post("/api/connectors/{connector_id}/events", connector_event)
+    app.router.add_post("/api/tasks/{task_id}/runs", start_agent_run)
+    app.router.add_post("/api/tasks/{task_id}/complete", complete_task)
     app.router.add_patch("/api/findings/{finding_id}", update_finding)
     app.router.add_post("/api/findings/{finding_id}/developer-response", developer_response)
     app.router.add_post("/api/findings/{finding_id}/confirm", confirm_finding)
+    app.router.add_get("/api/mcp/tools", mcp_tools)
+    app.router.add_post("/api/mcp/tools/get_snapshot", mcp_get_snapshot)
+    app.router.add_post("/api/mcp/tools/create_finding", mcp_create_finding)
     app.router.add_get("/ws/rooms/{room_id}", websocket_room)
     return app
 

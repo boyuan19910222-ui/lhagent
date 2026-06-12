@@ -108,6 +108,8 @@ curl -X POST http://127.0.0.1:8707/api/rooms/<room_id>/connectors \
 
 返回值里会包含 `id`、`token` 和 `connectorToken`。Agent 侧 connector 用这个 token 进入 WebSocket。
 
+同时会返回 `adapterType`、`capabilities`、`forbidden` 和 `bootstrap.command`。最简接入方式是把 `bootstrap.command` 复制到有目标 checkout、Python 依赖和 Codex CLI 的机器上执行；真实工作仍发生在该 connector 机器，不发生在 Review Room 后端。
+
 ### 注册 Reviewer Agent Connector
 
 ```bash
@@ -134,6 +136,10 @@ GET /ws/rooms/<room_id>?token=<owner_or_connector_token>
 - `room.snapshot`：连接后服务下发完整 Room 快照。
 - `message.create`：owner 或 Agent 发消息。
 - `message.created`：服务广播已落库消息。
+- `task.create`：owner 创建结构化任务。
+- `task.created` / `task.assigned`：服务广播任务创建和分配结果。
+- `agent_run.start` / `agent_run.started`：connector 开始执行任务并生成运行记录。
+- `task.complete` / `task.completed`：connector 完成任务，服务更新任务和运行状态。
 - `finding.create`：Reviewer Agent 提交结构化 Finding。
 - `finding.created`：服务广播新 Finding。
 - `finding.respond` / `decision.propose`：Developer Agent 回复修复计划。
@@ -164,6 +170,26 @@ Developer Agent：
 ```
 
 本地无真实 Codex 时可加 `--mock`，先验证 WebSocket 协作闭环。
+
+### 用结构化任务触发 Agent
+
+普通消息默认只是聊天，不应该自动触发所有 Agent。owner 应该通过任务路由指定执行者：
+
+```bash
+curl -X POST http://127.0.0.1:8707/api/rooms/<room_id>/tasks \
+  -H 'Authorization: Bearer <owner_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "kind": "review",
+    "instruction": "评审当前 MR 的鉴权和权限边界。",
+    "target": {
+      "mode": "connector",
+      "connectorId": "<reviewer_connector_id>"
+    }
+  }'
+```
+
+已连接的 connector 收到 `task.assigned` 后会先发送 `agent_run.start`，完成后发送 finding/message/response 和 `task.complete`。Room 快照里的 `tasks` 和 `agentRuns` 会展示当前任务和后台执行状态。
 
 ### 真实 Agent 接入测试
 
@@ -279,6 +305,40 @@ curl -X POST http://127.0.0.1:8707/api/connectors/<connector_id>/events \
     "type": "message",
     "senderName": "Developer Agent",
     "body": "本地 Agent 已接入 Review Room，正在读取 MR 上下文。"
+  }'
+```
+
+### MCP Gateway 实验接口
+
+MCP Gateway 当前是实验性 HTTP 工具面，用来验证 `mcp-remote` adapter 路线。它复用 connector token，不给 owner/guest 伪装成 Agent 的权限。
+
+列出工具和带 trust label 的资源：
+
+```bash
+curl http://127.0.0.1:8707/api/mcp/tools
+```
+
+读取房间快照：
+
+```bash
+curl -X POST http://127.0.0.1:8707/api/mcp/tools/get_snapshot \
+  -H 'Authorization: Bearer <reviewer_connector_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"roomId":"<room_id>"}'
+```
+
+提交结构化 Finding：
+
+```bash
+curl -X POST http://127.0.0.1:8707/api/mcp/tools/create_finding \
+  -H 'Authorization: Bearer <reviewer_connector_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "roomId": "<room_id>",
+    "severity": "P1",
+    "claim": "MCP Gateway 发现权限边界风险",
+    "evidence": "该 finding 通过 connector token 和 finding:create capability 写入。",
+    "suggestedFix": "继续保持 connector-scoped capability checks。"
   }'
 ```
 

@@ -328,6 +328,47 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertTrue(local["token"].startswith("rrc_"))
         self.assertEqual(remote["agentRole"], "reviewer")
         self.assertEqual([item["name"] for item in loaded["connectors"]], ["本地 Codex", "远端 Reviewer Agent"])
+        self.assertEqual(remote["adapterType"], "codex-sidecar")
+        self.assertIn("finding:create", remote["capabilities"])
+        self.assertIn("repo:write", remote["forbidden"])
+        self.assertEqual(remote["bootstrap"]["adapterType"], "codex-sidecar")
+        self.assertIn("codex_connector.py", remote["bootstrap"]["command"])
+        self.assertIn(remote["connectorToken"], remote["bootstrap"]["command"])
+
+    def test_task_assignment_and_agent_run_are_visible_in_room_snapshot(self):
+        room = self.store.create_room({"title": "Task room"})
+        connector = self.store.register_connector(
+            room["id"],
+            {"name": "Reviewer Agent", "role": "reviewer", "adapterType": "codex-sidecar"},
+        )
+
+        task = self.store.create_task(
+            room["id"],
+            {
+                "kind": "review",
+                "instruction": "Review the permission boundary.",
+                "target": {"mode": "connector", "connectorId": connector["id"]},
+            },
+        )
+        run = self.store.start_agent_run(
+            task["id"],
+            connector["id"],
+            {"workspace": "G:/Codex/Lighthouse", "model": "gpt-test", "sandbox": "read-only"},
+        )
+        completed = self.store.complete_task(
+            task["id"],
+            connector["id"],
+            {"finalMessage": "Finding created."},
+        )
+        loaded = self.store.get_room(room["id"])
+
+        self.assertEqual(task["status"], "assigned")
+        self.assertEqual(run["status"], "running")
+        self.assertEqual(completed["status"], "completed")
+        self.assertEqual(loaded["tasks"][0]["id"], task["id"])
+        self.assertEqual(loaded["agentRuns"][0]["taskId"], task["id"])
+        self.assertEqual(loaded["agentRuns"][0]["status"], "completed")
+        self.assertEqual(loaded["statusSummary"]["activeTaskCount"], 0)
 
     def test_connector_event_writes_message_and_finding_to_room(self):
         room = self.store.create_room({"title": "MR"})

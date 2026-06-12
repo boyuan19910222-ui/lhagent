@@ -18,7 +18,7 @@ except ModuleNotFoundError:
 ROOT = os.path.dirname(os.path.dirname(__file__))
 sys.path.insert(0, ROOT)
 
-from codex_connector import build_agent_response, parse_room_url  # noqa: E402
+from codex_connector import build_agent_response, is_assigned_task_event, parse_room_url, summarize_connector_response  # noqa: E402
 from review_room_service import ReviewRoomStore, build_app  # noqa: E402
 
 
@@ -271,6 +271,98 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         await guest_ws.close()
         await connector_ws.close()
 
+    async def test_owner_task_assignment_tracks_agent_run_lifecycle(self):
+        _, room = await self.post_json("/api/rooms", {"title": "Task control"})
+        _, connector = await self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"role": "reviewer", "name": "Reviewer Agent"},
+            room["ownerToken"],
+        )
+
+        owner_ws = await self.client.ws_connect("/ws/rooms/{}?token={}".format(room["id"], room["ownerToken"]))
+        connector_ws = await self.client.ws_connect("/ws/rooms/{}?token={}".format(room["id"], connector["connectorToken"]))
+        await self._drain_initial_events(owner_ws, connector_ws)
+
+        task_response, task = await self.post_json(
+            "/api/rooms/{}/tasks".format(room["id"]),
+            {
+                "kind": "review",
+                "instruction": "Review the task routing boundary.",
+                "target": {"mode": "connector", "connectorId": connector["id"]},
+            },
+            room["ownerToken"],
+        )
+        assigned = await self._read_event(connector_ws, "task.assigned")
+        run_response, run = await self.post_json(
+            "/api/tasks/{}/runs".format(task["id"]),
+            {"workspace": "G:/Codex/Lighthouse", "model": "gpt-test", "sandbox": "read-only"},
+            connector["connectorToken"],
+        )
+        completed_response, completed = await self.post_json(
+            "/api/tasks/{}/complete".format(task["id"]),
+            {"finalMessage": "Task completed."},
+            connector["connectorToken"],
+        )
+        snapshot_response = await self.client.get(
+            "/api/rooms/{}".format(room["id"]),
+            headers={"Authorization": "Bearer {}".format(room["ownerToken"])},
+        )
+        snapshot = await snapshot_response.json()
+
+        self.assertEqual(task_response.status, 201)
+        self.assertEqual(assigned["task"]["id"], task["id"])
+        self.assertEqual(run_response.status, 201)
+        self.assertEqual(run["status"], "running")
+        self.assertEqual(completed_response.status, 201)
+        self.assertEqual(completed["status"], "completed")
+        self.assertEqual(snapshot["tasks"][0]["status"], "completed")
+        self.assertEqual(snapshot["agentRuns"][0]["status"], "completed")
+
+        await owner_ws.close()
+        await connector_ws.close()
+
+    async def test_mcp_gateway_snapshot_and_finding_use_connector_identity(self):
+        _, room = await self.post_json("/api/rooms", {"title": "MCP Gateway"})
+        _, reviewer = await self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"role": "reviewer", "name": "Reviewer Agent", "adapterType": "mcp-remote"},
+            room["ownerToken"],
+        )
+
+        tools_response = await self.client.get("/api/mcp/tools")
+        tools = await tools_response.json()
+        snapshot_response, snapshot = await self.post_json(
+            "/api/mcp/tools/get_snapshot",
+            {"roomId": room["id"]},
+            reviewer["connectorToken"],
+        )
+        denied_owner_response, denied_owner = await self.post_json(
+            "/api/mcp/tools/create_finding",
+            {"roomId": room["id"], "claim": "owner cannot use connector tool"},
+            room["ownerToken"],
+        )
+        finding_response, finding_result = await self.post_json(
+            "/api/mcp/tools/create_finding",
+            {
+                "roomId": room["id"],
+                "severity": "P1",
+                "claim": "MCP submitted finding",
+                "evidence": "Gateway used connector token.",
+                "suggestedFix": "Keep connector-scoped capability checks.",
+            },
+            reviewer["connectorToken"],
+        )
+
+        self.assertEqual(tools_response.status, 200)
+        self.assertIn("get_snapshot", [tool["name"] for tool in tools["tools"]])
+        self.assertEqual(snapshot_response.status, 200)
+        self.assertEqual(snapshot["room"]["id"], room["id"])
+        self.assertIn("trust", snapshot)
+        self.assertEqual(denied_owner_response.status, 403)
+        self.assertEqual(denied_owner["error"], "finding:create connector capability required")
+        self.assertEqual(finding_response.status, 201)
+        self.assertEqual(finding_result["finding"]["createdBy"], "Reviewer Agent")
+
     async def test_rest_finding_mutations_require_matching_roles(self):
         _, room = await self.post_json("/api/rooms", {"title": "开放话题", "objective": "验证 REST 权限边界"})
         _, reviewer = await self.post_json(
@@ -414,6 +506,19 @@ class CodexConnectorClientTest(unittest.TestCase):
         self.assertEqual(reviewer_event["type"], "finding.create")
         self.assertEqual(developer_event["type"], "finding.respond")
         self.assertEqual(developer_event["findingId"], "finding_1")
+
+    def test_connector_matches_direct_task_assignment(self):
+        args = type("Args", (), {"role": "reviewer", "identity": {"connectorId": "connector_1", "capabilities": ["finding:create"]}})()
+        event = {
+            "type": "task.assigned",
+            "task": {
+                "assignedConnectorId": "connector_1",
+                "target": {"mode": "connector", "connectorId": "connector_1"},
+            },
+        }
+
+        self.assertTrue(is_assigned_task_event(args, event))
+        self.assertEqual(summarize_connector_response({"type": "finding.create", "claim": "风险"}), "风险")
 
 
 if __name__ == "__main__":
