@@ -1,0 +1,9 @@
+node_modules/
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+experiments/review-room/service/.venv/
+experiments/review-room/service/review-room.sqlite3
+

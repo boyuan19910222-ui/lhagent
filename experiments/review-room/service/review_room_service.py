@@ -28,6 +28,7 @@ except ModuleNotFoundError:
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8707
 DEFAULT_DB_PATH = os.path.join(os.path.dirname(__file__), "review-room.sqlite3")
+HOSTED_AGENT_ENV = "REVIEW_ROOM_ENABLE_HOSTED_AGENT"
 
 
 def now_ms() -> int:
@@ -49,6 +50,10 @@ def json_loads(value: Optional[str], fallback: Any) -> Any:
         return json.loads(value)
     except json.JSONDecodeError:
         return fallback
+
+
+def truthy_env(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 class ClosingConnection(sqlite3.Connection):
@@ -127,6 +132,23 @@ class ReviewRoomStore:
                   updated_at INTEGER NOT NULL,
                   FOREIGN KEY(room_id) REFERENCES rooms(id)
                 );
+
+                CREATE TABLE IF NOT EXISTS invites (
+                  id TEXT PRIMARY KEY,
+                  code TEXT NOT NULL UNIQUE,
+                  room_id TEXT NOT NULL,
+                  invite_type TEXT NOT NULL,
+                  role TEXT NOT NULL,
+                  name TEXT NOT NULL,
+                  token TEXT NOT NULL,
+                  connector_id TEXT NOT NULL,
+                  permissions_json TEXT NOT NULL,
+                  expires_at INTEGER,
+                  used_at INTEGER,
+                  created_at INTEGER NOT NULL,
+                  updated_at INTEGER NOT NULL,
+                  FOREIGN KEY(room_id) REFERENCES rooms(id)
+                );
                 """
             )
             room_columns = {
@@ -144,18 +166,23 @@ class ReviewRoomStore:
     def create_room(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         timestamp = now_ms()
         participants = payload.get("participants") or [
-            {"type": "human", "name": "review room owner", "role": "owner"},
-            {"type": "agent", "name": "Reviewer Agent", "role": "reviewer"},
-            {"type": "agent", "name": "Developer Agent", "role": "developer"},
+            {"type": "human", "name": payload.get("ownerName") or payload.get("owner_name") or "review room owner", "role": "owner", "status": "online"},
         ]
+        context = dict(payload.get("context") or {})
+        if payload.get("objective") is not None:
+            context["objective"] = payload.get("objective")
+        if payload.get("tags") is not None:
+            context["tags"] = payload.get("tags")
+        if payload.get("contextAttachments") is not None:
+            context["contextAttachments"] = payload.get("contextAttachments")
         room = {
             "id": make_id("room"),
-            "title": payload.get("title") or "未命名 Review Room",
-            "provider": payload.get("provider") or "manual",
+            "title": payload.get("title") or "Untitled Review Room",
+            "provider": payload.get("provider") or "topic",
             "mrUrl": payload.get("mrUrl") or payload.get("mr_url") or "",
             "ownerToken": payload.get("ownerToken") or payload.get("owner_token") or make_id("rro"),
             "status": payload.get("status") or "open",
-            "context": payload.get("context") or {},
+            "context": context,
             "participants": participants,
             "createdAt": timestamp,
             "updatedAt": timestamp,
@@ -186,8 +213,8 @@ class ReviewRoomStore:
                 "senderType": "system",
                 "senderName": "Lighthouse Review Room",
                 "kind": "room_created",
-                "body": "Review Room 已创建",
-                "payload": {"provider": room["provider"], "mrUrl": room["mrUrl"]},
+                "body": "Review Room 已创建，可以邀请外部成员或 Agent 加入讨论。",
+                "payload": {"provider": room["provider"], "mrUrl": room["mrUrl"], "objective": context.get("objective")},
             },
         )
         return self.get_room(room["id"]) or room
@@ -195,7 +222,10 @@ class ReviewRoomStore:
     def list_rooms(self) -> List[Dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute("SELECT * FROM rooms ORDER BY updated_at DESC").fetchall()
-        return [self._room_from_row(row) for row in rows]
+        rooms = [self._room_from_row(row) for row in rows]
+        for room in rooms:
+            room["statusSummary"] = self.room_status_summary(room["id"])
+        return rooms
 
     def get_room(self, room_id: str) -> Optional[Dict[str, Any]]:
         with self.connect() as conn:
@@ -214,11 +244,155 @@ class ReviewRoomStore:
                 "SELECT * FROM connectors WHERE room_id = ? ORDER BY created_at ASC",
                 (room_id,),
             ).fetchall()
+            invite_rows = conn.execute(
+                "SELECT * FROM invites WHERE room_id = ? ORDER BY created_at ASC",
+                (room_id,),
+            ).fetchall()
         room = self._room_from_row(room_row)
         room["messages"] = [self._message_from_row(row) for row in message_rows]
         room["findings"] = [self._finding_from_row(row) for row in finding_rows]
         room["connectors"] = [self._connector_from_row(row) for row in connector_rows]
+        room["invites"] = [self._invite_from_row(row) for row in invite_rows]
+        room["statusSummary"] = self.room_status_summary(room_id)
         return room
+
+    def create_invite(self, room_id: str, payload: Dict[str, Any], base_url: str = "") -> Dict[str, Any]:
+        self.require_room(room_id)
+        timestamp = now_ms()
+        invite_type = payload.get("type") or payload.get("inviteType") or payload.get("invite_type") or "guest"
+        if invite_type not in {"guest", "agent"}:
+            raise ValueError("invite type must be guest or agent")
+        role = payload.get("role") or ("guest" if invite_type == "guest" else "reviewer")
+        name = payload.get("name") or ("外部成员" if invite_type == "guest" else self.default_connector_name("remote-agent", role))
+        permissions = payload.get("permissions") or self.default_invite_permissions(invite_type, role)
+        expires_at = payload.get("expiresAt") or payload.get("expires_at") or (timestamp + 7 * 24 * 60 * 60 * 1000)
+        token = payload.get("token") or make_id("rrg" if invite_type == "guest" else "rrc")
+        connector_id = ""
+        if invite_type == "agent":
+            connector = self.register_connector(
+                room_id,
+                {
+                    "name": name,
+                    "kind": payload.get("kind") or "remote-agent",
+                    "agentRole": role,
+                    "connectorToken": token,
+                    "status": "invited",
+                },
+            )
+            connector_id = connector["id"]
+            token = connector["token"]
+        invite = {
+            "id": make_id("invite"),
+            "code": make_id("join"),
+            "roomId": room_id,
+            "type": invite_type,
+            "role": role,
+            "name": name,
+            "token": token,
+            "connectorId": connector_id,
+            "permissions": permissions,
+            "expiresAt": expires_at,
+            "usedAt": None,
+            "createdAt": timestamp,
+            "updatedAt": timestamp,
+        }
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO invites
+                  (id, code, room_id, invite_type, role, name, token, connector_id, permissions_json, expires_at, used_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    invite["id"],
+                    invite["code"],
+                    invite["roomId"],
+                    invite["type"],
+                    invite["role"],
+                    invite["name"],
+                    invite["token"],
+                    invite["connectorId"],
+                    json_dumps(invite["permissions"]),
+                    invite["expiresAt"],
+                    invite["usedAt"],
+                    invite["createdAt"],
+                    invite["updatedAt"],
+                ),
+            )
+            conn.execute("UPDATE rooms SET updated_at = ?, status = ? WHERE id = ?", (timestamp, "waiting_for_agent" if invite_type == "agent" else "open", room_id))
+        self.add_message(
+            room_id,
+            {
+                "senderType": "system",
+                "senderName": "Review Room",
+                "kind": "invite_created",
+                "body": "{}邀请链接已创建。".format("Agent " if invite_type == "agent" else "访客"),
+                "payload": {"inviteId": invite["id"], "type": invite_type, "role": role},
+            },
+        )
+        return self.with_invite_url(invite, base_url)
+
+    def get_invite_by_code(self, code: str, base_url: str = "") -> Dict[str, Any]:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM invites WHERE code = ?", (code,)).fetchone()
+        if not row:
+            raise KeyError("invite not found")
+        return self.with_invite_url(self._invite_from_row(row), base_url)
+
+    def join_room(self, room_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        code = payload.get("inviteCode") or payload.get("invite_code")
+        if not code:
+            raise PermissionError("invite code required")
+        invite = self.get_invite_by_code(code)
+        if invite["roomId"] != room_id:
+            raise PermissionError("invite does not belong to this room")
+        if invite["type"] != "guest":
+            raise ValueError("agent invite cannot join as a guest")
+        if invite.get("expiresAt") and invite["expiresAt"] < now_ms():
+            raise PermissionError("invite expired")
+        name = (payload.get("nickname") or payload.get("name") or "").strip()
+        if not name:
+            raise ValueError("nickname required")
+        token = make_id("rrg")
+        participant = {
+            "type": "human",
+            "name": name,
+            "role": "guest",
+            "status": "online",
+            "permissions": invite["permissions"],
+            "token": token,
+            "joinedAt": now_ms(),
+        }
+        self.add_participant(room_id, participant)
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE invites SET used_at = ?, updated_at = ? WHERE code = ?",
+                (participant["joinedAt"], participant["joinedAt"], code),
+            )
+        self.add_message(
+            room_id,
+            {
+                "senderType": "system",
+                "senderName": "Review Room",
+                "kind": "member_joined",
+                "body": "{} 通过分享链接加入了房间。".format(name),
+                "payload": {"role": "guest"},
+            },
+        )
+        return {"guestToken": token, "identity": {"type": "guest", "name": name, "role": "guest", "permissions": invite["permissions"]}, "room": self.get_room(room_id)}
+
+    def add_participant(self, room_id: str, participant: Dict[str, Any]) -> None:
+        timestamp = now_ms()
+        with self.connect() as conn:
+            row = conn.execute("SELECT participants_json FROM rooms WHERE id = ?", (room_id,)).fetchone()
+            if not row:
+                raise KeyError("room not found")
+            participants = json_loads(row["participants_json"], [])
+            participants.append(participant)
+            conn.execute(
+                "UPDATE rooms SET participants_json = ?, updated_at = ? WHERE id = ?",
+                (json_dumps(participants), timestamp, room_id),
+            )
 
     def add_message(self, room_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         self.require_room(room_id)
@@ -253,6 +427,79 @@ class ReviewRoomStore:
             )
             conn.execute("UPDATE rooms SET updated_at = ? WHERE id = ?", (timestamp, room_id))
         return message
+
+    def create_hosted_agent_reply(self, room_id: str, source_message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if not truthy_env(HOSTED_AGENT_ENV):
+            return None
+        if not self.should_hosted_agent_reply(source_message):
+            return None
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM connectors
+                WHERE room_id = ?
+                  AND status NOT IN ('offline', 'error')
+                ORDER BY
+                  CASE agent_role
+                    WHEN 'reviewer' THEN 0
+                    WHEN 'observer' THEN 1
+                    WHEN 'developer' THEN 2
+                    ELSE 3
+                  END,
+                  created_at ASC
+                LIMIT 1
+                """,
+                (room_id,),
+            ).fetchone()
+            if not row:
+                return None
+            connector = self._connector_from_row(row)
+            timestamp = now_ms()
+            conn.execute(
+                """
+                UPDATE connectors
+                SET status = ?, event_count = event_count + 1, last_seen_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                ("online", timestamp, timestamp, connector["id"]),
+            )
+            conn.execute("UPDATE rooms SET status = ?, updated_at = ? WHERE id = ?", ("agent_working", timestamp, room_id))
+        return self.add_message(
+            room_id,
+            {
+                "senderType": "agent",
+                "senderName": connector["name"],
+                "kind": "connector_message",
+                "body": self.build_hosted_agent_reply_body(connector, source_message),
+                "payload": {
+                    "connectorId": connector["id"],
+                    "connectorKind": connector["kind"],
+                    "agentRole": connector["agentRole"],
+                    "hostedAgent": True,
+                    "sourceMessageId": source_message.get("id"),
+                },
+            },
+        )
+
+    @staticmethod
+    def should_hosted_agent_reply(message: Dict[str, Any]) -> bool:
+        if message.get("senderType") != "human":
+            return False
+        if message.get("kind") not in {"owner_topic", "guest_message", "message"}:
+            return False
+        return bool((message.get("body") or "").strip())
+
+    @staticmethod
+    def build_hosted_agent_reply_body(connector: Dict[str, Any], source_message: Dict[str, Any]) -> str:
+        text = " ".join((source_message.get("body") or "").split())
+        if len(text) > 120:
+            text = "{}...".format(text[:117])
+        role = connector.get("agentRole") or "reviewer"
+        if role == "developer":
+            return "收到，我会把「{}」拆成可执行的修改步骤，并在需要 owner 决策时提醒你。".format(text)
+        if role == "observer":
+            return "收到，我会先旁观并记录关键分歧。你刚才提到：「{}」。".format(text)
+        return "收到，我看到你的消息：「{}」。我会先从风险、证据和下一步建议三个角度继续协助。".format(text)
 
     def add_finding(self, room_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         self.require_room(room_id)
@@ -293,7 +540,7 @@ class ReviewRoomStore:
                     timestamp,
                 ),
             )
-            conn.execute("UPDATE rooms SET updated_at = ? WHERE id = ?", (timestamp, room_id))
+            conn.execute("UPDATE rooms SET status = ?, updated_at = ? WHERE id = ?", ("agent_working", timestamp, room_id))
         self.add_message(
             room_id,
             {
@@ -323,7 +570,10 @@ class ReviewRoomStore:
                 """,
                 (status, severity, suggested_fix, timestamp, finding_id),
             )
-            conn.execute("UPDATE rooms SET updated_at = ? WHERE id = ?", (timestamp, row["room_id"]))
+            room_status = "needs_owner_decision" if status == "developer_responded" else "agent_working"
+            if status in {"accepted", "rejected"}:
+                room_status = "open"
+            conn.execute("UPDATE rooms SET status = ?, updated_at = ? WHERE id = ?", (room_status, timestamp, row["room_id"]))
             updated = conn.execute("SELECT * FROM findings WHERE id = ?", (finding_id,)).fetchone()
         return self._finding_from_row(updated)
 
@@ -430,7 +680,7 @@ class ReviewRoomStore:
             "agentRole": agent_role,
             "endpoint": payload.get("endpoint") or "",
             "token": payload.get("connectorToken") or payload.get("connector_token") or payload.get("token") or make_id("rrc"),
-            "status": payload.get("status") or "provisioned",
+            "status": payload.get("status") or "invited",
             "eventCount": 0,
             "lastSeenAt": None,
             "createdAt": timestamp,
@@ -459,14 +709,14 @@ class ReviewRoomStore:
                     connector["updatedAt"],
                 ),
             )
-            conn.execute("UPDATE rooms SET updated_at = ? WHERE id = ?", (timestamp, room_id))
+            conn.execute("UPDATE rooms SET status = ?, updated_at = ? WHERE id = ?", ("waiting_for_agent", timestamp, room_id))
         self.add_message(
             room_id,
             {
                 "senderType": "system",
-                "senderName": "Connector Registry",
+                "senderName": "Review Room",
                 "kind": "connector_registered",
-                "body": "{} 已注册为 {} connector。".format(connector["name"], connector["kind"]),
+                "body": "{} 已加入 Agent 邀请列表。".format(connector["name"]),
                 "payload": {"connectorId": connector["id"], "kind": connector["kind"], "agentRole": connector["agentRole"]},
             },
         )
@@ -561,7 +811,7 @@ class ReviewRoomStore:
         if not token:
             raise PermissionError("missing room token")
         with self.connect() as conn:
-            room = conn.execute("SELECT id, owner_token FROM rooms WHERE id = ?", (room_id,)).fetchone()
+            room = conn.execute("SELECT id, owner_token, participants_json FROM rooms WHERE id = ?", (room_id,)).fetchone()
             if not room:
                 raise KeyError("room not found")
             if token == room["owner_token"]:
@@ -572,6 +822,16 @@ class ReviewRoomStore:
                     "role": "owner",
                     "token": token,
                 }
+            for participant in json_loads(room["participants_json"], []):
+                if participant.get("token") == token:
+                    return {
+                        "type": "guest",
+                        "roomId": room_id,
+                        "name": participant.get("name") or "guest",
+                        "role": participant.get("role") or "guest",
+                        "permissions": participant.get("permissions") or ["read", "message"],
+                        "token": token,
+                    }
             connector = conn.execute(
                 "SELECT * FROM connectors WHERE room_id = ? AND token = ?",
                 (room_id, token),
@@ -601,7 +861,24 @@ class ReviewRoomStore:
                 SET status = ?, event_count = event_count + 1, last_seen_at = ?, updated_at = ?
                 WHERE id = ?
                 """,
-                ("connected", timestamp, timestamp, connector_id),
+                ("online", timestamp, timestamp, connector_id),
+            )
+            conn.execute("UPDATE rooms SET status = ?, updated_at = ? WHERE id = ?", ("agent_working", timestamp, row["room_id"]))
+
+    def set_connector_status(self, connector_id: str, status: str) -> None:
+        timestamp = now_ms()
+        with self.connect() as conn:
+            row = conn.execute("SELECT room_id FROM connectors WHERE id = ?", (connector_id,)).fetchone()
+            if not row:
+                raise KeyError("connector not found")
+            last_seen_at = timestamp if status in {"online", "working", "needs_input", "connected"} else None
+            conn.execute(
+                """
+                UPDATE connectors
+                SET status = ?, last_seen_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (status, last_seen_at, timestamp, connector_id),
             )
             conn.execute("UPDATE rooms SET updated_at = ? WHERE id = ?", (timestamp, row["room_id"]))
 
@@ -612,7 +889,13 @@ class ReviewRoomStore:
             rows = conn.execute("SELECT status FROM findings WHERE room_id = ?", (room_id,)).fetchall()
             if not rows:
                 return
-            room_status = "completed" if all(row["status"] in terminal_statuses for row in rows) else "open"
+            statuses = [row["status"] for row in rows]
+            if all(status in terminal_statuses for status in statuses):
+                room_status = "completed"
+            elif any(status == "developer_responded" for status in statuses):
+                room_status = "needs_owner_decision"
+            else:
+                room_status = "agent_working"
             conn.execute(
                 "UPDATE rooms SET status = ?, updated_at = ? WHERE id = ?",
                 (room_status, timestamp, room_id),
@@ -624,15 +907,73 @@ class ReviewRoomStore:
         if not row:
             raise KeyError("room not found")
 
+    def room_status_summary(self, room_id: str) -> Dict[str, Any]:
+        with self.connect() as conn:
+            room_row = conn.execute("SELECT participants_json, updated_at FROM rooms WHERE id = ?", (room_id,)).fetchone()
+            if not room_row:
+                raise KeyError("room not found")
+            connectors = conn.execute("SELECT status FROM connectors WHERE room_id = ?", (room_id,)).fetchall()
+            findings = conn.execute("SELECT status FROM findings WHERE room_id = ?", (room_id,)).fetchall()
+            messages = conn.execute("SELECT COUNT(*) AS count FROM messages WHERE room_id = ?", (room_id,)).fetchone()
+        participants = self.sanitize_participants(json_loads(room_row["participants_json"], []))
+        online_agents = sum(1 for row in connectors if row["status"] in {"online", "working", "needs_input", "connected"})
+        active_agents = sum(1 for row in connectors if row["status"] in {"online", "working", "needs_input", "connected", "invited", "joining"})
+        pending_findings = sum(1 for row in findings if row["status"] not in {"accepted", "rejected"})
+        return {
+            "memberCount": len(participants) + len(connectors),
+            "humanCount": len(participants),
+            "agentCount": len(connectors),
+            "activeAgentCount": active_agents,
+            "onlineAgentCount": online_agents,
+            "pendingFindingCount": pending_findings,
+            "messageCount": messages["count"] if messages else 0,
+            "lastActiveAt": room_row["updated_at"],
+        }
+
+    @staticmethod
+    def default_invite_permissions(invite_type: str, role: str) -> List[str]:
+        if invite_type == "guest":
+            return ["read", "message"]
+        if role == "reviewer":
+            return ["read", "message", "finding:create"]
+        if role == "developer":
+            return ["read", "message", "finding:respond"]
+        return ["read", "message"]
+
+    @staticmethod
+    def with_invite_url(invite: Dict[str, Any], base_url: str = "") -> Dict[str, Any]:
+        result = dict(invite)
+        token = result.pop("token", "")
+        prefix = base_url.rstrip("/") if base_url else ""
+        result["inviteUrl"] = "{}/r/{}".format(prefix, invite["code"]) if prefix else "/r/{}".format(invite["code"])
+        if invite["type"] == "agent":
+            result["advanced"] = {
+                "roomId": invite["roomId"],
+                "role": invite["role"],
+                "connectorToken": token,
+            }
+        return result
+
+    @staticmethod
+    def sanitize_participants(participants: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        sanitized = []
+        for participant in participants:
+            item = dict(participant)
+            item.pop("token", None)
+            sanitized.append(item)
+        return sanitized
+
     @staticmethod
     def default_connector_name(kind: str, role: Optional[str] = None) -> str:
         if role == "reviewer" or kind == "remote-agent":
-            return "远端 Reviewer Agent"
+            return "Reviewer Agent"
         if role == "developer":
             return "Developer Agent"
+        if role == "observer":
+            return "Observer Agent"
         if kind == "git":
             return "Git Connector"
-        return "本地 Developer Agent"
+        return "Developer Agent"
 
     @staticmethod
     def default_agent_role(kind: str) -> str:
@@ -644,6 +985,7 @@ class ReviewRoomStore:
 
     @staticmethod
     def _room_from_row(row: sqlite3.Row) -> Dict[str, Any]:
+        context = json_loads(row["context_json"], {})
         return {
             "id": row["id"],
             "roomId": row["id"],
@@ -652,8 +994,11 @@ class ReviewRoomStore:
             "mrUrl": row["mr_url"],
             "ownerToken": row["owner_token"],
             "status": row["status"],
-            "context": json_loads(row["context_json"], {}),
-            "participants": json_loads(row["participants_json"], []),
+            "objective": context.get("objective", ""),
+            "tags": context.get("tags", []),
+            "contextAttachments": context.get("contextAttachments", []),
+            "context": context,
+            "participants": ReviewRoomStore.sanitize_participants(json_loads(row["participants_json"], [])),
             "createdAt": row["created_at"],
             "updatedAt": row["updated_at"],
         }
@@ -706,6 +1051,24 @@ class ReviewRoomStore:
             "updatedAt": row["updated_at"],
         }
 
+    @staticmethod
+    def _invite_from_row(row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "id": row["id"],
+            "code": row["code"],
+            "roomId": row["room_id"],
+            "type": row["invite_type"],
+            "role": row["role"],
+            "name": row["name"],
+            "token": row["token"],
+            "connectorId": row["connector_id"],
+            "permissions": json_loads(row["permissions_json"], []),
+            "expiresAt": row["expires_at"],
+            "usedAt": row["used_at"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+
 
 class ReviewRoomHandler(BaseHTTPRequestHandler):
     store: ReviewRoomStore
@@ -716,21 +1079,32 @@ class ReviewRoomHandler(BaseHTTPRequestHandler):
             if parsed.path == "/":
                 self.send_html(index_html())
                 return
+            match = re.match(r"^/r/([^/]+)$", parsed.path)
+            if match:
+                invite = self.store.get_invite_by_code(match.group(1), self.base_url())
+                self.send_html(index_html(invite))
+                return
             if parsed.path == "/health":
                 self.send_json({"ok": True, "service": "lighthouse-review-room", "time": now_ms()})
                 return
             if parsed.path == "/api/rooms":
-                self.send_json({"rooms": self.store.list_rooms()})
+                self.send_json({"rooms": [room_summary(room) for room in self.store.list_rooms()]})
                 return
             match = re.match(r"^/api/rooms/([^/]+)$", parsed.path)
             if match:
+                token = self.read_bearer_token({})
+                identity = self.store.authenticate_room_token(match.group(1), token)
                 room = self.store.get_room(match.group(1))
                 if not room:
                     self.send_error_json(HTTPStatus.NOT_FOUND, "room not found")
                     return
-                self.send_json(room)
+                self.send_json(room_for_identity(room, identity))
                 return
             self.send_error_json(HTTPStatus.NOT_FOUND, "not found")
+        except KeyError as exc:
+            self.send_error_json(HTTPStatus.NOT_FOUND, str(exc))
+        except PermissionError as exc:
+            self.send_error_json(HTTPStatus.FORBIDDEN, str(exc))
         except Exception as exc:
             self.send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
 
@@ -747,16 +1121,44 @@ class ReviewRoomHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/webhooks/merge-request":
                 self.send_json(self.store.ingest_merge_request_webhook(body), HTTPStatus.CREATED)
                 return
+            match = re.match(r"^/api/rooms/([^/]+)/invites$", parsed.path)
+            if match:
+                identity = self.store.authenticate_room_token(match.group(1), self.read_bearer_token(body))
+                if identity["type"] != "owner":
+                    raise PermissionError("owner token required")
+                self.send_json(self.store.create_invite(match.group(1), body, self.base_url()), HTTPStatus.CREATED)
+                return
+            match = re.match(r"^/api/rooms/([^/]+)/join$", parsed.path)
+            if match:
+                result = self.store.join_room(match.group(1), body)
+                result["room"] = room_for_identity(result["room"], result["identity"])
+                self.send_json(result, HTTPStatus.CREATED)
+                return
             match = re.match(r"^/api/rooms/([^/]+)/messages$", parsed.path)
             if match:
-                self.send_json(self.store.add_message(match.group(1), body), HTTPStatus.CREATED)
+                room_id = match.group(1)
+                token = self.read_bearer_token(body)
+                identity = self.store.authenticate_room_token(room_id, token)
+                body = {
+                    **body,
+                    "senderType": "human" if identity["type"] in {"owner", "guest"} else "agent",
+                    "senderName": identity["name"],
+                    "kind": body.get("kind") or ("owner_topic" if identity["type"] == "owner" else "guest_message" if identity["type"] == "guest" else "connector_message"),
+                }
+                created = self.store.add_message(room_id, body)
+                self.store.create_hosted_agent_reply(room_id, created)
+                self.send_json(created, HTTPStatus.CREATED)
                 return
             match = re.match(r"^/api/rooms/([^/]+)/findings$", parsed.path)
             if match:
-                self.send_json(self.store.add_finding(match.group(1), body), HTTPStatus.CREATED)
+                identity = self.store.authenticate_room_token(match.group(1), self.read_bearer_token(body))
+                require_reviewer_connector(identity)
+                self.send_json(self.store.add_finding(match.group(1), {**body, "createdBy": identity["name"]}), HTTPStatus.CREATED)
                 return
             match = re.match(r"^/api/rooms/([^/]+)/connectors$", parsed.path)
             if match:
+                identity = self.store.authenticate_room_token(match.group(1), self.read_bearer_token(body))
+                require_owner_role(identity)
                 self.send_json(self.store.register_connector(match.group(1), body), HTTPStatus.CREATED)
                 return
             match = re.match(r"^/api/connectors/([^/]+)/events$", parsed.path)
@@ -768,11 +1170,17 @@ class ReviewRoomHandler(BaseHTTPRequestHandler):
                 return
             match = re.match(r"^/api/findings/([^/]+)/developer-response$", parsed.path)
             if match:
-                self.send_json(self.store.respond_to_finding(match.group(1), body), HTTPStatus.CREATED)
+                finding = self.store.get_finding(match.group(1))
+                identity = self.store.authenticate_room_token(finding["roomId"], self.read_bearer_token(body))
+                require_developer_connector(identity)
+                self.send_json(self.store.respond_to_finding(match.group(1), {**body, "senderName": identity["name"]}), HTTPStatus.CREATED)
                 return
             match = re.match(r"^/api/findings/([^/]+)/confirm$", parsed.path)
             if match:
-                self.send_json(self.store.confirm_finding(match.group(1), body), HTTPStatus.CREATED)
+                finding = self.store.get_finding(match.group(1))
+                identity = self.store.authenticate_room_token(finding["roomId"], self.read_bearer_token(body))
+                require_owner_role(identity)
+                self.send_json(self.store.confirm_finding(match.group(1), {**body, "senderName": identity["name"]}), HTTPStatus.CREATED)
                 return
             self.send_error_json(HTTPStatus.NOT_FOUND, "not found")
         except KeyError as exc:
@@ -790,6 +1198,9 @@ class ReviewRoomHandler(BaseHTTPRequestHandler):
             body = self.read_json()
             match = re.match(r"^/api/findings/([^/]+)$", parsed.path)
             if match:
+                finding = self.store.get_finding(match.group(1))
+                identity = self.store.authenticate_room_token(finding["roomId"], self.read_bearer_token(body))
+                require_owner_role(identity)
                 self.send_json(self.store.update_finding(match.group(1), body))
                 return
             self.send_error_json(HTTPStatus.NOT_FOUND, "not found")
@@ -822,6 +1233,10 @@ class ReviewRoomHandler(BaseHTTPRequestHandler):
             return header.split(" ", 1)[1].strip()
         return body.get("token") or ""
 
+    def base_url(self) -> str:
+        host = self.headers.get("Host") or "{}:{}".format(*self.server.server_address)
+        return "http://{}".format(host)
+
     def send_json(self, data: Any, status: HTTPStatus = HTTPStatus.OK) -> None:
         raw = json_dumps(data).encode("utf-8")
         self.send_response(status)
@@ -836,6 +1251,7 @@ class ReviewRoomHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.OK)
         self.add_cors_headers()
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
@@ -858,17 +1274,24 @@ class RealtimeHub:
         self.connections: Dict[str, Dict[web.WebSocketResponse, Dict[str, Any]]] = {}
 
     async def add(self, room_id: str, websocket: web.WebSocketResponse, identity: Dict[str, Any]) -> None:
+        if identity["type"] == "connector":
+            self.store.set_connector_status(identity["connectorId"], "online")
         self.connections.setdefault(room_id, {})[websocket] = identity
-        await websocket.send_json({"type": "room.snapshot", "room": self.store.get_room(room_id), "identity": identity})
+        room = self.store.get_room(room_id)
+        await websocket.send_json({"type": "room.snapshot", "room": room_for_identity(room, identity) if room else None, "identity": identity})
         await self.broadcast(room_id, {"type": "presence.updated", "presence": self.presence(room_id)})
+        await self.broadcast_snapshot(room_id)
 
     async def remove(self, room_id: str, websocket: web.WebSocketResponse) -> None:
         room_connections = self.connections.get(room_id)
         if not room_connections:
             return
-        room_connections.pop(websocket, None)
+        identity = room_connections.pop(websocket, None)
+        if identity and identity.get("type") == "connector":
+            self.store.set_connector_status(identity["connectorId"], "offline")
         if room_connections:
             await self.broadcast(room_id, {"type": "presence.updated", "presence": self.presence(room_id)})
+            await self.broadcast_snapshot(room_id)
         else:
             self.connections.pop(room_id, None)
 
@@ -882,6 +1305,13 @@ class RealtimeHub:
             await websocket.send_json(event)
         for websocket in stale:
             (self.connections.get(room_id) or {}).pop(websocket, None)
+
+    async def broadcast_snapshot(self, room_id: str) -> None:
+        room = self.store.get_room(room_id)
+        room_connections = list((self.connections.get(room_id) or {}).items())
+        for websocket, identity in room_connections:
+            if not websocket.closed:
+                await websocket.send_json({"type": "room.snapshot", "room": room_for_identity(room, identity) if room else None, "identity": identity})
 
     def presence(self, room_id: str) -> List[Dict[str, Any]]:
         return [
@@ -904,6 +1334,10 @@ def bearer_token_from_request(request: web.Request) -> str:
     if header.lower().startswith("bearer "):
         return header.split(" ", 1)[1].strip()
     return request.query.get("token", "")
+
+
+def base_url_from_aiohttp_request(request: web.Request) -> str:
+    return "{}://{}".format(request.scheme, request.host)
 
 
 async def request_json(request: web.Request) -> Dict[str, Any]:
@@ -934,7 +1368,41 @@ def json_response(data: Any, status: int = 200) -> web.Response:
 
 
 def room_summary(room: Dict[str, Any]) -> Dict[str, Any]:
-    return {key: value for key, value in room.items() if key != "ownerToken"}
+    result = {key: value for key, value in room.items() if key not in {"ownerToken", "invites"}}
+    result["participants"] = ReviewRoomStore.sanitize_participants(result.get("participants", []))
+    result["connectors"] = [
+        {key: value for key, value in connector.items() if key not in {"token", "connectorToken"}}
+        for connector in result.get("connectors", [])
+    ]
+    return result
+
+
+def room_for_identity(room: Dict[str, Any], identity: Dict[str, Any]) -> Dict[str, Any]:
+    result = dict(room)
+    if identity["type"] == "owner":
+        return result
+    result.pop("ownerToken", None)
+    result.pop("invites", None)
+    result["connectors"] = [
+        {key: value for key, value in connector.items() if key not in {"token", "connectorToken"}}
+        for connector in result.get("connectors", [])
+    ]
+    return result
+
+
+def require_owner_role(identity: Dict[str, Any]) -> None:
+    if identity["type"] != "owner":
+        raise PermissionError("owner token required")
+
+
+def require_reviewer_connector(identity: Dict[str, Any]) -> None:
+    if identity["type"] != "connector" or identity["role"] != "reviewer":
+        raise PermissionError("reviewer connector required")
+
+
+def require_developer_connector(identity: Dict[str, Any]) -> None:
+    if identity["type"] != "connector" or identity["role"] != "developer":
+        raise PermissionError("developer connector required")
 
 
 def require_identity(store: ReviewRoomStore, room_id: str, token: str) -> Dict[str, Any]:
@@ -947,8 +1415,50 @@ def require_identity(store: ReviewRoomStore, room_id: str, token: str) -> Dict[s
 
 
 def ensure_owner(identity: Dict[str, Any]) -> None:
-    if identity["type"] != "owner":
+    try:
+        require_owner_role(identity)
+    except PermissionError as exc:
+        raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+
+
+def ensure_reviewer_connector(identity: Dict[str, Any]) -> None:
+    try:
+        require_reviewer_connector(identity)
+    except PermissionError as exc:
+        raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+
+
+def ensure_developer_connector(identity: Dict[str, Any]) -> None:
+    try:
+        require_developer_connector(identity)
+    except PermissionError as exc:
+        raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+
+
+def require_finding_identity(store: ReviewRoomStore, finding_id: str, token: str) -> Dict[str, Any]:
+    try:
+        finding = store.get_finding(finding_id)
+    except KeyError as exc:
+        raise web.HTTPNotFound(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+    return require_identity(store, finding["roomId"], token)
+
+
+def ensure_owner_for_finding(store: ReviewRoomStore, finding_id: str, token: str) -> Dict[str, Any]:
+    identity = require_finding_identity(store, finding_id, token)
+    try:
+        require_owner_role(identity)
+    except PermissionError as exc:
         raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": "owner token required"}), content_type="application/json")
+    return identity
+
+
+async def broadcast_hosted_agent_reply(store: ReviewRoomStore, hub: RealtimeHub, room_id: str, source_message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    reply = store.create_hosted_agent_reply(room_id, source_message)
+    if not reply:
+        return None
+    await hub.broadcast(room_id, {"type": "message.created", "message": reply})
+    await hub.broadcast_snapshot(room_id)
+    return reply
 
 
 async def handle_ws_event(
@@ -961,17 +1471,20 @@ async def handle_ws_event(
 ) -> None:
     event_type = payload.get("type")
     if event_type in {"message.create", "topic.continue"}:
+        sender_type = "human" if identity["type"] in {"owner", "guest"} else "agent"
+        default_kind = "owner_topic" if identity["type"] == "owner" else "guest_message" if identity["type"] == "guest" else "connector_message"
         message = store.add_message(
             room_id,
             {
-                "senderType": "human" if identity["type"] == "owner" else "agent",
+                "senderType": sender_type,
                 "senderName": identity["name"],
-                "kind": payload.get("kind") or ("owner_topic" if identity["type"] == "owner" else "connector_message"),
+                "kind": payload.get("kind") or default_kind,
                 "body": payload.get("body") or "",
                 "payload": {"eventType": event_type, "role": identity["role"]},
             },
         )
         await hub.broadcast(room_id, {"type": "message.created", "message": message})
+        await broadcast_hosted_agent_reply(store, hub, room_id, message)
         return
 
     if event_type == "finding.create":
@@ -1038,7 +1551,11 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
     app[HUB_KEY] = RealtimeHub(app[STORE_KEY])
 
     async def index(_request: web.Request) -> web.Response:
-        return web.Response(text=index_html(), content_type="text/html", charset="utf-8")
+        return web.Response(text=index_html(), content_type="text/html", charset="utf-8", headers={"Cache-Control": "no-store"})
+
+    async def invite_page(request: web.Request) -> web.Response:
+        invite = app[STORE_KEY].get_invite_by_code(request.match_info["invite_code"], base_url_from_aiohttp_request(request))
+        return web.Response(text=index_html(invite), content_type="text/html", charset="utf-8", headers={"Cache-Control": "no-store"})
 
     async def health(_request: web.Request) -> web.Response:
         return json_response({"ok": True, "service": "lighthouse-review-room", "time": now_ms()})
@@ -1054,11 +1571,31 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
 
     async def get_room(request: web.Request) -> web.Response:
         room_id = request.match_info["room_id"]
-        require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
+        identity = require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
         room = app[STORE_KEY].get_room(room_id)
         if not room:
             raise web.HTTPNotFound(text=json_dumps({"ok": False, "error": "room not found"}), content_type="application/json")
-        return json_response(room)
+        return json_response(room_for_identity(room, identity))
+
+    async def create_invite(request: web.Request) -> web.Response:
+        room_id = request.match_info["room_id"]
+        identity = require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
+        ensure_owner(identity)
+        return json_response(app[STORE_KEY].create_invite(room_id, await request_json(request), base_url_from_aiohttp_request(request)), 201)
+
+    async def join_room(request: web.Request) -> web.Response:
+        room_id = request.match_info["room_id"]
+        try:
+            result = app[STORE_KEY].join_room(room_id, await request_json(request))
+        except KeyError as exc:
+            raise web.HTTPNotFound(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        except PermissionError as exc:
+            raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        result["room"] = room_for_identity(result["room"], result["identity"])
+        await app[HUB_KEY].broadcast_snapshot(room_id)
+        return json_response(result, 201)
 
     async def register_connector(request: web.Request) -> web.Response:
         room_id = request.match_info["room_id"]
@@ -1077,35 +1614,51 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
             raise web.HTTPNotFound(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
         except PermissionError as exc:
             raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
-        await app[HUB_KEY].broadcast(result["roomId"], {"type": "room.snapshot", "room": app[STORE_KEY].get_room(result["roomId"])})
+        await app[HUB_KEY].broadcast_snapshot(result["roomId"])
         return json_response(result, 201)
 
     async def add_message(request: web.Request) -> web.Response:
         room_id = request.match_info["room_id"]
-        require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
-        message = app[STORE_KEY].add_message(room_id, await request_json(request))
+        identity = require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
+        body = await request_json(request)
+        body = {
+            **body,
+            "senderType": "human" if identity["type"] in {"owner", "guest"} else "agent",
+            "senderName": identity["name"],
+            "kind": body.get("kind") or ("owner_topic" if identity["type"] == "owner" else "guest_message" if identity["type"] == "guest" else "connector_message"),
+        }
+        message = app[STORE_KEY].add_message(room_id, body)
         await app[HUB_KEY].broadcast(room_id, {"type": "message.created", "message": message})
+        await broadcast_hosted_agent_reply(app[STORE_KEY], app[HUB_KEY], room_id, message)
         return json_response(message, 201)
 
     async def add_finding(request: web.Request) -> web.Response:
         room_id = request.match_info["room_id"]
-        require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
-        finding = app[STORE_KEY].add_finding(room_id, await request_json(request))
+        identity = require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
+        ensure_reviewer_connector(identity)
+        body = await request_json(request)
+        finding = app[STORE_KEY].add_finding(room_id, {**body, "createdBy": identity["name"]})
         await app[HUB_KEY].broadcast(room_id, {"type": "finding.created", "finding": finding})
         return json_response(finding, 201)
 
     async def update_finding(request: web.Request) -> web.Response:
+        ensure_owner_for_finding(app[STORE_KEY], request.match_info["finding_id"], bearer_token_from_request(request))
         finding = app[STORE_KEY].update_finding(request.match_info["finding_id"], await request_json(request))
         await app[HUB_KEY].broadcast(finding["roomId"], {"type": "finding.updated", "finding": finding})
         return json_response(finding)
 
     async def developer_response(request: web.Request) -> web.Response:
-        finding = app[STORE_KEY].respond_to_finding(request.match_info["finding_id"], await request_json(request))
+        identity = require_finding_identity(app[STORE_KEY], request.match_info["finding_id"], bearer_token_from_request(request))
+        ensure_developer_connector(identity)
+        body = await request_json(request)
+        finding = app[STORE_KEY].respond_to_finding(request.match_info["finding_id"], {**body, "senderName": identity["name"]})
         await app[HUB_KEY].broadcast(finding["roomId"], {"type": "finding.updated", "finding": finding})
         return json_response(finding, 201)
 
     async def confirm_finding(request: web.Request) -> web.Response:
-        finding = app[STORE_KEY].confirm_finding(request.match_info["finding_id"], await request_json(request))
+        identity = ensure_owner_for_finding(app[STORE_KEY], request.match_info["finding_id"], bearer_token_from_request(request))
+        body = await request_json(request)
+        finding = app[STORE_KEY].confirm_finding(request.match_info["finding_id"], {**body, "senderName": identity["name"]})
         await app[HUB_KEY].broadcast(finding["roomId"], {"type": "finding.updated", "finding": finding})
         return json_response(finding, 201)
 
@@ -1139,12 +1692,15 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
         return ws
 
     app.router.add_get("/", index)
+    app.router.add_get("/r/{invite_code}", invite_page)
     app.router.add_get("/health", health)
     app.router.add_get("/api/rooms", list_rooms)
     app.router.add_post("/api/rooms", create_room)
     app.router.add_post("/api/demo/session", demo_session)
     app.router.add_post("/api/webhooks/merge-request", merge_request_webhook)
     app.router.add_get("/api/rooms/{room_id}", get_room)
+    app.router.add_post("/api/rooms/{room_id}/invites", create_invite)
+    app.router.add_post("/api/rooms/{room_id}/join", join_room)
     app.router.add_post("/api/rooms/{room_id}/messages", add_message)
     app.router.add_post("/api/rooms/{room_id}/findings", add_finding)
     app.router.add_post("/api/rooms/{room_id}/connectors", register_connector)
@@ -1156,7 +1712,7 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
     return app
 
 
-def index_html() -> str:
+def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str:
     return """<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -1164,199 +1720,354 @@ def index_html() -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Lighthouse Review Room</title>
   <style>
-    :root{--bg:#f5f7fb;--panel:#fff;--line:#d9e1ec;--text:#202938;--muted:#647084;--blue:#1663e9;--green:#08745f;--red:#c7362f;--amber:#a05f00}
-    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-    button,input,textarea{font:inherit}button{min-height:34px;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--text);padding:0 12px;cursor:pointer}
-    button.primary{border-color:var(--blue);background:var(--blue);color:#fff}button.success{border-color:var(--green);background:var(--green);color:#fff}button.danger{border-color:var(--red);background:var(--red);color:#fff}
-    button:disabled{opacity:.55;cursor:not-allowed}input,textarea{width:100%;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--text);padding:9px 10px}textarea{min-height:88px;resize:vertical}
-    header{border-bottom:1px solid var(--line);background:#fff}.shell{max-width:1280px;margin:0 auto;padding:18px}.topbar{display:flex;gap:16px;align-items:flex-start;justify-content:space-between}
-    h1{margin:0 0 6px;font-size:24px;line-height:1.2}h2{margin:0;font-size:16px}h3{margin:0;font-size:14px}p{margin:6px 0 0;color:var(--muted);line-height:1.55}code{border-radius:4px;background:#eef3f9;padding:2px 6px}
-    .grid{display:grid;grid-template-columns:320px minmax(0,1fr);gap:16px}.panel{border:1px solid var(--line);border-radius:8px;background:var(--panel);min-width:0}.panel-head{display:flex;align-items:center;justify-content:space-between;gap:10px;border-bottom:1px solid var(--line);padding:14px 16px}.panel-body{padding:16px}
-    .actions{display:flex;flex-wrap:wrap;gap:8px}.form-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.field{display:grid;gap:6px}.field label{font-size:13px;font-weight:650}.room-list{display:grid;gap:8px}.room-item{width:100%;min-height:76px;text-align:left;padding:10px}.room-item.active{border-color:var(--blue);box-shadow:0 0 0 2px rgba(22,99,233,.12)}
-    .tag{display:inline-flex;align-items:center;min-height:22px;border:1px solid var(--line);border-radius:999px;background:#f7f9fc;padding:0 8px;color:var(--muted);font-size:12px}.tag.online{border-color:#98d7c7;background:#eefaf6;color:var(--green)}.tag.p1{border-color:#f2aaa6;background:#fff1f0;color:var(--red)}.tag.waiting{border-color:#ecc77e;background:#fff8e8;color:var(--amber)}
-    .role-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.role{border:1px solid var(--line);border-radius:8px;background:#fbfcfe;padding:12px}.chat-layout{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:16px}.timeline,.finding-list{display:grid;gap:10px}.message,.finding{border:1px solid var(--line);border-radius:8px;background:#fff;padding:12px}.message.owner{background:#edf4ff}.message.agent{background:#fbfcfe}.message-head,.finding-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px}.body{white-space:pre-wrap;line-height:1.55}.finding-title{font-weight:700}.finding-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}.empty{border:1px dashed var(--line);border-radius:8px;padding:24px 14px;text-align:center;color:var(--muted)}.notice{margin-top:10px;color:var(--muted);font-size:13px}.hidden{display:none}
-    @media(max-width:960px){.grid,.chat-layout,.form-grid,.role-row{grid-template-columns:1fr}.topbar{display:grid}}
+    :root{--bg:#f6f7f9;--panel:#fff;--panel-soft:#f9fafb;--line:#d9dde5;--text:#172033;--muted:#697386;--blue:#2457d6;--green:#067a62;--red:#c43d3d;--amber:#9a6500;--violet:#6d4bd1}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:14px}
+    button,input,textarea,select{font:inherit}button{min-height:34px;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--text);padding:0 12px;cursor:pointer}button:hover{border-color:#b9c0cd}button:disabled{opacity:.55;cursor:not-allowed}
+    button.primary{border-color:var(--blue);background:var(--blue);color:#fff}button.subtle{background:var(--panel-soft)}button.danger{border-color:var(--red);color:var(--red)}
+    input,textarea,select{width:100%;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--text);padding:9px 10px}textarea{min-height:76px;resize:vertical}
+    h1,h2,h3,p{margin:0}h1{font-size:18px;line-height:1.2}h2{font-size:14px}h3{font-size:13px}.muted{color:var(--muted)}
+    .app{height:100vh;display:grid;grid-template-rows:56px minmax(0,1fr)}.topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;border-bottom:1px solid var(--line);background:#fff;padding:0 18px}.brand{display:flex;align-items:center;gap:10px}.brand-mark{width:28px;height:28px;border-radius:7px;background:#172033;color:#fff;display:grid;place-items:center;font-weight:750}
+    .layout{min-height:0;display:grid;grid-template-columns:300px minmax(420px,1fr) 340px}.sidebar,.chat,.inspector{min-width:0;min-height:0;border-right:1px solid var(--line);background:#fff}.inspector{border-right:0;border-left:1px solid var(--line)}.sidebar,.inspector{display:grid;grid-template-rows:auto minmax(0,1fr)}.section{border-bottom:1px solid var(--line);padding:14px}.section-title{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}.stack{display:grid;gap:10px}.row{display:flex;align-items:center;gap:8px}.row.between{justify-content:space-between}.field{display:grid;gap:6px}.field label{font-size:12px;font-weight:700;color:#3d4658}
+    .room-list{min-height:0;overflow:auto;padding:10px}.room-item{width:100%;display:grid;gap:6px;text-align:left;border:1px solid transparent;border-radius:7px;background:#fff;padding:10px}.room-item:hover,.room-item.active{border-color:#b8c7f5;background:#f6f8ff}.room-meta{display:flex;align-items:center;justify-content:space-between;gap:8px;color:var(--muted);font-size:12px}
+    .chat{display:grid;grid-template-rows:auto minmax(0,1fr) auto;background:#f8f9fb}.chat-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;border-bottom:1px solid var(--line);background:#fff;padding:14px 16px}.chat-title{display:grid;gap:5px}.timeline{min-height:0;overflow:auto;padding:16px;display:grid;align-content:start;gap:10px}.composer{border-top:1px solid var(--line);background:#fff;padding:12px 16px}.composer textarea{min-height:70px}.composer-actions{display:flex;align-items:center;justify-content:space-between;margin-top:8px}
+    .message{max-width:78%;border:1px solid var(--line);border-radius:8px;background:#fff;padding:10px 12px;box-shadow:0 1px 2px rgba(23,32,51,.04)}.message.owner{justify-self:end;background:#eef4ff;border-color:#c8d8ff}.message.agent{border-color:#dfe2ea}.message.system{justify-self:center;max-width:92%;background:#f0f2f5;color:#485266}.message.guest{background:#fff}.message-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:5px}.message-name{font-weight:700;font-size:13px}.message-body{white-space:pre-wrap;line-height:1.55}
+    .finding-card{display:grid;gap:8px;border:1px solid #ecc77e;background:#fffaf0;border-radius:7px;padding:10px;margin-top:6px}.finding-card strong{font-size:13px}.finding-actions{display:flex;gap:8px;flex-wrap:wrap}
+    .tag{display:inline-flex;align-items:center;min-height:22px;border:1px solid var(--line);border-radius:999px;background:#f7f8fb;padding:0 8px;color:var(--muted);font-size:12px;white-space:nowrap}.tag.open{border-color:#b8c7f5;background:#f4f7ff;color:var(--blue)}.tag.online{border-color:#99d8ca;background:#effaf7;color:var(--green)}.tag.waiting{border-color:#ecc77e;background:#fff8e8;color:var(--amber)}.tag.done{border-color:#a8d8c9;background:#effaf7;color:var(--green)}.tag.error{border-color:#edaaa8;background:#fff1f0;color:var(--red)}
+    .stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.stat{border:1px solid var(--line);border-radius:7px;background:var(--panel-soft);padding:10px}.stat strong{display:block;font-size:18px}.member-list{display:grid;gap:8px}.member{display:grid;grid-template-columns:32px minmax(0,1fr) auto;gap:9px;align-items:center;border:1px solid var(--line);border-radius:7px;background:#fff;padding:8px}.avatar{width:32px;height:32px;border-radius:50%;background:#edf1f7;display:grid;place-items:center;font-weight:750;color:#3d4658}.invite-box{border:1px solid var(--line);border-radius:7px;background:var(--panel-soft);padding:10px;display:grid;gap:8px}.invite-link{word-break:break-all;border:1px dashed #bac2d0;border-radius:6px;background:#fff;padding:8px;color:#33405a}.empty{border:1px dashed var(--line);border-radius:8px;padding:18px;text-align:center;color:var(--muted);background:#fff}.hidden{display:none!important}details{border:1px solid var(--line);border-radius:7px;background:#fff;padding:8px}summary{cursor:pointer;font-weight:700}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;white-space:pre-wrap;word-break:break-all;color:#2a3447}
+    @media(max-width:1040px){.app{height:auto;min-height:100vh}.layout{grid-template-columns:1fr}.sidebar,.inspector{border-right:0;border-left:0;border-bottom:1px solid var(--line)}.message{max-width:96%}}
   </style>
 </head>
 <body>
-  <header>
-    <div class="shell topbar">
-      <div>
-        <h1>Lighthouse Review Room</h1>
-        <p>纯 Review Room 产品能力：review room owner 通过 WebSocket 监督 Reviewer Agent 与 Developer Agent 的代码评审协作。</p>
-      </div>
-      <div class="actions">
-        <button id="refreshRooms">刷新房间</button>
-        <button class="primary" id="createRoom">创建真实 Room</button>
-        <button id="createDemo">创建体验房间</button>
-      </div>
-    </div>
-  </header>
-  <main class="shell">
-    <section class="panel">
-      <div class="panel-body">
-        <h2>代码评审房间</h2>
-        <div class="form-grid">
-          <div class="field"><label>Room 标题</label><input id="roomTitle" value="MR: WebSocket Review Room"></div>
-          <div class="field"><label>仓库</label><input id="roomRepo" value="lighthouse/review-room"></div>
-          <div class="field"><label>MR 地址</label><input id="roomMr" value="https://git.example.com/lighthouse/review-room/-/merge_requests/1"></div>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand"><div class="brand-mark">LR</div><div><h1>Lighthouse Review Room</h1><p class="muted">话题房间里的 Human + Agent 协作</p></div></div>
+      <div class="row"><span class="tag" id="connectionState">未连接</span><button class="subtle" id="refreshRooms">刷新</button></div>
+    </header>
+    <main class="layout">
+      <aside class="sidebar">
+        <div class="section">
+          <div class="section-title"><h2>创建话题房间</h2></div>
+          <div class="stack">
+            <div class="field"><label>房间标题</label><input id="roomTitle" value="开放评审讨论"></div>
+            <div class="field"><label>目标</label><textarea id="roomObjective">围绕一个问题、方案或变更，让人和 Agent 在同一个房间里讨论并沉淀决定。</textarea></div>
+            <div class="field"><label>标签，可选</label><input id="roomTags" value="review,agent"></div>
+            <button class="primary" id="createRoom">创建房间</button>
+            <button class="subtle" id="createDemo">创建体验房间</button>
+          </div>
         </div>
-        <p class="notice">REST: <code>POST /api/rooms</code>、<code>POST /api/rooms/{roomId}/connectors</code>、<code>POST /api/connectors/{connectorId}/events</code>、<code>/api/demo/session</code>。Realtime: <code>/ws/rooms/{roomId}?token=...</code> via <code>new WebSocket</code>。</p>
-      </div>
-    </section>
-    <div class="grid" style="margin-top:16px">
-      <aside class="panel">
-        <div class="panel-head"><h2>Review Rooms</h2><span class="tag" id="roomCount">0</span></div>
-        <div class="panel-body"><div class="room-list" id="roomList"></div></div>
+        <div class="room-list" id="roomList"></div>
       </aside>
-      <section class="panel">
-        <div class="panel-head">
-          <div><h2 id="detailTitle">选择或创建房间</h2><p id="detailMeta">owner token 会保存在本机浏览器 localStorage。</p></div>
-          <span class="tag" id="socketState">未连接</span>
+      <section class="chat">
+        <div class="chat-head">
+          <div class="chat-title"><h2 id="detailTitle">选择或创建一个房间</h2><p class="muted" id="detailMeta">左侧是房间，中间是对话，右侧是成员与状态。</p></div>
+          <span class="tag open" id="roomStatus">未选择</span>
         </div>
-        <div class="panel-body" id="detailBody"><div class="empty">还没有可展示的 Room。</div></div>
+        <div class="timeline" id="timeline"><div class="empty">还没有进入房间。</div></div>
+        <div class="composer" id="composer">
+          <textarea id="messageInput" placeholder="输入消息，和房间里的成员继续讨论。"></textarea>
+          <div class="composer-actions"><span class="muted" id="composerHint">真实 Agent 接入后，会在同一条时间线里回复。</span><button class="primary" id="sendMessage">发送</button></div>
+        </div>
       </section>
-    </div>
-  </main>
+      <aside class="inspector">
+        <div class="section" id="statusPanel"></div>
+        <div class="section" style="overflow:auto" id="membersPanel"></div>
+      </aside>
+    </main>
+  </div>
   <script>
-    const state = { rooms: [], room: null, ws: null, tokens: JSON.parse(localStorage.getItem('reviewRoomOwnerTokens') || '{}') };
-    const statusText = { open: '进行中', completed: '已完成', needs_developer_response: '等待 Developer Agent', developer_responded: '等待 owner 确认', accepted: '已确认', rejected: '已驳回' };
-    function saveTokens(){ localStorage.setItem('reviewRoomOwnerTokens', JSON.stringify(state.tokens)); }
-    function esc(v){ return String(v ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;'); }
+    window.REVIEW_ROOM_INVITE = __INITIAL_INVITE__;
+    const state = {
+      rooms: [],
+      room: null,
+      ws: null,
+      identity: null,
+      currentToken: '',
+      invite: window.REVIEW_ROOM_INVITE,
+      lastInvite: null,
+      presence: [],
+      ownerTokens: JSON.parse(localStorage.getItem('reviewRoomOwnerTokens') || '{}'),
+      guestTokens: JSON.parse(localStorage.getItem('reviewRoomGuestTokens') || '{}')
+    };
+    const statusText = {
+      open: '开放讨论',
+      waiting_for_agent: '等待 Agent',
+      agent_working: 'Agent 工作中',
+      needs_owner_decision: '等待 owner 确认',
+      completed: '已完成',
+      archived: '已归档',
+      needs_developer_response: '等待 Developer Agent',
+      developer_responded: '等待 owner 确认',
+      accepted: '已确认',
+      rejected: '已驳回'
+    };
+    const agentStatusText = { invited:'已邀请', joining:'接入中', online:'在线', connected:'在线', working:'工作中', needs_input:'需要输入', error:'异常', offline:'离线' };
+    function esc(value){ return String(value ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;'); }
+    function fmtTime(ms){ if(!ms) return '刚刚'; return new Date(ms).toLocaleString([], {month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit'}); }
+    function saveTokens(){ localStorage.setItem('reviewRoomOwnerTokens', JSON.stringify(state.ownerTokens)); localStorage.setItem('reviewRoomGuestTokens', JSON.stringify(state.guestTokens)); }
     async function api(path, options={}){
       const res = await fetch(path, options);
       const data = await res.json();
       if(!res.ok) throw new Error(data.error || res.statusText);
       return data;
     }
-    function authHeaders(roomId){ return { 'Content-Type':'application/json', Authorization:`Bearer ${state.tokens[roomId] || ''}` }; }
-    function roleStatus(role){
-      const found = ((state.room && state.room.connectors) || []).find(c => c.agentRole === role);
-      return found ? `${found.name} · token ready` : '未注册';
-    }
+    function authHeaders(){ return { 'Content-Type':'application/json', Authorization:`Bearer ${state.currentToken}` }; }
+    function roomToken(roomId){ return state.ownerTokens[roomId] || state.guestTokens[roomId] || ''; }
+    function isOwner(){ return state.identity && state.identity.type === 'owner'; }
     async function loadRooms(){
       const data = await api('/api/rooms');
       state.rooms = data.rooms || [];
-      document.getElementById('roomCount').textContent = `${state.rooms.length} 个`;
       renderRooms();
+      if(state.invite && !state.room){ renderInviteGate(state.invite); return; }
+      if(!state.room && state.rooms.length){ await selectRoom(state.rooms[0].id).catch(() => renderEmptyRoom()); }
+      if(!state.room && !state.rooms.length){ renderEmptyRoom(); }
     }
     function renderRooms(){
       const list = document.getElementById('roomList');
       if(!state.rooms.length){ list.innerHTML = '<div class="empty">暂无房间</div>'; return; }
-      list.innerHTML = state.rooms.map(room => `
-        <button class="room-item ${state.room && state.room.id === room.id ? 'active' : ''}" data-room="${esc(room.id)}">
+      list.innerHTML = state.rooms.map(room => {
+        const summary = room.statusSummary || {};
+        const active = state.room && state.room.id === room.id ? 'active' : '';
+        return `<button class="room-item ${active}" data-room="${esc(room.id)}">
           <strong>${esc(room.title)}</strong>
-          <p>${esc((room.context && room.context.repository) || room.mrUrl || room.provider)}</p>
-        </button>`).join('');
-      list.querySelectorAll('[data-room]').forEach(btn => btn.addEventListener('click', () => selectRoom(btn.dataset.room)));
+          <span class="muted">${esc(room.objective || (room.context && room.context.objective) || '开放话题房间')}</span>
+          <span class="room-meta"><span>${esc(statusText[room.status] || room.status)}</span><span>${summary.onlineAgentCount || 0}/${summary.agentCount || 0} Agent</span></span>
+        </button>`;
+      }).join('');
+      list.querySelectorAll('[data-room]').forEach(button => button.addEventListener('click', () => selectRoom(button.dataset.room).catch(alert)));
     }
     async function createRoom(){
-      const room = await api('/api/rooms', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({
-        title: document.getElementById('roomTitle').value || 'MR: Review Room',
-        provider: 'lighthouse',
-        mrUrl: document.getElementById('roomMr').value,
-        context: { repository: document.getElementById('roomRepo').value, goal: 'WebSocket 多 Agent 代码评审协作' }
+      const tags = document.getElementById('roomTags').value.split(',').map(item => item.trim()).filter(Boolean);
+      const room = await api('/api/rooms', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({
+        title: document.getElementById('roomTitle').value || '开放评审讨论',
+        objective: document.getElementById('roomObjective').value,
+        tags
       })});
-      state.tokens[room.id] = room.ownerToken;
+      state.ownerTokens[room.id] = room.ownerToken;
       saveTokens();
       await loadRooms();
       await selectRoom(room.id);
     }
     async function createDemo(){
-      const room = await api('/api/demo/session', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' });
-      state.tokens[room.id] = room.ownerToken;
+      const room = await api('/api/demo/session', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+      state.ownerTokens[room.id] = room.ownerToken;
       saveTokens();
       await loadRooms();
       await selectRoom(room.id);
     }
     async function selectRoom(roomId){
-      const token = state.tokens[roomId];
-      if(!token){ renderMissingToken(roomId); return; }
-      state.room = await api(`/api/rooms/${encodeURIComponent(roomId)}`, { headers:{ Authorization:`Bearer ${token}` } });
-      renderRooms();
-      renderDetail();
+      const token = roomToken(roomId);
+      if(!token){ renderLockedRoom(roomId); return; }
+      state.currentToken = token;
+      state.room = await api(`/api/rooms/${encodeURIComponent(roomId)}`, {headers:{Authorization:`Bearer ${token}`}});
+      state.identity = state.ownerTokens[roomId] === token ? {type:'owner', name:'review room owner', role:'owner'} : {type:'guest', name:'guest', role:'guest'};
+      state.lastInvite = null;
+      state.presence = [];
+      renderAll();
       connectSocket();
     }
-    function renderMissingToken(roomId){
-      state.room = null;
+    function renderLockedRoom(roomId){
+      state.room = null; state.currentToken = ''; state.identity = null;
+      state.presence = [];
       document.getElementById('detailTitle').textContent = roomId;
-      document.getElementById('detailBody').innerHTML = '<div class="empty">本机没有这个房间的 owner token，无法进入。</div>';
+      document.getElementById('detailMeta').textContent = '这台浏览器没有这个房间的进入凭据。';
+      document.getElementById('roomStatus').textContent = '未进入';
+      document.getElementById('timeline').innerHTML = '<div class="empty">需要 owner 链接或分享链接才能进入。</div>';
+      renderSidePanels();
     }
-    async function registerConnector(role){
-      if(!state.room) return;
-      const name = role === 'reviewer' ? 'Reviewer Agent' : 'Developer Agent';
-      await api(`/api/rooms/${encodeURIComponent(state.room.id)}/connectors`, {
-        method:'POST',
-        headers: authHeaders(state.room.id),
-        body: JSON.stringify({ role, name })
-      });
-      await selectRoom(state.room.id);
+    function renderEmptyRoom(){
+      document.getElementById('timeline').innerHTML = '<div class="empty">创建一个房间，或通过分享链接加入。</div>';
+      renderSidePanels();
+    }
+    function renderInviteGate(invite){
+      state.presence = [];
+      const title = invite.type === 'agent' ? 'Agent 邀请' : '访客邀请';
+      document.getElementById('detailTitle').textContent = title;
+      document.getElementById('detailMeta').textContent = invite.type === 'agent' ? '把这条链接交给要接入的 Agent。' : '输入昵称后即可加入房间讨论。';
+      document.getElementById('roomStatus').textContent = invite.type === 'agent' ? '等待 Agent' : '可加入';
+      if(invite.type === 'agent'){
+        document.getElementById('timeline').innerHTML = `<div class="empty"><strong>${esc(invite.name || 'Agent')}</strong><br>这个链接用于 Agent 接入。owner 页面会把它显示在右侧成员列表中。</div>`;
+      } else {
+        document.getElementById('timeline').innerHTML = `<div class="invite-box" style="max-width:420px;margin:auto">
+          <h2>加入 Review Room</h2>
+          <p class="muted">外部成员默认可以阅读和发言，确认决定仍由 owner 完成。</p>
+          <div class="field"><label>你的昵称</label><input id="guestName" value="外部成员"></div>
+          <button class="primary" id="joinRoom">进入房间</button>
+        </div>`;
+        document.getElementById('joinRoom').addEventListener('click', () => joinInvite(invite).catch(alert));
+      }
+      renderSidePanels();
+    }
+    async function joinInvite(invite){
+      const result = await api(`/api/rooms/${encodeURIComponent(invite.roomId)}/join`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({inviteCode: invite.code, nickname: document.getElementById('guestName').value})});
+      state.guestTokens[invite.roomId] = result.guestToken;
+      state.currentToken = result.guestToken;
+      state.identity = result.identity;
+      state.room = result.room;
+      state.presence = [];
+      saveTokens();
+      renderAll();
+      connectSocket();
     }
     function connectSocket(){
-      if(!state.room) return;
+      if(!state.room || !state.currentToken) return;
       if(state.ws) state.ws.close();
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      state.ws = new WebSocket(`${proto}//${location.host}/ws/rooms/${encodeURIComponent(state.room.id)}?token=${encodeURIComponent(state.tokens[state.room.id])}`);
-      state.ws.onopen = () => document.getElementById('socketState').textContent = '实时连接';
-      state.ws.onclose = () => document.getElementById('socketState').textContent = '已断开';
+      state.ws = new WebSocket(`${proto}//${location.host}/ws/rooms/${encodeURIComponent(state.room.id)}?token=${encodeURIComponent(state.currentToken)}`);
+      state.ws.onopen = () => document.getElementById('connectionState').textContent = '实时连接';
+      state.ws.onclose = () => document.getElementById('connectionState').textContent = '已断开';
       state.ws.onmessage = event => handleSocketEvent(JSON.parse(event.data));
     }
     function sendSocket(event){ if(state.ws && state.ws.readyState === WebSocket.OPEN) state.ws.send(JSON.stringify(event)); }
     function handleSocketEvent(event){
-      if(event.type === 'room.snapshot'){ state.room = event.room; renderDetail(); return; }
-      if(event.type === 'message.created'){ state.room.messages.push(event.message); renderDetail(); return; }
-      if(event.type === 'finding.created'){ state.room.findings.push(event.finding); renderDetail(); return; }
-      if(event.type === 'finding.updated'){
-        state.room.findings = state.room.findings.map(f => f.id === event.finding.id ? event.finding : f);
-        renderDetail();
-      }
+      if(event.type === 'room.snapshot'){ state.room = event.room; state.identity = event.identity || state.identity; renderAll(); return; }
+      if(event.type === 'presence.updated'){ state.presence = event.presence || []; renderSidePanels(); return; }
+      if(event.type === 'message.created'){ state.room.messages.push(event.message); renderAll(); return; }
+      if(event.type === 'finding.created'){ state.room.findings.push(event.finding); renderAll(); return; }
+      if(event.type === 'finding.updated'){ state.room.findings = state.room.findings.map(f => f.id === event.finding.id ? event.finding : f); renderAll(); return; }
+      if(event.type === 'error') alert(event.error);
     }
-    function renderDetail(){
+    function renderAll(){
+      renderRooms();
+      renderChat();
+      renderSidePanels();
+    }
+    function renderChat(){
       const room = state.room;
-      if(!room) return;
+      if(!room){ renderEmptyRoom(); return; }
       document.getElementById('detailTitle').textContent = room.title;
-      document.getElementById('detailMeta').textContent = `${(room.context && room.context.repository) || '未绑定仓库'} · ${room.mrUrl || '无 MR 地址'}`;
+      document.getElementById('detailMeta').textContent = room.objective || (room.context && room.context.objective) || '开放话题房间';
+      document.getElementById('roomStatus').textContent = statusText[room.status] || room.status;
       const messages = room.messages || [];
-      const findings = room.findings || [];
-      document.getElementById('detailBody').innerHTML = `
-        <div class="role-row">
-          <div class="role"><h3>review room owner</h3><p>Web 端监督者 · owner token</p><span class="tag online">online</span></div>
-          <div class="role"><h3>Reviewer Agent</h3><p>${esc(roleStatus('reviewer'))}</p><button data-role="reviewer">注册远端 Agent Connector</button></div>
-          <div class="role"><h3>Developer Agent</h3><p>${esc(roleStatus('developer'))}</p><button data-role="developer">注册本地 Agent Connector</button></div>
-        </div>
-        <div class="chat-layout" style="margin-top:16px">
-          <div>
-            <h2>聊天室</h2>
-            <div class="timeline">${messages.length ? messages.map(renderMessage).join('') : '<div class="empty">暂无消息</div>'}</div>
-            <div class="field" style="margin-top:12px"><label>owner 发起话题</label><textarea id="topicInput">请评审这个 MR 的鉴权风险，并给出可执行修复建议。</textarea></div>
-            <div class="actions" style="margin-top:8px"><button class="primary" id="sendTopic">发送话题</button></div>
-          </div>
-          <div>
-            <h2>Finding / Decision</h2>
-            <div class="finding-list">${findings.length ? findings.map(renderFinding).join('') : '<div class="empty">暂无 Finding / Decision</div>'}</div>
-          </div>
-        </div>`;
-      document.querySelectorAll('[data-role]').forEach(btn => btn.addEventListener('click', () => registerConnector(btn.dataset.role)));
-      document.getElementById('sendTopic').addEventListener('click', () => sendSocket({ type:'message.create', body:document.getElementById('topicInput').value }));
-      document.querySelectorAll('[data-confirm]').forEach(btn => btn.addEventListener('click', () => sendSocket({ type:'finding.confirm', findingId:btn.dataset.confirm, decision:'accepted', body:'确认该修复方向。' })));
-      document.querySelectorAll('[data-reject]').forEach(btn => btn.addEventListener('click', () => sendSocket({ type:'finding.reject', findingId:btn.dataset.reject, decision:'rejected', body:'驳回该结论，请继续讨论。' })));
+      document.getElementById('timeline').innerHTML = messages.length ? messages.map(renderMessage).join('') : '<div class="empty">房间已创建，发一条消息开始讨论。</div>';
+      const timeline = document.getElementById('timeline');
+      timeline.scrollTop = timeline.scrollHeight;
     }
     function renderMessage(message){
-      const cls = message.senderType === 'human' ? 'owner' : 'agent';
-      return `<article class="message ${cls}"><div class="message-head"><h3>${esc(message.senderName)}</h3><span class="tag">${esc(message.kind)}</span></div><div class="body">${esc(message.body)}</div></article>`;
+      const cls = message.senderType === 'system' ? 'system' : message.kind === 'guest_message' ? 'guest' : message.senderType === 'human' ? 'owner' : 'agent';
+      const finding = message.payload && message.payload.findingId ? (state.room.findings || []).find(item => item.id === message.payload.findingId) : null;
+      return `<article class="message ${cls}">
+        <div class="message-head"><span class="message-name">${esc(message.senderName)}</span><span class="tag">${esc(messageKindText(message.kind, message))}</span></div>
+        <div class="message-body">${esc(message.body)}</div>
+        ${finding ? renderFindingCard(finding) : ''}
+      </article>`;
     }
-    function renderFinding(finding){
-      const canConfirm = finding.status === 'developer_responded';
-      return `<article class="finding"><div class="finding-head"><span class="tag p1">${esc(finding.severity)}</span><span class="tag waiting">${esc(statusText[finding.status] || finding.status)}</span></div><div class="finding-title">${esc(finding.claim)}</div><p>${esc(finding.evidence)}</p><p><strong>建议：</strong>${esc(finding.suggestedFix)}</p><div class="finding-actions"><button class="success" data-confirm="${esc(finding.id)}" ${canConfirm ? '' : 'disabled'}>人工确认并同步</button><button class="danger" data-reject="${esc(finding.id)}" ${canConfirm ? '' : 'disabled'}>驳回并继续讨论</button><button disabled>Developer Agent 回复</button></div></article>`;
+    function messageKindText(kind, message={}){
+      if(message.payload && message.payload.hostedAgent) return '模拟 Agent';
+      return {room_created:'系统', invite_created:'邀请', member_joined:'加入', owner_topic:'owner', guest_message:'guest', connector_message:'Agent', agent_working:'处理中', review_finding:'Finding', developer_response:'回复', human_confirmation:'确认', mr_sync_preview:'同步预览', mr_webhook:'外部事件'}[kind] || kind;
+    }
+    function renderFindingCard(finding){
+      const canConfirm = isOwner() && finding.status === 'developer_responded';
+      return `<div class="finding-card">
+        <div class="row between"><strong>${esc(finding.claim || 'Review finding')}</strong><span class="tag waiting">${esc(statusText[finding.status] || finding.status)}</span></div>
+        ${finding.evidence ? `<div class="muted">${esc(finding.evidence)}</div>` : ''}
+        ${finding.suggestedFix ? `<div>${esc(finding.suggestedFix)}</div>` : ''}
+        <div class="finding-actions"><button class="primary" data-confirm="${esc(finding.id)}" ${canConfirm ? '' : 'disabled'}>确认</button><button class="danger" data-reject="${esc(finding.id)}" ${canConfirm ? '' : 'disabled'}>驳回</button></div>
+      </div>`;
+    }
+    function renderSidePanels(){
+      const presence = state.presence || [];
+      if(!state.room){
+        document.getElementById('statusPanel').innerHTML = '<div class="empty">房间状态会显示在这里。</div>';
+        document.getElementById('membersPanel').innerHTML = '<div class="empty">成员列表会显示在这里。</div>';
+        return;
+      }
+      const summary = state.room.statusSummary || {};
+      const onlineAgents = presence.filter(item => item.type === 'connector').length;
+      document.getElementById('statusPanel').innerHTML = `<div class="section-title"><h2>房间状态</h2><span class="tag open">${esc(statusText[state.room.status] || state.room.status)}</span></div>
+        <div class="stats">
+          <div class="stat"><strong>${summary.memberCount || 0}</strong><span class="muted">成员</span></div>
+          <div class="stat"><strong>${onlineAgents}</strong><span class="muted">在线 Agent</span></div>
+          <div class="stat"><strong>${summary.pendingFindingCount || 0}</strong><span class="muted">待处理</span></div>
+          <div class="stat"><strong>${fmtTime(summary.lastActiveAt || state.room.updatedAt)}</strong><span class="muted">最后活动</span></div>
+        </div>
+        <div class="stack" style="margin-top:12px">${renderInviteControls()}</div>`;
+      document.getElementById('membersPanel').innerHTML = `<div class="section-title"><h2>房间角色</h2><span class="tag">${presence.length || 0} 在线</span></div><div class="member-list">${renderMembers(presence)}</div>`;
+      bindInviteControls();
+      document.querySelectorAll('[data-confirm]').forEach(button => button.addEventListener('click', () => sendSocket({type:'finding.confirm', findingId:button.dataset.confirm, decision:'accepted', body:'确认采纳这个结论。'})));
+      document.querySelectorAll('[data-reject]').forEach(button => button.addEventListener('click', () => sendSocket({type:'finding.reject', findingId:button.dataset.reject, decision:'rejected', body:'暂不采纳，继续讨论。'})));
+    }
+    function renderMembers(presence=[]){
+      const connectedAgents = new Set(presence.filter(item => item.type === 'connector').map(item => `${item.name}|${item.role}`));
+      const humans = (state.room.participants || []).map(item => memberRow(item.name, item.role || item.type, item.status || 'online', item.role === 'owner' ? 'owner' : 'human'));
+      const agents = (state.room.connectors || []).map(item => {
+        const connected = connectedAgents.has(`${item.name}|${item.agentRole}`);
+        const status = connected ? 'online' : (item.status === 'invited' ? 'invited' : 'offline');
+        return memberRow(item.name, item.agentRole, status, 'agent');
+      });
+      return humans.concat(agents).join('') || '<div class="empty">暂无成员</div>';
+    }
+    function memberRow(name, role, status, type){
+      const label = type === 'agent' ? (agentStatusText[status] || status) : (role === 'owner' ? 'owner' : 'guest');
+      const cls = status === 'online' || status === 'connected' ? 'online' : status === 'error' ? 'error' : 'waiting';
+      return `<div class="member"><div class="avatar">${esc(String(name || '?').slice(0,1).toUpperCase())}</div><div><strong>${esc(name)}</strong><p class="muted">${esc(role)}</p></div><span class="tag ${cls}">${esc(label)}</span></div>`;
+    }
+    function renderInviteControls(){
+      if(!isOwner()) return '<div class="empty">你可以阅读和发言，邀请和确认操作由 owner 完成。</div>';
+      const last = state.lastInvite ? `<div class="invite-box"><strong>邀请链接</strong><div class="invite-link">${esc(state.lastInvite.inviteUrl)}</div><button class="subtle" id="copyInvite">复制链接</button>${renderAdvancedInvite(state.lastInvite)}</div>` : '';
+      return `<div class="invite-box">
+        <strong>分享给外部成员</strong>
+        <button id="createGuestInvite">生成访客链接</button>
+      </div>
+      <div class="invite-box">
+        <strong>邀请 Agent</strong>
+        <div class="field"><label>角色</label><select id="agentRole"><option value="reviewer">Reviewer</option><option value="developer">Developer</option><option value="observer">Observer</option><option value="custom">Custom</option></select></div>
+        <div class="field"><label>名称</label><input id="agentName" value="Reviewer Agent"></div>
+        <button id="createAgentInvite">生成 Agent 链接</button>
+      </div>${last}`;
+    }
+    function renderAdvancedInvite(invite){
+      if(invite.type !== 'agent' || !invite.advanced) return '';
+      const roomUrl = `${location.origin}/ws/rooms/${invite.advanced.roomId}`;
+      return `<details><summary>高级接入信息</summary><div class="mono">room: ${esc(invite.advanced.roomId)}
+role: ${esc(invite.advanced.role)}
+key: ${esc(invite.advanced.connectorToken)}
+realtime: ${esc(roomUrl)}</div></details>`;
+    }
+    function bindInviteControls(){
+      const guest = document.getElementById('createGuestInvite');
+      if(guest) guest.addEventListener('click', () => createInvite({type:'guest'}).catch(alert));
+      const agent = document.getElementById('createAgentInvite');
+      if(agent) agent.addEventListener('click', () => createInvite({type:'agent', role:document.getElementById('agentRole').value, name:document.getElementById('agentName').value}).catch(alert));
+      const copy = document.getElementById('copyInvite');
+      if(copy) copy.addEventListener('click', () => navigator.clipboard && navigator.clipboard.writeText(state.lastInvite.inviteUrl));
+    }
+    async function createInvite(payload){
+      const invite = await api(`/api/rooms/${encodeURIComponent(state.room.id)}/invites`, {method:'POST', headers:authHeaders(), body:JSON.stringify(payload)});
+      await selectRoom(state.room.id);
+      state.lastInvite = invite;
+      renderSidePanels();
     }
     document.getElementById('createRoom').addEventListener('click', () => createRoom().catch(alert));
     document.getElementById('createDemo').addEventListener('click', () => createDemo().catch(alert));
     document.getElementById('refreshRooms').addEventListener('click', () => loadRooms().catch(alert));
+    function submitMessage(){
+      const input = document.getElementById('messageInput');
+      if(!state.room || !input.value.trim()) return;
+      sendSocket({type:'message.create', body:input.value.trim()});
+      input.value = '';
+    }
+    document.getElementById('sendMessage').addEventListener('click', submitMessage);
+    document.getElementById('messageInput').addEventListener('keydown', event => {
+      if(event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+      event.preventDefault();
+      submitMessage();
+    });
+    document.addEventListener('change', event => {
+      if(event.target && event.target.id === 'agentRole'){
+        const role = event.target.value;
+        const name = role === 'developer' ? 'Developer Agent' : role === 'observer' ? 'Observer Agent' : role === 'custom' ? 'Custom Agent' : 'Reviewer Agent';
+        const input = document.getElementById('agentName');
+        if(input) input.value = name;
+      }
+    });
     loadRooms().catch(alert);
   </script>
 </body>
-</html>"""
+</html>""".replace("__INITIAL_INVITE__", json_dumps(initial_invite) if initial_invite else "null")
 
+
+def index_html(initial_invite: Optional[Dict[str, Any]] = None) -> str:
+    return review_room_app_html(initial_invite)
 
 def build_handler(store: ReviewRoomStore):
     class Handler(ReviewRoomHandler):

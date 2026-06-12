@@ -13,8 +13,10 @@ from codex_connector import (  # noqa: E402
     await_response_with_keepalive,
     build_codex_exec_args,
     build_reviewer_finding_event,
+    format_room_history,
     maybe_build_response,
     parse_codex_last_message,
+    parse_room_api_url,
 )
 
 
@@ -61,6 +63,57 @@ class CodexConnectorRunnerTest(unittest.TestCase):
                 "workspace-write",
                 "fix prompt",
             ],
+        )
+
+    def test_build_codex_exec_args_can_force_fast_local_worker_mode(self):
+        args = build_codex_exec_args(
+            "codex",
+            "chat prompt",
+            role="developer",
+            model="gpt-5.3-codex-spark",
+            reasoning_effort="low",
+            ignore_user_config=True,
+            ignore_rules=True,
+            ephemeral=True,
+            skip_git_repo_check=True,
+        )
+
+        self.assertEqual(
+            args,
+            [
+                "codex",
+                "exec",
+                "--json",
+                "--ignore-user-config",
+                "--ignore-rules",
+                "--ephemeral",
+                "--skip-git-repo-check",
+                "--sandbox",
+                "workspace-write",
+                "-m",
+                "gpt-5.3-codex-spark",
+                "-c",
+                'model_reasoning_effort="low"',
+                "chat prompt",
+            ],
+        )
+
+    def test_parse_room_api_url_uses_http_room_snapshot_endpoint(self):
+        self.assertEqual(
+            parse_room_api_url("http://review-room.example", "room_123"),
+            "http://review-room.example/api/rooms/room_123",
+        )
+
+    def test_format_room_history_keeps_recent_compact_messages(self):
+        history = [
+            {"sender": "review room owner", "kind": "owner_topic", "body": "第一条"},
+            {"sender": "Developer Agent", "kind": "connector_message", "body": "第二条"},
+            {"sender": "review room owner", "kind": "owner_topic", "body": "第三条"},
+        ]
+
+        self.assertEqual(
+            format_room_history(history, limit=2),
+            "- Developer Agent [connector_message]: 第二条\n- review room owner [owner_topic]: 第三条",
         )
 
     def test_parse_codex_last_message_extracts_assistant_text_from_jsonl(self):
@@ -150,6 +203,81 @@ class CodexConnectorAsyncResponseTest(unittest.IsolatedAsyncioTestCase):
         run_codex.assert_called_once()
         self.assertEqual(response["type"], "finding.create")
         self.assertEqual(response["claim"], "仓库说明缺少安全边界")
+
+    async def test_reviewer_chat_mode_returns_room_message(self):
+        args = Namespace(
+            role="reviewer",
+            mock=False,
+            response_mode="chat",
+            codex_command="codex",
+            timeout=600,
+            workspace="/tmp/reviewer-checkout",
+            sandbox="read-only",
+            model="",
+            repo="",
+            mr_url="",
+            base_ref="",
+            head_ref="",
+            task="open topic room",
+            room_history=[
+                {"sender": "review room owner", "kind": "owner_topic", "body": "上一条：请先确认你能看到房间。"},
+                {"sender": "Reviewer Agent", "kind": "connector_message", "body": "我能看到。"},
+            ],
+            history_limit=12,
+        )
+        event = {
+            "type": "message.created",
+            "message": {
+                "senderName": "review room owner",
+                "body": "你真的是 Agent 吗？",
+            },
+        }
+
+        with patch("codex_connector.run_codex_command", return_value="我是通过 Codex connector 接入的真实回复。") as run_codex:
+            response = await maybe_build_response(args, event)
+
+        run_codex.assert_called_once()
+        prompt = run_codex.call_args.args[1]
+        self.assertIn("最近房间消息", prompt)
+        self.assertIn("上一条：请先确认你能看到房间。", prompt)
+        self.assertEqual(response["type"], "message.create")
+        self.assertEqual(response["body"], "我是通过 Codex connector 接入的真实回复。")
+
+    async def test_developer_chat_mode_returns_room_message_for_owner_chat(self):
+        args = Namespace(
+            role="developer",
+            mock=False,
+            response_mode="chat",
+            codex_command="codex",
+            timeout=600,
+            workspace="/tmp/developer-checkout",
+            sandbox="workspace-write",
+            model="gpt-5.3-codex-spark",
+            reasoning_effort="low",
+            ignore_user_config=True,
+            ignore_rules=True,
+            ephemeral=True,
+            skip_git_repo_check=True,
+            repo="",
+            mr_url="",
+            base_ref="",
+            head_ref="",
+            task="open topic room",
+        )
+        event = {
+            "type": "message.created",
+            "message": {
+                "senderName": "review room owner",
+                "body": "请你作为本地 Codex 接入并回复。",
+            },
+        }
+
+        with patch("codex_connector.run_codex_command", return_value="本地 Codex 已接入，我会在这个房间里处理任务。") as run_codex:
+            response = await maybe_build_response(args, event)
+
+        run_codex.assert_called_once()
+        self.assertEqual(response["type"], "message.create")
+        self.assertEqual(response["body"], "本地 Codex 已接入，我会在这个房间里处理任务。")
 
     async def test_keepalive_pings_websocket_while_response_is_pending(self):
         class FakeWebSocket:

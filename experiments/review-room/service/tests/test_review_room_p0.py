@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 try:
     from aiohttp import WSMsgType
@@ -29,19 +30,22 @@ class ReviewRoomP0StoreTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_room_creation_returns_owner_token_and_default_roles(self):
+    def test_room_creation_returns_owner_token_and_topic_room_owner(self):
         room = self.store.create_room(
             {
-                "title": "MR: websocket review room",
-                "context": {"repository": "lighthouse/review-room"},
+                "title": "开放评审讨论",
+                "objective": "让 owner、外部成员和 Agent 围绕一个话题协作。",
             }
         )
 
         self.assertEqual(room["roomId"], room["id"])
         self.assertTrue(room["ownerToken"].startswith("rro_"))
+        self.assertEqual(room["provider"], "topic")
+        self.assertEqual(room["mrUrl"], "")
+        self.assertEqual(room["objective"], "让 owner、外部成员和 Agent 围绕一个话题协作。")
         self.assertEqual(
             [(item["type"], item["role"]) for item in room["participants"]],
-            [("human", "owner"), ("agent", "reviewer"), ("agent", "developer")],
+            [("human", "owner")],
         )
 
     def test_room_token_authenticates_owner_or_connector_only(self):
@@ -183,6 +187,130 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         await reviewer_ws.close()
         await developer_ws.close()
 
+    async def test_guest_invite_can_chat_but_cannot_confirm(self):
+        _, room = await self.post_json("/api/rooms", {"title": "开放话题", "objective": "验证访客分享链接"})
+        _, invite = await self.post_json(
+            "/api/rooms/{}/invites".format(room["id"]),
+            {"type": "guest"},
+            room["ownerToken"],
+        )
+        _, joined = await self.post_json(
+            "/api/rooms/{}/join".format(room["id"]),
+            {"inviteCode": invite["code"], "nickname": "外部用户"},
+        )
+
+        owner_ws = await self.client.ws_connect("/ws/rooms/{}?token={}".format(room["id"], room["ownerToken"]))
+        guest_ws = await self.client.ws_connect("/ws/rooms/{}?token={}".format(room["id"], joined["guestToken"]))
+        await self._drain_initial_events(owner_ws, guest_ws)
+
+        await guest_ws.send_json({"type": "message.create", "body": "我从分享链接进来了。"})
+        guest_message = await self._read_event(owner_ws, "message.created")
+        self.assertEqual(guest_message["message"]["senderName"], "外部用户")
+        self.assertEqual(guest_message["message"]["kind"], "guest_message")
+
+        await guest_ws.send_json({"type": "finding.confirm", "findingId": "finding_missing"})
+        error = await self._read_event(guest_ws, "error")
+        self.assertEqual(error["error"], "owner token required")
+
+        await owner_ws.close()
+        await guest_ws.close()
+
+    async def test_rest_finding_mutations_require_matching_roles(self):
+        _, room = await self.post_json("/api/rooms", {"title": "开放话题", "objective": "验证 REST 权限边界"})
+        _, reviewer = await self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"type": "agent", "role": "reviewer", "name": "Reviewer Agent"},
+            room["ownerToken"],
+        )
+        _, developer = await self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"type": "agent", "role": "developer", "name": "Developer Agent"},
+            room["ownerToken"],
+        )
+        _, invite = await self.post_json(
+            "/api/rooms/{}/invites".format(room["id"]),
+            {"type": "guest"},
+            room["ownerToken"],
+        )
+        _, joined = await self.post_json(
+            "/api/rooms/{}/join".format(room["id"]),
+            {"inviteCode": invite["code"], "nickname": "外部用户"},
+        )
+
+        denied_finding, denied_finding_body = await self.post_json(
+            "/api/rooms/{}/findings".format(room["id"]),
+            {"claim": "访客伪造 finding"},
+            joined["guestToken"],
+        )
+        finding_response, finding = await self.post_json(
+            "/api/rooms/{}/findings".format(room["id"]),
+            {"claim": "Reviewer 发现风险", "createdBy": "spoofed"},
+            reviewer["connectorToken"],
+        )
+        denied_response, denied_response_body = await self.post_json(
+            "/api/findings/{}/developer-response".format(finding["id"]),
+            {"body": "Reviewer 不能冒充 Developer"},
+            reviewer["connectorToken"],
+        )
+        developer_response, _ = await self.post_json(
+            "/api/findings/{}/developer-response".format(finding["id"]),
+            {"senderName": "spoofed", "body": "Developer 已给出修复计划。"},
+            developer["connectorToken"],
+        )
+        denied_confirm, denied_confirm_body = await self.post_json(
+            "/api/findings/{}/confirm".format(finding["id"]),
+            {"decision": "accepted"},
+            joined["guestToken"],
+        )
+        confirm_response, confirmed = await self.post_json(
+            "/api/findings/{}/confirm".format(finding["id"]),
+            {"decision": "accepted", "senderName": "spoofed"},
+            room["ownerToken"],
+        )
+        loaded = self.store.get_room(room["id"])
+
+        self.assertEqual(denied_finding.status, 403)
+        self.assertEqual(denied_finding_body["error"], "reviewer connector required")
+        self.assertEqual(finding_response.status, 201)
+        self.assertEqual(finding["createdBy"], "Reviewer Agent")
+        self.assertEqual(denied_response.status, 403)
+        self.assertEqual(denied_response_body["error"], "developer connector required")
+        self.assertEqual(developer_response.status, 201)
+        self.assertEqual(denied_confirm.status, 403)
+        self.assertEqual(denied_confirm_body["error"], "owner token required")
+        self.assertEqual(confirm_response.status, 201)
+        self.assertEqual(confirmed["status"], "accepted")
+        messages_by_kind = {message["kind"]: message for message in loaded["messages"]}
+        self.assertEqual(messages_by_kind["review_finding"]["senderName"], "Reviewer Agent")
+        self.assertEqual(messages_by_kind["developer_response"]["senderName"], "Developer Agent")
+        self.assertEqual(messages_by_kind["human_confirmation"]["senderName"], "review room owner")
+
+    async def test_owner_message_receives_hosted_agent_reply_only_in_experience_mode(self):
+        _, room = await self.post_json("/api/rooms", {"title": "开放话题", "objective": "验证 owner 和 Agent 对话"})
+        await self.post_json(
+            "/api/rooms/{}/invites".format(room["id"]),
+            {"type": "agent", "role": "reviewer", "name": "Reviewer Agent"},
+            room["ownerToken"],
+        )
+
+        owner_ws = await self.client.ws_connect("/ws/rooms/{}?token={}".format(room["id"], room["ownerToken"]))
+        await self._drain_initial_events(owner_ws)
+
+        with patch.dict(os.environ, {"REVIEW_ROOM_ENABLE_HOSTED_AGENT": "true"}):
+            await owner_ws.send_json({"type": "message.create", "body": "我作为 owner 怎么和你对话？"})
+            owner_message = await self._read_event(owner_ws, "message.created")
+            agent_reply = await self._read_event(owner_ws, "message.created")
+            snapshot = await self._read_event(owner_ws, "room.snapshot")
+
+        self.assertEqual(owner_message["message"]["senderName"], "review room owner")
+        self.assertEqual(agent_reply["message"]["senderName"], "Reviewer Agent")
+        self.assertEqual(agent_reply["message"]["kind"], "connector_message")
+        self.assertTrue(agent_reply["message"]["payload"]["hostedAgent"])
+        self.assertIn("怎么和你对话", agent_reply["message"]["body"])
+        self.assertEqual(snapshot["room"]["connectors"][0]["status"], "online")
+
+        await owner_ws.close()
+
     async def _drain_initial_events(self, *websockets):
         for ws in websockets:
             await self._read_event(ws, "room.snapshot")
@@ -215,7 +343,8 @@ class CodexConnectorClientTest(unittest.TestCase):
         self.assertIn("review room owner", html)
         self.assertIn("Reviewer Agent", html)
         self.assertIn("Developer Agent", html)
-        self.assertIn("Finding / Decision", html)
+        self.assertIn("创建话题房间", html)
+        self.assertIn("房间角色", html)
 
     def test_parse_room_url_converts_http_to_websocket_path(self):
         ws_url = parse_room_url("http://127.0.0.1:8707", "room_123", "token_abc")

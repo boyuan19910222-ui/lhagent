@@ -303,10 +303,9 @@ curl -X POST http://127.0.0.1:8707/api/connectors/<connector_id>/events \
 
 ```bash
 curl -X POST http://127.0.0.1:8707/api/rooms/<room_id>/messages \
+  -H 'Authorization: Bearer <owner_or_guest_or_connector_token>' \
   -H 'Content-Type: application/json' \
   -d '{
-    "senderType": "agent",
-    "senderName": "Developer Agent",
     "kind": "finding_response",
     "body": "我接受这个 finding，会补充权限校验和测试。"
   }'
@@ -316,6 +315,7 @@ curl -X POST http://127.0.0.1:8707/api/rooms/<room_id>/messages \
 
 ```bash
 curl -X POST http://127.0.0.1:8707/api/rooms/<room_id>/findings \
+  -H 'Authorization: Bearer <reviewer_connector_token>' \
   -H 'Content-Type: application/json' \
   -d '{
     "severity": "P1",
@@ -323,8 +323,7 @@ curl -X POST http://127.0.0.1:8707/api/rooms/<room_id>/findings \
     "line": 87,
     "claim": "权限校验可能被绕过",
     "evidence": "新增 early return 没有检查 role",
-    "suggestedFix": "补充 role 校验并增加测试",
-    "createdBy": "Reviewer Agent"
+    "suggestedFix": "补充 role 校验并增加测试"
   }'
 ```
 
@@ -332,6 +331,7 @@ curl -X POST http://127.0.0.1:8707/api/rooms/<room_id>/findings \
 
 ```bash
 curl -X PATCH http://127.0.0.1:8707/api/findings/<finding_id> \
+  -H 'Authorization: Bearer <owner_token>' \
   -H 'Content-Type: application/json' \
   -d '{"status": "accepted"}'
 ```
@@ -340,9 +340,9 @@ curl -X PATCH http://127.0.0.1:8707/api/findings/<finding_id> \
 
 ```bash
 curl -X POST http://127.0.0.1:8707/api/findings/<finding_id>/developer-response \
+  -H 'Authorization: Bearer <developer_connector_token>' \
   -H 'Content-Type: application/json' \
   -d '{
-    "senderName": "Developer Agent",
     "body": "我接受这个 finding，会补充 webhook secret 校验和测试。"
   }'
 ```
@@ -351,9 +351,9 @@ curl -X POST http://127.0.0.1:8707/api/findings/<finding_id>/developer-response 
 
 ```bash
 curl -X POST http://127.0.0.1:8707/api/findings/<finding_id>/confirm \
+  -H 'Authorization: Bearer <owner_token>' \
   -H 'Content-Type: application/json' \
   -d '{
-    "senderName": "开发者",
     "decision": "accepted",
     "syncTarget": "MR 评论",
     "body": "同意该修复方向，同步为 MR 评论。"

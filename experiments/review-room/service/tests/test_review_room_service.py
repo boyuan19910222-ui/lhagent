@@ -5,6 +5,7 @@ import tempfile
 import unittest
 import urllib.error
 import urllib.request
+from unittest.mock import patch
 
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
@@ -38,6 +39,25 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertEqual(loaded["title"], "MR: add review room")
         self.assertEqual(loaded["provider"], "gitlab")
         self.assertEqual(loaded["messages"][0]["kind"], "room_created")
+
+    def test_create_topic_room_without_repository_or_mr(self):
+        room = self.store.create_room(
+            {
+                "title": "开放话题房间",
+                "objective": "围绕一个设计问题协作。",
+                "tags": ["review", "agent"],
+                "contextAttachments": [{"type": "link", "url": "https://example.com/spec"}],
+            }
+        )
+
+        loaded = self.store.get_room(room["id"])
+
+        self.assertEqual(loaded["provider"], "topic")
+        self.assertEqual(loaded["mrUrl"], "")
+        self.assertEqual(loaded["objective"], "围绕一个设计问题协作。")
+        self.assertEqual(loaded["tags"], ["review", "agent"])
+        self.assertEqual(loaded["contextAttachments"][0]["type"], "link")
+        self.assertEqual(loaded["participants"][0]["role"], "owner")
 
     def test_add_finding_emits_review_finding_message(self):
         room = self.store.create_room({"title": "MR"})
@@ -88,7 +108,7 @@ class ReviewRoomStoreTest(unittest.TestCase):
         room = self.store.create_demo_session()
 
         self.assertEqual(room["provider"], "demo")
-        self.assertEqual(room["status"], "open")
+        self.assertEqual(room["status"], "agent_working")
         self.assertEqual(room["context"]["repository"], "lighthouse/review-room-demo")
         self.assertEqual(len(room["findings"]), 1)
         self.assertEqual(room["findings"][0]["status"], "needs_developer_response")
@@ -125,15 +145,101 @@ class ReviewRoomStoreTest(unittest.TestCase):
     def test_home_page_exposes_product_workflow_actions(self):
         html = index_html()
 
-        self.assertIn("创建真实 Room", html)
-        self.assertIn("注册本地 Agent Connector", html)
-        self.assertIn("注册远端 Agent Connector", html)
-        self.assertIn("/api/rooms/{roomId}/connectors", html)
-        self.assertIn("/api/connectors/{connectorId}/events", html)
+        self.assertIn("创建话题房间", html)
+        self.assertIn("分享给外部成员", html)
+        self.assertIn("邀请 Agent", html)
+        self.assertIn("房间状态", html)
+        self.assertIn("房间角色", html)
+        self.assertIn("/api/rooms/${encodeURIComponent(state.room.id)}/invites", html)
+        self.assertIn("function submitMessage()", html)
+        self.assertIn("event.key !== 'Enter'", html)
+        self.assertIn("event.isComposing", html)
         self.assertIn("创建体验房间", html)
-        self.assertIn("Developer Agent 回复", html)
-        self.assertIn("人工确认并同步", html)
         self.assertIn("/api/demo/session", html)
+        self.assertNotIn("/api/connectors/{connectorId}/events", html)
+
+    def test_guest_invite_join_adds_read_write_participant_without_leaking_token(self):
+        room = self.store.create_room({"title": "开放话题"})
+        invite = self.store.create_invite(room["id"], {"type": "guest"}, "https://review.example.com")
+
+        joined = self.store.join_room(room["id"], {"inviteCode": invite["code"], "nickname": "外部用户"})
+        loaded = self.store.get_room(room["id"])
+        identity = self.store.authenticate_room_token(room["id"], joined["guestToken"])
+
+        self.assertEqual(invite["inviteUrl"], "https://review.example.com/r/{}".format(invite["code"]))
+        self.assertEqual(joined["identity"]["permissions"], ["read", "message"])
+        self.assertEqual(identity["type"], "guest")
+        self.assertEqual(identity["name"], "外部用户")
+        self.assertEqual(loaded["participants"][-1]["name"], "外部用户")
+        self.assertNotIn("token", loaded["participants"][-1])
+
+    def test_agent_invite_creates_invited_agent_member(self):
+        room = self.store.create_room({"title": "开放话题"})
+
+        invite = self.store.create_invite(
+            room["id"],
+            {"type": "agent", "role": "reviewer", "name": "Reviewer Agent"},
+            "https://review.example.com",
+        )
+        loaded = self.store.get_room(room["id"])
+
+        self.assertEqual(invite["type"], "agent")
+        self.assertEqual(invite["role"], "reviewer")
+        self.assertIn("advanced", invite)
+        self.assertEqual(loaded["status"], "waiting_for_agent")
+        self.assertEqual(loaded["connectors"][0]["status"], "invited")
+        self.assertEqual(loaded["connectors"][0]["name"], "Reviewer Agent")
+
+    def test_hosted_agent_does_not_reply_without_explicit_experience_mode(self):
+        room = self.store.create_room({"title": "开放话题"})
+        self.store.create_invite(
+            room["id"],
+            {"type": "agent", "role": "reviewer", "name": "Reviewer Agent"},
+            "https://review.example.com",
+        )
+        owner_message = self.store.add_message(
+            room["id"],
+            {
+                "senderType": "human",
+                "senderName": "review room owner",
+                "kind": "owner_topic",
+                "body": "我作为 owner 怎么和你对话？",
+            },
+        )
+
+        reply = self.store.create_hosted_agent_reply(room["id"], owner_message)
+
+        self.assertIsNone(reply)
+
+    def test_hosted_agent_replies_when_experience_mode_is_enabled(self):
+        room = self.store.create_room({"title": "开放话题"})
+        self.store.create_invite(
+            room["id"],
+            {"type": "agent", "role": "reviewer", "name": "Reviewer Agent"},
+            "https://review.example.com",
+        )
+        owner_message = self.store.add_message(
+            room["id"],
+            {
+                "senderType": "human",
+                "senderName": "review room owner",
+                "kind": "owner_topic",
+                "body": "我作为 owner 怎么和你对话？",
+            },
+        )
+
+        with patch.dict(os.environ, {"REVIEW_ROOM_ENABLE_HOSTED_AGENT": "true"}):
+            reply = self.store.create_hosted_agent_reply(room["id"], owner_message)
+        loaded = self.store.get_room(room["id"])
+
+        self.assertIsNotNone(reply)
+        self.assertEqual(reply["senderName"], "Reviewer Agent")
+        self.assertEqual(reply["kind"], "connector_message")
+        self.assertTrue(reply["payload"]["hostedAgent"])
+        self.assertIn("我作为 owner 怎么和你对话", reply["body"])
+        self.assertEqual(loaded["connectors"][0]["status"], "online")
+        self.assertEqual(loaded["connectors"][0]["eventCount"], 1)
+        self.assertEqual(loaded["status"], "agent_working")
 
     def test_registers_local_and_remote_agent_connectors_for_room(self):
         room = self.store.create_room(
@@ -241,8 +347,13 @@ class ReviewRoomHttpTest(unittest.TestCase):
         with urllib.request.urlopen(request, timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))
 
-    def get_json(self, path):
-        with urllib.request.urlopen(self.base_url + path, timeout=5) as response:
+    def get_json(self, path, headers=None):
+        request = urllib.request.Request(
+            self.base_url + path,
+            headers=headers or {},
+            method="GET",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))
 
     def test_http_registers_connector_and_accepts_tokened_events(self):
@@ -257,6 +368,7 @@ class ReviewRoomHttpTest(unittest.TestCase):
         connector = self.post_json(
             "/api/rooms/{}/connectors".format(room["id"]),
             {"name": "远端 Reviewer Agent", "kind": "remote-agent", "agentRole": "reviewer"},
+            {"Authorization": "Bearer {}".format(room["ownerToken"])},
         )
         event = self.post_json(
             "/api/connectors/{}/events".format(connector["id"]),
@@ -269,16 +381,23 @@ class ReviewRoomHttpTest(unittest.TestCase):
             },
             {"Authorization": "Bearer {}".format(connector["token"])},
         )
-        loaded = self.get_json("/api/rooms/{}".format(room["id"]))
+        loaded = self.get_json(
+            "/api/rooms/{}".format(room["id"]),
+            {"Authorization": "Bearer {}".format(room["ownerToken"])},
+        )
 
         self.assertEqual(event["status"], "needs_developer_response")
-        self.assertEqual(loaded["connectors"][0]["status"], "connected")
+        self.assertEqual(loaded["connectors"][0]["status"], "online")
         self.assertEqual(loaded["connectors"][0]["eventCount"], 1)
         self.assertEqual(loaded["findings"][0]["claim"], "真实 connector 写入 finding")
 
     def test_http_rejects_connector_event_without_valid_token(self):
         room = self.post_json("/api/rooms", {"title": "MR"})
-        connector = self.post_json("/api/rooms/{}/connectors".format(room["id"]), {"name": "本地 Codex"})
+        connector = self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"name": "本地 Codex"},
+            {"Authorization": "Bearer {}".format(room["ownerToken"])},
+        )
 
         with self.assertRaises(urllib.error.HTTPError) as raised:
             self.post_json(
