@@ -13,7 +13,7 @@ sys.path.insert(0, ROOT)
 
 from review_room_service import ReviewRoomStore, build_handler, index_html  # noqa: E402
 from http.server import ThreadingHTTPServer  # noqa: E402
-from threading import Thread  # noqa: E402
+from threading import Barrier, Thread  # noqa: E402
 
 
 class ReviewRoomStoreTest(unittest.TestCase):
@@ -434,6 +434,41 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertGreater(claimed["leaseExpiresAt"], claimed["updatedAt"])
         self.assertEqual(run["status"], "running")
         self.assertIn("task_claimed", [message["kind"] for message in loaded["messages"]])
+
+    def test_concurrent_claim_only_assigns_one_connector(self):
+        room = self.store.create_room({"title": "Claim race"})
+        reviewer_a = self.store.register_connector(room["id"], {"name": "Reviewer A", "role": "reviewer"})
+        reviewer_b = self.store.register_connector(room["id"], {"name": "Reviewer B", "role": "reviewer"})
+        race_task = self.store.create_task(
+            room["id"],
+            {"kind": "review", "instruction": "Only one reviewer may claim this.", "target": {"mode": "claim", "role": "reviewer"}},
+        )
+        barrier = Barrier(2)
+        claimed = []
+        errors = []
+
+        def claim(connector):
+            try:
+                barrier.wait()
+                claimed.append(self.store.claim_task(race_task["id"], connector["id"], {}))
+            except Exception as exc:  # noqa: BLE001 - test records the loser path.
+                errors.append(exc)
+
+        threads = [Thread(target=claim, args=(reviewer_a,)), Thread(target=claim, args=(reviewer_b,))]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=2)
+
+        loaded = self.store.get_room(room["id"])
+        assigned = [item for item in loaded["tasks"] if item["id"] == race_task["id"]][0]
+        claim_messages = [message for message in loaded["messages"] if message["kind"] == "task_claimed"]
+
+        self.assertEqual(len(claimed), 1)
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], PermissionError)
+        self.assertEqual(assigned["assignedConnectorId"], claimed[0]["assignedConnectorId"])
+        self.assertEqual(len(claim_messages), 1)
 
     def test_handoff_acceptance_converts_finding_to_developer_task(self):
         room = self.store.create_room({"title": "Handoff room"})

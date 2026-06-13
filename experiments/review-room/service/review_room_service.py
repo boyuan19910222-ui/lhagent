@@ -1247,14 +1247,24 @@ class ReviewRoomStore:
         timestamp = now_ms()
         lease_expires_at = payload.get("leaseExpiresAt") or payload.get("lease_expires_at") or timestamp + 30 * 60 * 1000
         with self.connect() as conn:
-            conn.execute(
+            result = conn.execute(
                 """
                 UPDATE tasks
                 SET status = ?, assigned_connector_id = ?, lease_expires_at = ?, updated_at = ?
-                WHERE id = ?
+                WHERE id = ? AND status IN ('open', 'stale') AND assigned_connector_id = ''
                 """,
                 ("claimed", connector_id, lease_expires_at, timestamp, task_id),
             )
+            if result.rowcount != 1:
+                row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+                if not row:
+                    raise KeyError("task not found")
+                current = self._task_from_row(row)
+                if current["assignedConnectorId"] == connector_id:
+                    return current
+                if current["assignedConnectorId"]:
+                    raise PermissionError("task is already assigned")
+                raise ValueError("task is not claimable")
             conn.execute(
                 "UPDATE connectors SET status = ?, last_seen_at = ?, heartbeat_at = ?, updated_at = ? WHERE id = ?",
                 ("online", timestamp, timestamp, timestamp, connector_id),
