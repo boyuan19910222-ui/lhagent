@@ -130,6 +130,8 @@ Deliberation output should be structured:
 }
 ```
 
+The P0 experiment now stores scoped deliberation threads, thread messages, turn limits, and structured summaries in Review Room state. A `needs_owner_decision` summary updates room status for the owner, but task creation or external sync remains a separate explicit decision.
+
 ## When Agents should not deliberate
 
 Do not start Agent-to-Agent deliberation when:
@@ -191,5 +193,5 @@ The input control should distinguish:
 4. Add owner accept/reject for handoffs.
 5. Add role/capability-based assignment and claim.
 6. Add verify-task generation after Developer Agent completion.
-7. Add scoped `agent_deliberation` threads.
-8. Add structured thread summaries and owner decision conversion.
+7. Add scoped `agent_deliberation` threads. The P0 experiment now has visible thread records, messages, turn limits, and summaries.
+8. Add structured owner decision conversion from thread summaries.

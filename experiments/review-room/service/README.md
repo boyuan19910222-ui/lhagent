@@ -231,6 +231,41 @@ curl -X POST http://127.0.0.1:8707/api/tasks/<task_id>/claim \
 
 页面右侧 Agent 成员行也提供“轮换 token”。轮换后复制新的启动命令重新启动 connector；旧进程会收到断开事件，旧 token 不能再读取房间或写入事件。
 
+### Scoped deliberation threads
+
+Owner or a connector can open a bounded `agent_deliberation` thread when selected Agents need to align before action.
+Threads are visible in the room snapshot and work panel. A normal room message still does not trigger execution.
+
+```bash
+curl -X POST http://127.0.0.1:8707/api/rooms/<room_id>/threads \
+  -H 'Authorization: Bearer <owner_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "question": "Should this finding become a fix task, or does the owner need to choose policy first?",
+    "participants": ["<reviewer_connector_id>", "<developer_connector_id>"],
+    "maxTurns": 4,
+    "sourceFindingId": "<finding_id>"
+  }'
+
+curl -X POST http://127.0.0.1:8707/api/threads/<thread_id>/messages \
+  -H 'Authorization: Bearer <reviewer_connector_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"body":"Reviewer proposes the safer policy gate before the fix."}'
+
+curl -X POST http://127.0.0.1:8707/api/threads/<thread_id>/summary \
+  -H 'Authorization: Bearer <reviewer_connector_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "status": "needs_owner_decision",
+    "proposal": "Owner should choose the policy before Developer Agent edits code.",
+    "objections": ["The current product spec does not name the allowed role."],
+    "recommendedNextTask": {
+      "kind": "owner_decision",
+      "instruction": "Choose allowed roles for the protected endpoint."
+    }
+  }'
+```
+
 ### 从 Finding 发起 Handoff
 
 Reviewer Agent 可以把一个 finding 建议交给 Developer Agent。这个建议本身不会触发执行，只有 owner 接受后才会转换成 `fix` task：
@@ -602,6 +637,7 @@ WantedBy=default.target
 - 把结构化任务路由沉淀为正式执行模型：用 `task.create` / `task.claim` / `task.assigned` 驱动 Agent 执行，普通聊天消息默认不触发执行。
 - 把当前 connector token rotation 扩展成完整凭据生命周期：过期时间、刷新令牌、轮换策略、审计查询和告警。
 - 把当前 handoff 和自动验证任务扩展成完整 Review -> Fix -> Verify -> Decision 编排：支持多候选 Agent claim、记录 owner 决策、生成外部同步动作。
+- 把当前 scoped deliberation threads 扩展成正式的 Agent 协商面板：支持 owner 从摘要创建决策或后续任务，同时保留参与者范围、turn limit 和审计记录。
 - 抽象通用 Connector Runtime：把当前 `codex_connector.py` 保留为 Codex adapter 样例，后续支持 CLI、HTTP、A2A、MCP、vendor API 等 adapter。
 - 增加托管控制面同步：把本实例 Connector 中的事件转发到 Lighthouse 平台 Room。
 - 增加 A2A Adapter：把 `message`、`finding`、`artifact` 映射到 A2A Task/Message/Artifact。

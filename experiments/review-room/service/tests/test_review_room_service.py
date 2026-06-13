@@ -153,6 +153,7 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertIn("任务与运行", html)
         self.assertIn("分配结构化任务", html)
         self.assertIn("轮换 token", html)
+        self.assertIn("Threads", html)
         self.assertIn("Handoffs", html)
         self.assertIn("/api/rooms/${encodeURIComponent(state.room.id)}/invites", html)
         self.assertIn("/api/rooms/${encodeURIComponent(state.room.id)}/tasks", html)
@@ -160,6 +161,7 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertIn("/rotate-token", html)
         self.assertIn("function submitMessage()", html)
         self.assertIn("function createTask()", html)
+        self.assertIn("function renderThreads()", html)
         self.assertIn("function decideHandoff", html)
         self.assertIn("function rotateConnectorToken", html)
         self.assertIn("agentRuns", html)
@@ -398,6 +400,95 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertEqual(loaded["agentRuns"][0]["taskId"], task["id"])
         self.assertEqual(loaded["agentRuns"][0]["status"], "completed")
         self.assertEqual(loaded["statusSummary"]["activeTaskCount"], 0)
+
+    def test_scoped_thread_records_messages_and_summary(self):
+        room = self.store.create_room({"title": "Thread room"})
+        reviewer = self.store.register_connector(room["id"], {"name": "Reviewer Agent", "role": "reviewer"})
+        developer = self.store.register_connector(room["id"], {"name": "Developer Agent", "role": "developer"})
+        observer = self.store.register_connector(room["id"], {"name": "Observer Agent", "role": "observer"})
+        owner_identity = self.store.authenticate_room_token(room["id"], room["ownerToken"])
+        reviewer_identity = self.store.authenticate_room_token(room["id"], reviewer["connectorToken"])
+        developer_identity = self.store.authenticate_room_token(room["id"], developer["connectorToken"])
+        observer_identity = self.store.authenticate_room_token(room["id"], observer["connectorToken"])
+        invite = self.store.create_invite(room["id"], {"type": "guest"})
+        guest = self.store.join_room(room["id"], {"inviteCode": invite["code"], "nickname": "Guest"})
+        guest_identity = self.store.authenticate_room_token(room["id"], guest["guestToken"])
+
+        with self.assertRaises(PermissionError):
+            self.store.create_thread(
+                room["id"],
+                {"question": "Can the reviewer and developer agree?", "participants": [reviewer["id"]]},
+                guest_identity,
+            )
+        thread = self.store.create_thread(
+            room["id"],
+            {
+                "question": "Can the reviewer and developer agree?",
+                "participants": [{"connectorId": reviewer["id"]}, developer["id"]],
+                "maxTurns": 2,
+                "sourceFindingId": "finding_1",
+            },
+            owner_identity,
+        )
+        with self.assertRaises(PermissionError):
+            self.store.post_thread_message(thread["id"], {"body": "Observer should not join."}, observer_identity)
+        first = self.store.post_thread_message(thread["id"], {"body": "Reviewer proposes a fix."}, reviewer_identity)
+        second = self.store.post_thread_message(thread["id"], {"body": "Developer agrees with constraints."}, developer_identity)
+        with self.assertRaises(ValueError):
+            self.store.post_thread_message(thread["id"], {"body": "One turn too many."}, developer_identity)
+        summarized = self.store.summarize_thread(
+            thread["id"],
+            {
+                "status": "needs_owner_decision",
+                "proposal": "Ship after owner approves the external sync.",
+                "objections": ["External sync needs owner approval."],
+                "recommendedNextTask": {"kind": "sync", "instruction": "Publish the decision summary."},
+            },
+            reviewer_identity,
+        )
+        loaded = self.store.get_room(room["id"])
+        message_kinds = [message["kind"] for message in loaded["messages"]]
+
+        self.assertEqual(thread["status"], "open")
+        self.assertEqual(thread["source"]["sourceFindingId"], "finding_1")
+        self.assertEqual([item["connectorId"] for item in thread["participants"]], [reviewer["id"], developer["id"]])
+        self.assertEqual(first["turnCount"], 1)
+        self.assertEqual(second["turnCount"], 2)
+        self.assertEqual(second["status"], "needs_summary")
+        self.assertEqual(summarized["status"], "needs_owner_decision")
+        self.assertEqual(summarized["summary"]["createdBy"], "Reviewer Agent")
+        self.assertEqual(loaded["status"], "needs_owner_decision")
+        self.assertEqual(loaded["statusSummary"]["openThreadCount"], 0)
+        self.assertEqual(len(loaded["threads"][0]["messages"]), 2)
+        self.assertEqual(loaded["tasks"], [])
+        self.assertIn("thread_created", message_kinds)
+        self.assertIn("thread_message", message_kinds)
+        self.assertIn("thread_summary", message_kinds)
+
+    def test_thread_consensus_summary_does_not_force_agent_working_status(self):
+        room = self.store.create_room({"title": "Consensus thread room"})
+        reviewer = self.store.register_connector(room["id"], {"name": "Reviewer Agent", "role": "reviewer"})
+        owner_identity = self.store.authenticate_room_token(room["id"], room["ownerToken"])
+        reviewer_identity = self.store.authenticate_room_token(room["id"], reviewer["connectorToken"])
+        thread = self.store.create_thread(
+            room["id"],
+            {"question": "Can this close without owner action?", "participants": [reviewer["id"]]},
+            owner_identity,
+        )
+
+        self.store.post_thread_message(thread["id"], {"body": "Reviewer has no objections."}, reviewer_identity)
+        before_summary = self.store.get_room(room["id"])
+        summarized = self.store.summarize_thread(
+            thread["id"],
+            {"status": "consensus", "proposal": "Close without owner action."},
+            reviewer_identity,
+        )
+        loaded = self.store.get_room(room["id"])
+
+        self.assertEqual(summarized["status"], "consensus")
+        self.assertEqual(loaded["status"], before_summary["status"])
+        self.assertNotEqual(loaded["status"], "agent_working")
+        self.assertEqual(loaded["statusSummary"]["openThreadCount"], 0)
 
     def test_claimable_task_requires_matching_connector_claim_before_run(self):
         room = self.store.create_room({"title": "Claim room"})
@@ -714,6 +805,61 @@ class ReviewRoomHttpTest(unittest.TestCase):
         self.assertEqual(claimed["assignedConnectorId"], reviewer["id"])
         self.assertEqual(claimed["status"], "claimed")
         self.assertEqual(run["status"], "running")
+
+    def test_http_scoped_thread_endpoints_follow_participants(self):
+        room = self.post_json("/api/rooms", {"title": "Thread HTTP"})
+        reviewer = self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"name": "Reviewer Agent", "role": "reviewer"},
+            {"Authorization": "Bearer {}".format(room["ownerToken"])},
+        )
+        developer = self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"name": "Developer Agent", "role": "developer"},
+            {"Authorization": "Bearer {}".format(room["ownerToken"])},
+        )
+        observer = self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"name": "Observer Agent", "role": "observer"},
+            {"Authorization": "Bearer {}".format(room["ownerToken"])},
+        )
+        thread = self.post_json(
+            "/api/rooms/{}/threads".format(room["id"]),
+            {"question": "Can HTTP agents agree?", "participants": [reviewer["id"], developer["id"]], "maxTurns": 2},
+            {"Authorization": "Bearer {}".format(room["ownerToken"])},
+        )
+
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            self.post_json(
+                "/api/threads/{}/messages".format(thread["id"]),
+                {"body": "Observer should not join."},
+                {"Authorization": "Bearer {}".format(observer["connectorToken"])},
+            )
+        first = self.post_json(
+            "/api/threads/{}/messages".format(thread["id"]),
+            {"body": "Reviewer proposes the guarded path."},
+            {"Authorization": "Bearer {}".format(reviewer["connectorToken"])},
+        )
+        second = self.post_json(
+            "/api/threads/{}/messages".format(thread["id"]),
+            {"body": "Developer agrees."},
+            {"Authorization": "Bearer {}".format(developer["connectorToken"])},
+        )
+        summary = self.post_json(
+            "/api/threads/{}/summary".format(thread["id"]),
+            {"status": "needs_owner_decision", "proposal": "Owner should approve the guarded path."},
+            {"Authorization": "Bearer {}".format(reviewer["connectorToken"])},
+        )
+        loaded = self.get_json(
+            "/api/rooms/{}".format(room["id"]),
+            {"Authorization": "Bearer {}".format(room["ownerToken"])},
+        )
+
+        self.assertEqual(raised.exception.code, 403)
+        self.assertEqual(first["turnCount"], 1)
+        self.assertEqual(second["status"], "needs_summary")
+        self.assertEqual(summary["status"], "needs_owner_decision")
+        self.assertEqual(loaded["threads"][0]["summary"]["proposal"], "Owner should approve the guarded path.")
 
     def test_http_owner_can_rotate_connector_token(self):
         room = self.post_json("/api/rooms", {"title": "MR"})

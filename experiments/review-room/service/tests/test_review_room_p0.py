@@ -615,6 +615,111 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot_after["tasks"][-1]["status"], "completed")
         self.assertEqual(snapshot_after["agentRuns"][-1]["status"], "completed")
 
+    async def test_rest_scoped_threads_limit_participants_and_summarize_to_owner_decision(self):
+        _, room = await self.post_json("/api/rooms", {"title": "Thread REST"})
+        _, reviewer = await self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"role": "reviewer", "name": "Reviewer Agent"},
+            room["ownerToken"],
+        )
+        _, developer = await self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"role": "developer", "name": "Developer Agent"},
+            room["ownerToken"],
+        )
+        _, observer = await self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"role": "observer", "name": "Observer Agent"},
+            room["ownerToken"],
+        )
+        _, invite = await self.post_json(
+            "/api/rooms/{}/invites".format(room["id"]),
+            {"type": "guest"},
+            room["ownerToken"],
+        )
+        _, joined = await self.post_json(
+            "/api/rooms/{}/join".format(room["id"]),
+            {"inviteCode": invite["code"], "nickname": "Guest"},
+        )
+        denied_guest_response, denied_guest = await self.post_json(
+            "/api/rooms/{}/threads".format(room["id"]),
+            {"question": "Guest should not create this.", "participants": [reviewer["id"]]},
+            joined["guestToken"],
+        )
+        create_response, thread = await self.post_json(
+            "/api/rooms/{}/threads".format(room["id"]),
+            {
+                "question": "Can reviewer and developer agree on the fix?",
+                "participants": [reviewer["id"], developer["id"]],
+                "maxTurns": 2,
+                "sourceFindingId": "finding_1",
+            },
+            room["ownerToken"],
+        )
+        denied_observer_response, denied_observer = await self.post_json(
+            "/api/threads/{}/messages".format(thread["id"]),
+            {"body": "Observer should not join the scoped thread."},
+            observer["connectorToken"],
+        )
+        reviewer_message_response, reviewer_thread = await self.post_json(
+            "/api/threads/{}/messages".format(thread["id"]),
+            {"body": "Reviewer proposes the safer fix."},
+            reviewer["connectorToken"],
+        )
+        developer_message_response, developer_thread = await self.post_json(
+            "/api/threads/{}/messages".format(thread["id"]),
+            {"body": "Developer accepts with an owner sync gate."},
+            developer["connectorToken"],
+        )
+        extra_message_response, extra_message = await self.post_json(
+            "/api/threads/{}/messages".format(thread["id"]),
+            {"body": "This turn should exceed the thread budget."},
+            developer["connectorToken"],
+        )
+        summary_response, summarized = await self.post_json(
+            "/api/threads/{}/summary".format(thread["id"]),
+            {
+                "status": "needs_owner_decision",
+                "proposal": "Apply the fix after owner approves external sync.",
+                "objections": ["External sync is an owner decision."],
+                "recommendedNextTask": {"kind": "sync", "instruction": "Publish the thread summary."},
+            },
+            reviewer["connectorToken"],
+        )
+        snapshot_response = await self.client.get(
+            "/api/rooms/{}".format(room["id"]),
+            headers={"Authorization": "Bearer {}".format(room["ownerToken"])},
+        )
+        snapshot = await snapshot_response.json()
+        message_kinds = [message["kind"] for message in snapshot["messages"]]
+
+        self.assertEqual(denied_guest_response.status, 403)
+        self.assertEqual(denied_guest["error"], "owner or connector token required")
+        self.assertEqual(create_response.status, 201)
+        self.assertEqual(thread["status"], "open")
+        self.assertEqual(thread["source"]["sourceFindingId"], "finding_1")
+        self.assertEqual(denied_observer_response.status, 403)
+        self.assertEqual(denied_observer["error"], "thread participant or owner required")
+        self.assertEqual(reviewer_message_response.status, 201)
+        self.assertEqual(reviewer_thread["turnCount"], 1)
+        self.assertEqual(developer_message_response.status, 201)
+        self.assertEqual(developer_thread["turnCount"], 2)
+        self.assertEqual(developer_thread["status"], "needs_summary")
+        self.assertEqual(extra_message_response.status, 400)
+        self.assertEqual(extra_message["error"], "thread is not open")
+        self.assertEqual(summary_response.status, 201)
+        self.assertEqual(summarized["status"], "needs_owner_decision")
+        self.assertEqual(summarized["summary"]["createdBy"], "Reviewer Agent")
+        self.assertEqual(snapshot_response.status, 200)
+        self.assertEqual(snapshot["status"], "needs_owner_decision")
+        self.assertEqual(snapshot["statusSummary"]["openThreadCount"], 0)
+        self.assertEqual(len(snapshot["threads"]), 1)
+        self.assertEqual(len(snapshot["threads"][0]["messages"]), 2)
+        self.assertEqual(snapshot["tasks"], [])
+        self.assertIn("thread_created", message_kinds)
+        self.assertIn("thread_message", message_kinds)
+        self.assertIn("thread_summary", message_kinds)
+
     async def test_mcp_complete_task_creates_verification_after_handoff_fix(self):
         _, room = await self.post_json("/api/rooms", {"title": "MCP verify follow-up"})
         _, reviewer = await self.post_json(
@@ -929,9 +1034,11 @@ class CodexConnectorClientTest(unittest.TestCase):
         self.assertIn("房间角色", html)
         self.assertIn("任务与运行", html)
         self.assertIn("分配任务", html)
+        self.assertIn("Threads", html)
         self.assertIn("Handoffs", html)
         self.assertIn("轮换 token", html)
         self.assertIn("function createTask()", html)
+        self.assertIn("function renderThreads()", html)
         self.assertIn("function decideHandoff", html)
         self.assertIn("function rotateConnectorToken", html)
         self.assertIn("/tasks", html)

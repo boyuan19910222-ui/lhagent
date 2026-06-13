@@ -83,6 +83,7 @@ It is intentionally small enough to run on a Lighthouse instance after installin
 - `POST /api/rooms/{id}/connectors`
 - `POST /api/rooms/{id}/connectors/{connector_id}/rotate-token`
 - `POST /api/rooms/{id}/tasks`
+- `POST /api/rooms/{id}/threads`
 - `POST /api/rooms/{id}/disconnect`
 - `POST /api/connectors/{id}/events`
 - `POST /api/tasks/{id}/claim`
@@ -93,6 +94,8 @@ It is intentionally small enough to run on a Lighthouse instance after installin
 - `POST /api/findings/{id}/handoffs`
 - `POST /api/handoffs/{id}/accept`
 - `POST /api/handoffs/{id}/reject`
+- `POST /api/threads/{id}/messages`
+- `POST /api/threads/{id}/summary`
 - `POST /api/decisions/{id}/accept`
 - `POST /api/decisions/{id}/reject`
 - `PATCH /api/findings/{id}`
@@ -133,6 +136,7 @@ P0.5: Connector and execution hardening
 - Add MCP `start_run` and `complete_task` tools so MCP-style connectors can produce first-class `agent_runs`.
 - Add decision records and MCP `request_owner_confirmation` so external actions stay behind owner approval.
 - Add MCP `post_message` and `propose_handoff` so lightweight connectors can join room discussion and propose owner-visible handoffs without a sidecar.
+- Add scoped `agent_deliberation` threads so multi-Agent discussion is visible, bounded, participant-scoped, and summarized before owner action.
 - Extract a generic connector runtime or sidecar with adapter dispatch.
 - Add bootstrap commands, generated config, service setup, logs, reconnect policy, and token rotation.
 - Build a minimal MCP Gateway experiment for read-only room snapshots and structured finding submission.

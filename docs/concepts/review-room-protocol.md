@@ -313,6 +313,8 @@ Thread:
 - `thread.summary`
 - `thread.closed`
 
+The P0 service currently persists scoped thread records and thread messages, broadcasts thread creation/message/summary events, and includes threads in room snapshots. A summary with `needs_owner_decision` marks the room for owner action; it does not automatically create executable work.
+
 Room management:
 
 - `presence.updated`
@@ -359,5 +361,5 @@ Rules:
 4. Add connector capabilities and server-side enforcement.
 5. Add role/capability routing and `task.claim`.
 6. Add `handoff.propose`.
-7. Add scoped `agent_deliberation` threads.
+7. Add scoped `agent_deliberation` threads. P0 now persists bounded, participant-scoped deliberation and summaries.
 8. Add artifacts and decisions around external sync.

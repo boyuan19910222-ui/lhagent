@@ -207,6 +207,40 @@ class ReviewRoomStore:
                   FOREIGN KEY(room_id) REFERENCES rooms(id)
                 );
 
+                CREATE TABLE IF NOT EXISTS threads (
+                  id TEXT PRIMARY KEY,
+                  room_id TEXT NOT NULL,
+                  kind TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  source_json TEXT NOT NULL,
+                  participants_json TEXT NOT NULL,
+                  question TEXT NOT NULL,
+                  max_turns INTEGER NOT NULL,
+                  turn_count INTEGER NOT NULL,
+                  end_condition TEXT NOT NULL,
+                  summary_json TEXT NOT NULL,
+                  created_by TEXT NOT NULL,
+                  closed_by TEXT NOT NULL,
+                  closed_at INTEGER,
+                  created_at INTEGER NOT NULL,
+                  updated_at INTEGER NOT NULL,
+                  FOREIGN KEY(room_id) REFERENCES rooms(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS thread_messages (
+                  id TEXT PRIMARY KEY,
+                  thread_id TEXT NOT NULL,
+                  room_id TEXT NOT NULL,
+                  sender_type TEXT NOT NULL,
+                  sender_name TEXT NOT NULL,
+                  connector_id TEXT NOT NULL,
+                  body TEXT NOT NULL,
+                  payload_json TEXT NOT NULL,
+                  created_at INTEGER NOT NULL,
+                  FOREIGN KEY(thread_id) REFERENCES threads(id),
+                  FOREIGN KEY(room_id) REFERENCES rooms(id)
+                );
+
                 CREATE TABLE IF NOT EXISTS agent_runs (
                   id TEXT PRIMARY KEY,
                   room_id TEXT NOT NULL,
@@ -355,10 +389,21 @@ class ReviewRoomStore:
                 "SELECT * FROM decisions WHERE room_id = ? ORDER BY created_at ASC",
                 (room_id,),
             ).fetchall()
+            thread_rows = conn.execute(
+                "SELECT * FROM threads WHERE room_id = ? ORDER BY created_at ASC",
+                (room_id,),
+            ).fetchall()
+            thread_message_rows = conn.execute(
+                "SELECT * FROM thread_messages WHERE room_id = ? ORDER BY created_at ASC",
+                (room_id,),
+            ).fetchall()
             run_rows = conn.execute(
                 "SELECT * FROM agent_runs WHERE room_id = ? ORDER BY created_at ASC",
                 (room_id,),
             ).fetchall()
+        thread_messages: Dict[str, List[Dict[str, Any]]] = {}
+        for row in thread_message_rows:
+            thread_messages.setdefault(row["thread_id"], []).append(self._thread_message_from_row(row))
         room = self._room_from_row(room_row)
         room["messages"] = [self._message_from_row(row) for row in message_rows]
         room["findings"] = [self._finding_from_row(row) for row in finding_rows]
@@ -367,6 +412,7 @@ class ReviewRoomStore:
         room["tasks"] = [self._task_from_row(row) for row in task_rows]
         room["handoffs"] = [self._handoff_from_row(row) for row in handoff_rows]
         room["decisions"] = [self._decision_from_row(row) for row in decision_rows]
+        room["threads"] = [self._thread_from_row(row, thread_messages.get(row["id"], [])) for row in thread_rows]
         room["agentRuns"] = [self._agent_run_from_row(row) for row in run_rows]
         room["statusSummary"] = self.room_status_summary(room_id)
         return room
@@ -1047,6 +1093,257 @@ class ReviewRoomStore:
         )
         self.refresh_room_status(decision["roomId"])
         return self.get_decision(decision_id)
+
+    def create_thread(self, room_id: str, payload: Dict[str, Any], identity: Dict[str, Any]) -> Dict[str, Any]:
+        self.require_room(room_id)
+        if identity["type"] not in {"owner", "connector"}:
+            raise PermissionError("owner or connector token required")
+        question = str(payload.get("question") or payload.get("title") or "").strip()
+        if not question:
+            raise ValueError("question required")
+        participants_payload = payload.get("participants") or payload.get("participantConnectorIds") or payload.get("participant_connector_ids") or []
+        if isinstance(participants_payload, str):
+            participants_payload = [participants_payload]
+        if not isinstance(participants_payload, list):
+            raise ValueError("participants must be a list")
+        connector_ids: List[str] = []
+        for item in participants_payload:
+            if isinstance(item, dict):
+                connector_id = item.get("connectorId") or item.get("connector_id")
+            else:
+                connector_id = str(item)
+            connector_id = str(connector_id or "").strip()
+            if connector_id and connector_id not in connector_ids:
+                connector_ids.append(connector_id)
+        if identity["type"] == "connector" and identity["connectorId"] not in connector_ids:
+            connector_ids.append(identity["connectorId"])
+        if not connector_ids:
+            raise ValueError("participants required")
+        connectors: List[Dict[str, Any]] = []
+        for connector_id in connector_ids:
+            connector = self.get_connector(connector_id)
+            if connector["roomId"] != room_id:
+                raise PermissionError("thread participant does not belong to this room")
+            if connector["status"] == "revoked":
+                raise PermissionError("thread participant is revoked")
+            connectors.append(connector)
+        source_payload = payload.get("source")
+        if source_payload is None:
+            source_payload = {}
+        if not isinstance(source_payload, dict):
+            raise ValueError("source must be an object")
+        source = dict(source_payload)
+        for key in ("sourceFindingId", "source_finding_id", "findingId", "finding_id", "handoffId", "handoff_id", "taskId", "task_id"):
+            if payload.get(key) and key not in source:
+                source[key] = payload[key]
+        try:
+            max_turns = int(payload.get("maxTurns") or payload.get("max_turns") or 4)
+        except (TypeError, ValueError):
+            raise ValueError("maxTurns must be an integer")
+        if max_turns < 1 or max_turns > 20:
+            raise ValueError("maxTurns must be between 1 and 20")
+        timestamp = now_ms()
+        thread = {
+            "id": make_id("thread"),
+            "roomId": room_id,
+            "kind": str(payload.get("kind") or "agent_deliberation"),
+            "status": "open",
+            "source": source,
+            "participants": [
+                {"connectorId": connector["id"], "name": connector["name"], "role": connector["agentRole"]}
+                for connector in connectors
+            ],
+            "question": question,
+            "maxTurns": max_turns,
+            "turnCount": 0,
+            "endCondition": str(payload.get("endCondition") or payload.get("end_condition") or "consensus|needs_owner_decision"),
+            "summary": {},
+            "createdBy": identity["name"],
+            "closedBy": "",
+            "closedAt": None,
+            "createdAt": timestamp,
+            "updatedAt": timestamp,
+            "messages": [],
+        }
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO threads
+                  (id, room_id, kind, status, source_json, participants_json, question,
+                   max_turns, turn_count, end_condition, summary_json, created_by, closed_by,
+                   closed_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    thread["id"],
+                    thread["roomId"],
+                    thread["kind"],
+                    thread["status"],
+                    json_dumps(thread["source"]),
+                    json_dumps(thread["participants"]),
+                    thread["question"],
+                    thread["maxTurns"],
+                    thread["turnCount"],
+                    thread["endCondition"],
+                    json_dumps(thread["summary"]),
+                    thread["createdBy"],
+                    thread["closedBy"],
+                    thread["closedAt"],
+                    thread["createdAt"],
+                    thread["updatedAt"],
+                ),
+            )
+            conn.execute("UPDATE rooms SET updated_at = ? WHERE id = ?", (timestamp, room_id))
+        self.add_message(
+            room_id,
+            {
+                "senderType": "system",
+                "senderName": "Review Room",
+                "kind": "thread_created",
+                "body": thread["question"],
+                "payload": {"threadId": thread["id"], "kind": thread["kind"], "participants": thread["participants"]},
+            },
+        )
+        return thread
+
+    def get_thread(self, thread_id: str) -> Dict[str, Any]:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM threads WHERE id = ?", (thread_id,)).fetchone()
+            if not row:
+                raise KeyError("thread not found")
+            message_rows = conn.execute(
+                "SELECT * FROM thread_messages WHERE thread_id = ? ORDER BY created_at ASC",
+                (thread_id,),
+            ).fetchall()
+        return self._thread_from_row(row, [self._thread_message_from_row(message) for message in message_rows])
+
+    @staticmethod
+    def thread_participant_ids(thread: Dict[str, Any]) -> List[str]:
+        return [str(item.get("connectorId") or "") for item in thread.get("participants", []) if item.get("connectorId")]
+
+    def ensure_thread_access(self, thread: Dict[str, Any], identity: Dict[str, Any]) -> None:
+        if identity["type"] == "owner":
+            return
+        if identity["type"] == "connector" and identity["connectorId"] in self.thread_participant_ids(thread):
+            connector = self.get_connector(identity["connectorId"])
+            if connector["status"] != "revoked":
+                return
+        raise PermissionError("thread participant or owner required")
+
+    def post_thread_message(self, thread_id: str, payload: Dict[str, Any], identity: Dict[str, Any]) -> Dict[str, Any]:
+        thread = self.get_thread(thread_id)
+        self.ensure_thread_access(thread, identity)
+        if thread["status"] != "open":
+            raise ValueError("thread is not open")
+        body = str(payload.get("body") or payload.get("message") or payload.get("text") or "").strip()
+        if not body:
+            raise ValueError("body required")
+        message_payload = payload.get("payload")
+        if message_payload is None:
+            message_payload = {}
+        if not isinstance(message_payload, dict):
+            raise ValueError("payload must be an object")
+        connector_message = identity["type"] == "connector"
+        if connector_message and thread["turnCount"] >= thread["maxTurns"]:
+            raise ValueError("thread turn limit reached")
+        timestamp = now_ms()
+        message = {
+            "id": make_id("threadmsg"),
+            "threadId": thread_id,
+            "roomId": thread["roomId"],
+            "senderType": "agent" if connector_message else "human",
+            "senderName": identity["name"],
+            "connectorId": identity.get("connectorId", ""),
+            "body": body,
+            "payload": message_payload,
+            "createdAt": timestamp,
+        }
+        next_turn_count = thread["turnCount"] + (1 if connector_message else 0)
+        next_status = "needs_summary" if connector_message and next_turn_count >= thread["maxTurns"] else "open"
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO thread_messages
+                  (id, thread_id, room_id, sender_type, sender_name, connector_id, body, payload_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    message["id"],
+                    message["threadId"],
+                    message["roomId"],
+                    message["senderType"],
+                    message["senderName"],
+                    message["connectorId"],
+                    message["body"],
+                    json_dumps(message["payload"]),
+                    message["createdAt"],
+                ),
+            )
+            conn.execute(
+                "UPDATE threads SET status = ?, turn_count = ?, updated_at = ? WHERE id = ?",
+                (next_status, next_turn_count, timestamp, thread_id),
+            )
+            conn.execute("UPDATE rooms SET updated_at = ? WHERE id = ?", (timestamp, thread["roomId"]))
+        self.add_message(
+            thread["roomId"],
+            {
+                "senderType": message["senderType"],
+                "senderName": message["senderName"],
+                "kind": "thread_message",
+                "body": body,
+                "payload": {"threadId": thread_id, "threadMessageId": message["id"], "threadStatus": next_status},
+            },
+        )
+        return self.get_thread(thread_id)
+
+    def summarize_thread(self, thread_id: str, payload: Dict[str, Any], identity: Dict[str, Any]) -> Dict[str, Any]:
+        thread = self.get_thread(thread_id)
+        self.ensure_thread_access(thread, identity)
+        if thread["status"] not in {"open", "needs_summary"}:
+            raise ValueError("thread is already summarized")
+        status = str(payload.get("status") or "consensus").strip()
+        if status not in {"consensus", "needs_owner_decision", "closed"}:
+            raise ValueError("thread summary status must be consensus, needs_owner_decision, or closed")
+        proposal = str(payload.get("proposal") or payload.get("summary") or "").strip()
+        objections = payload.get("objections") or []
+        if not isinstance(objections, list):
+            raise ValueError("objections must be a list")
+        recommended_next_task = payload.get("recommendedNextTask") or payload.get("recommended_next_task") or {}
+        if not isinstance(recommended_next_task, dict):
+            raise ValueError("recommendedNextTask must be an object")
+        timestamp = now_ms()
+        summary = {
+            "status": status,
+            "proposal": proposal,
+            "objections": [str(item) for item in objections],
+            "recommendedNextTask": recommended_next_task,
+            "createdBy": identity["name"],
+            "createdAt": timestamp,
+        }
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE threads
+                SET status = ?, summary_json = ?, closed_by = ?, closed_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (status, json_dumps(summary), identity["name"], timestamp, timestamp, thread_id),
+            )
+            if status == "needs_owner_decision":
+                conn.execute("UPDATE rooms SET status = ?, updated_at = ? WHERE id = ?", ("needs_owner_decision", timestamp, thread["roomId"]))
+            else:
+                conn.execute("UPDATE rooms SET updated_at = ? WHERE id = ?", (timestamp, thread["roomId"]))
+        self.add_message(
+            thread["roomId"],
+            {
+                "senderType": "agent" if identity["type"] == "connector" else "human",
+                "senderName": identity["name"],
+                "kind": "thread_summary",
+                "body": proposal or status,
+                "payload": {"threadId": thread_id, "status": status, "recommendedNextTask": recommended_next_task},
+            },
+        )
+        return self.get_thread(thread_id)
 
     def register_connector(self, room_id: str, payload: Dict[str, Any], base_url: str = "") -> Dict[str, Any]:
         self.require_room(room_id)
@@ -1928,6 +2225,7 @@ class ReviewRoomStore:
             tasks = conn.execute("SELECT status FROM tasks WHERE room_id = ?", (room_id,)).fetchall()
             handoffs = conn.execute("SELECT status FROM handoffs WHERE room_id = ?", (room_id,)).fetchall()
             decisions = conn.execute("SELECT status FROM decisions WHERE room_id = ?", (room_id,)).fetchall()
+            threads = conn.execute("SELECT status FROM threads WHERE room_id = ?", (room_id,)).fetchall()
             runs = conn.execute("SELECT status FROM agent_runs WHERE room_id = ?", (room_id,)).fetchall()
             messages = conn.execute("SELECT COUNT(*) AS count FROM messages WHERE room_id = ?", (room_id,)).fetchone()
         participants = self.sanitize_participants(json_loads(room_row["participants_json"], []))
@@ -1937,6 +2235,7 @@ class ReviewRoomStore:
         active_tasks = sum(1 for row in tasks if row["status"] in {"open", "assigned", "claimed", "running"})
         pending_handoffs = sum(1 for row in handoffs if row["status"] == "proposed")
         pending_decisions = sum(1 for row in decisions if row["status"] == "requested")
+        open_threads = sum(1 for row in threads if row["status"] in {"open", "needs_summary"})
         running_agent_runs = sum(1 for row in runs if row["status"] in {"created", "running", "streaming"})
         return {
             "memberCount": len(participants) + len(connectors),
@@ -1948,6 +2247,7 @@ class ReviewRoomStore:
             "activeTaskCount": active_tasks,
             "pendingHandoffCount": pending_handoffs,
             "pendingDecisionCount": pending_decisions,
+            "openThreadCount": open_threads,
             "runningAgentRunCount": running_agent_runs,
             "messageCount": messages["count"] if messages else 0,
             "lastActiveAt": room_row["updated_at"],
@@ -2160,6 +2460,42 @@ class ReviewRoomStore:
         }
 
     @staticmethod
+    def _thread_from_row(row: sqlite3.Row, messages: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        return {
+            "id": row["id"],
+            "roomId": row["room_id"],
+            "kind": row["kind"],
+            "status": row["status"],
+            "source": json_loads(row["source_json"], {}),
+            "participants": json_loads(row["participants_json"], []),
+            "question": row["question"],
+            "maxTurns": row["max_turns"],
+            "turnCount": row["turn_count"],
+            "endCondition": row["end_condition"],
+            "summary": json_loads(row["summary_json"], {}),
+            "createdBy": row["created_by"],
+            "closedBy": row["closed_by"],
+            "closedAt": row["closed_at"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+            "messages": messages or [],
+        }
+
+    @staticmethod
+    def _thread_message_from_row(row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "id": row["id"],
+            "threadId": row["thread_id"],
+            "roomId": row["room_id"],
+            "senderType": row["sender_type"],
+            "senderName": row["sender_name"],
+            "connectorId": row["connector_id"],
+            "body": row["body"],
+            "payload": json_loads(row["payload_json"], {}),
+            "createdAt": row["created_at"],
+        }
+
+    @staticmethod
     def _agent_run_from_row(row: sqlite3.Row) -> Dict[str, Any]:
         return {
             "id": row["id"],
@@ -2280,6 +2616,23 @@ class ReviewRoomHandler(BaseHTTPRequestHandler):
                 created = self.store.add_message(room_id, body)
                 self.store.create_hosted_agent_reply(room_id, created)
                 self.send_json(created, HTTPStatus.CREATED)
+                return
+            match = re.match(r"^/api/rooms/([^/]+)/threads$", parsed.path)
+            if match:
+                identity = self.store.authenticate_room_token(match.group(1), self.read_bearer_token(body))
+                self.send_json(self.store.create_thread(match.group(1), body, identity), HTTPStatus.CREATED)
+                return
+            match = re.match(r"^/api/threads/([^/]+)/messages$", parsed.path)
+            if match:
+                thread = self.store.get_thread(match.group(1))
+                identity = self.store.authenticate_room_token(thread["roomId"], self.read_bearer_token(body))
+                self.send_json(self.store.post_thread_message(match.group(1), body, identity), HTTPStatus.CREATED)
+                return
+            match = re.match(r"^/api/threads/([^/]+)/summary$", parsed.path)
+            if match:
+                thread = self.store.get_thread(match.group(1))
+                identity = self.store.authenticate_room_token(thread["roomId"], self.read_bearer_token(body))
+                self.send_json(self.store.summarize_thread(match.group(1), body, identity), HTTPStatus.CREATED)
                 return
             match = re.match(r"^/api/rooms/([^/]+)/findings$", parsed.path)
             if match:
@@ -3102,6 +3455,56 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
         await broadcast_hosted_agent_reply(app[STORE_KEY], app[HUB_KEY], room_id, message)
         return json_response(message, 201)
 
+    async def create_thread(request: web.Request) -> web.Response:
+        room_id = request.match_info["room_id"]
+        identity = require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
+        body = await request_json(request)
+        try:
+            thread = app[STORE_KEY].create_thread(room_id, body, identity)
+        except KeyError as exc:
+            raise web.HTTPNotFound(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        except PermissionError as exc:
+            raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        await app[HUB_KEY].broadcast(room_id, {"type": "thread.created", "thread": thread})
+        await app[HUB_KEY].broadcast_snapshot(room_id)
+        return json_response(thread, 201)
+
+    async def post_thread_message(request: web.Request) -> web.Response:
+        thread_id = request.match_info["thread_id"]
+        try:
+            thread = app[STORE_KEY].get_thread(thread_id)
+        except KeyError as exc:
+            raise web.HTTPNotFound(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        identity = require_identity(app[STORE_KEY], thread["roomId"], bearer_token_from_request(request))
+        try:
+            updated = app[STORE_KEY].post_thread_message(thread_id, await request_json(request), identity)
+        except PermissionError as exc:
+            raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        await app[HUB_KEY].broadcast(thread["roomId"], {"type": "thread.message.created", "thread": updated})
+        await app[HUB_KEY].broadcast_snapshot(thread["roomId"])
+        return json_response(updated, 201)
+
+    async def summarize_thread(request: web.Request) -> web.Response:
+        thread_id = request.match_info["thread_id"]
+        try:
+            thread = app[STORE_KEY].get_thread(thread_id)
+        except KeyError as exc:
+            raise web.HTTPNotFound(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        identity = require_identity(app[STORE_KEY], thread["roomId"], bearer_token_from_request(request))
+        try:
+            updated = app[STORE_KEY].summarize_thread(thread_id, await request_json(request), identity)
+        except PermissionError as exc:
+            raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        await app[HUB_KEY].broadcast(thread["roomId"], {"type": "thread.summary", "thread": updated})
+        await app[HUB_KEY].broadcast_snapshot(thread["roomId"])
+        return json_response(updated, 201)
+
     async def add_finding(request: web.Request) -> web.Response:
         room_id = request.match_info["room_id"]
         identity = require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
@@ -3481,6 +3884,9 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
     app.router.add_post("/api/rooms/{room_id}/invites", create_invite)
     app.router.add_post("/api/rooms/{room_id}/join", join_room)
     app.router.add_post("/api/rooms/{room_id}/messages", add_message)
+    app.router.add_post("/api/rooms/{room_id}/threads", create_thread)
+    app.router.add_post("/api/threads/{thread_id}/messages", post_thread_message)
+    app.router.add_post("/api/threads/{thread_id}/summary", summarize_thread)
     app.router.add_post("/api/rooms/{room_id}/findings", add_finding)
     app.router.add_post("/api/findings/{finding_id}/handoffs", propose_handoff)
     app.router.add_post("/api/handoffs/{handoff_id}/{action}", decide_handoff)
@@ -3756,7 +4162,7 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
     }
     function messageKindText(kind, message={}){
       if(message.payload && message.payload.hostedAgent) return '模拟 Agent';
-      return {room_created:'系统', invite_created:'邀请', member_joined:'加入', connector_registered:'Agent', connector_token_rotated:'凭据轮换', handoff_proposed:'Handoff', handoff_converted:'Handoff', handoff_rejected:'Handoff', task_assigned:'任务', task_created:'任务', task_claimed:'任务', owner_topic:'owner', guest_message:'guest', connector_message:'Agent', agent_working:'处理中', review_finding:'Finding', developer_response:'回复', human_confirmation:'确认', mr_sync_preview:'同步预览', mr_webhook:'外部事件'}[kind] || kind;
+      return {room_created:'系统', invite_created:'邀请', member_joined:'加入', connector_registered:'Agent', connector_token_rotated:'凭据轮换', thread_created:'Thread', thread_message:'Thread', thread_summary:'Thread', handoff_proposed:'Handoff', handoff_converted:'Handoff', handoff_rejected:'Handoff', task_assigned:'任务', task_created:'任务', task_claimed:'任务', owner_topic:'owner', guest_message:'guest', connector_message:'Agent', agent_working:'处理中', review_finding:'Finding', developer_response:'回复', human_confirmation:'确认', mr_sync_preview:'同步预览', mr_webhook:'外部事件'}[kind] || kind;
     }
     function renderFindingCard(finding){
       const canConfirm = isOwner() && finding.status === 'developer_responded';
@@ -3831,8 +4237,24 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
       return `<div class="section-title"><h2>任务与运行</h2><span class="tag">${(state.room.tasks || []).length} tasks</span></div>
         <div class="stack">
           ${taskForm}
-          <div class="work-list">${renderDecisions()}${renderHandoffs()}${renderTasks()}${renderAgentRuns()}</div>
+          <div class="work-list">${renderThreads()}${renderDecisions()}${renderHandoffs()}${renderTasks()}${renderAgentRuns()}</div>
         </div>`;
+    }
+    function renderThreads(){
+      const threads = state.room.threads || [];
+      if(!threads.length) return '';
+      return `<div class="section-title" style="margin-top:4px"><h3>Threads</h3><span class="tag">${threads.length}</span></div>` + threads.slice().reverse().map(thread => {
+        const participantNames = (thread.participants || []).map(item => item.name || item.connectorId).filter(Boolean).join(' / ');
+        const messageCount = (thread.messages || []).length;
+        const summary = thread.summary || {};
+        const statusClass = thread.status === 'consensus' || thread.status === 'closed' ? 'done' : thread.status === 'needs_owner_decision' ? 'error' : 'waiting';
+        return `<div class="work-item">
+          <div class="row between"><strong>${esc(thread.kind || 'agent_deliberation')}</strong><span class="tag ${statusClass}">${esc(thread.status)}</span></div>
+          <div>${esc(thread.question || '')}</div>
+          <div class="muted">${esc(participantNames || 'participants')} - ${esc(String(thread.turnCount || 0))}/${esc(String(thread.maxTurns || 0))} turns - ${esc(String(messageCount))} messages</div>
+          ${summary.proposal ? `<div>${esc(summary.proposal)}</div>` : ''}
+        </div>`;
+      }).join('');
     }
     function renderDecisions(){
       const decisions = state.room.decisions || [];

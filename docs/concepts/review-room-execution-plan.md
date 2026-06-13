@@ -267,6 +267,27 @@ Verification:
 - MCP tests prove `post_message` cannot spoof structured finding kinds or trigger hosted Agent replies.
 - MCP tests prove only reviewer connectors can propose handoffs, and owner acceptance still creates developer work and follow-up verification.
 
+### Slice 13: Scoped deliberation threads
+
+User-visible result:
+
+- Owner or a connector can open a scoped `agent_deliberation` thread with explicit connector participants.
+- Only the owner or listed connector participants can post thread messages or summarize the thread.
+- Thread turns are bounded by `maxTurns`; when the Agent turn budget is reached, the thread moves to `needs_summary`.
+- A structured thread summary can mark the room `needs_owner_decision` without auto-creating tasks or external sync.
+
+Implementation:
+
+- Add `threads` and `thread_messages` records to the Review Room snapshot.
+- Add REST endpoints for thread creation, thread messages, and thread summaries.
+- Expose threads in the work panel so deliberation is visible alongside tasks, handoffs, decisions, and runs.
+
+Verification:
+
+- Store tests prove thread participants, turn limits, summaries, and `openThreadCount`.
+- REST tests prove guests cannot create threads and non-participant connectors cannot post to scoped threads.
+- Snapshot tests prove summaries do not create tasks and `needs_owner_decision` remains an owner-visible state.
+
 ## Current acceptance checklist
 
 - [ ] Local task/run tests pass.
@@ -279,7 +300,8 @@ Verification:
 - [ ] MCP run lifecycle tests pass.
 - [ ] MCP owner confirmation and decision record tests pass.
 - [ ] MCP message and handoff proposal tests pass.
+- [ ] Scoped deliberation thread tests pass.
 - [ ] Full `npm test` passes.
 - [ ] Remote service updated.
-- [ ] Remote smoke test proves task/run loop, MCP run lifecycle, MCP message posting, MCP handoff proposal, owner confirmation, claim routing, token rotation, handoff conversion, and verification task generation.
+- [ ] Remote smoke test proves task/run loop, MCP run lifecycle, MCP message posting, MCP handoff proposal, scoped deliberation threads, owner confirmation, claim routing, token rotation, handoff conversion, and verification task generation.
 - [ ] User receives public URL and curl verification commands.
