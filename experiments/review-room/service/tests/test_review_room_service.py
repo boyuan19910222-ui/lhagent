@@ -164,6 +164,25 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertIn("function renderThreads()", html)
         self.assertIn("function decideHandoff", html)
         self.assertIn("function rotateConnectorToken", html)
+        self.assertIn("function copyText", html)
+        self.assertIn("function fallbackCopyText", html)
+        self.assertIn("生成 Agent 接入信息", html)
+        self.assertIn("MCP Remote Agent 接入包", html)
+        self.assertIn("function agentInviteAccessText", html)
+        self.assertIn("function agentInvitePromptText", html)
+        self.assertIn("copyAgentAccess", html)
+        self.assertIn("copyAgentPrompt", html)
+        self.assertIn("eventStreamUrl", html)
+        self.assertIn("Last-Event-ID", html)
+        self.assertIn("mentionMenu", html)
+        self.assertIn("function mentionTargets()", html)
+        self.assertIn("function isSelfMentionTarget", html)
+        self.assertIn("function suppressMentionMenu", html)
+        self.assertIn("mentionSuppressUntil", html)
+        self.assertIn("if(!query.query)", html)
+        self.assertIn("event.inputType.startsWith('delete')", html)
+        self.assertIn("function mentionsForBody", html)
+        self.assertIn("payload:{mentions:mentionsForBody(body)}", html)
         self.assertIn("agentRuns", html)
         self.assertIn("event.key !== 'Enter'", html)
         self.assertIn("event.isComposing", html)
@@ -222,6 +241,75 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertEqual(loaded["status"], "waiting_for_agent")
         self.assertEqual(loaded["connectors"][0]["status"], "invited")
         self.assertEqual(loaded["connectors"][0]["name"], "Reviewer Agent")
+        self.assertEqual(loaded["connectors"][0]["adapterType"], "mcp-remote")
+        self.assertEqual(invite["advanced"]["adapterType"], "mcp-remote")
+        self.assertEqual(invite["advanced"]["mcp"]["toolsUrl"], "https://review.example.com/api/mcp/tools")
+        self.assertEqual(invite["advanced"]["mcp"]["eventStreamUrl"], "https://review.example.com/api/mcp/events?roomId={}".format(room["id"]))
+        self.assertEqual(invite["advanced"]["bootstrap"]["realtime"]["eventStreamUrl"], invite["advanced"]["mcp"]["eventStreamUrl"])
+        self.assertEqual(invite["advanced"]["bootstrap"]["realtime"]["authorization"], "Bearer {}".format(invite["advanced"]["connectorToken"]))
+        self.assertEqual(invite["advanced"]["bootstrap"]["realtime"]["websocketUrl"], "wss://review.example.com/ws/rooms/{}?token={}".format(room["id"], invite["advanced"]["connectorToken"]))
+        self.assertIn("get_snapshot", invite["advanced"]["mcp"]["tools"])
+        self.assertIn("poll_events", invite["advanced"]["mcp"]["tools"])
+        self.assertEqual(invite["advanced"]["mcp"]["bearerToken"], invite["advanced"]["connectorToken"])
+        self.assertIn("payload", invite["advanced"]["bootstrap"]["agentContract"]["eventEnvelope"]["required"])
+        self.assertEqual(invite["advanced"]["bootstrap"]["agentContract"]["cursorReconnect"]["fallbackTool"], "poll_events")
+        self.assertEqual(invite["advanced"]["bootstrap"]["agentContract"]["replyPolicy"]["shouldRespond"][0]["priority"], "P0")
+
+    def test_message_mentions_are_resolved_from_room_roles(self):
+        room = self.store.create_room({"title": "topic"})
+        reviewer = self.store.register_connector(room["id"], {"name": "Reviewer Agent", "role": "reviewer"})
+        developer = self.store.register_connector(room["id"], {"name": "Developer Agent", "role": "developer"})
+
+        message = self.store.add_message(
+            room["id"],
+            {
+                "senderType": "human",
+                "senderName": "review room owner",
+                "kind": "owner_topic",
+                "body": "@Reviewer-Agent 请看风险，@developer 跟进修复，@owner 稍后确认。",
+            },
+        )
+        mentions_by_role = {mention["role"]: mention for mention in message["payload"]["mentions"]}
+
+        self.assertEqual(mentions_by_role["reviewer"]["connectorId"], reviewer["id"])
+        self.assertEqual(mentions_by_role["developer"]["connectorId"], developer["id"])
+        self.assertNotIn("owner", mentions_by_role)
+        self.assertNotIn("connectorToken", json.dumps(message["payload"], ensure_ascii=False))
+
+        reviewer_message = self.store.add_message(
+            room["id"],
+            {
+                "senderType": "agent",
+                "senderName": "Reviewer Agent",
+                "kind": "connector_message",
+                "body": "@reviewer 自己不应该出现，@developer 应该出现。",
+                "senderIdentity": {
+                    "type": "connector",
+                    "connectorId": reviewer["id"],
+                    "name": "Reviewer Agent",
+                    "role": "reviewer",
+                },
+            },
+        )
+        reviewer_mentions_by_role = {mention["role"]: mention for mention in reviewer_message["payload"]["mentions"]}
+
+        self.assertNotIn("reviewer", reviewer_mentions_by_role)
+        self.assertEqual(reviewer_mentions_by_role["developer"]["connectorId"], developer["id"])
+
+    def test_agent_invite_can_request_codex_sidecar_adapter(self):
+        room = self.store.create_room({"title": "topic"})
+
+        invite = self.store.create_invite(
+            room["id"],
+            {"type": "agent", "role": "reviewer", "name": "Reviewer Agent", "adapterType": "codex-sidecar"},
+            "https://review.example.com",
+        )
+        loaded = self.store.get_room(room["id"])
+
+        self.assertEqual(loaded["connectors"][0]["adapterType"], "codex-sidecar")
+        self.assertEqual(invite["advanced"]["adapterType"], "codex-sidecar")
+        self.assertIn("codex_connector.py", invite["advanced"]["bootstrap"]["command"])
+        self.assertNotIn("mcp", invite["advanced"])
 
     def test_disconnect_connector_revokes_token(self):
         room = self.store.create_room({"title": "topic"})

@@ -88,13 +88,18 @@ Recommended adapter types:
 
 ## MCP Gateway
 
-A Review Room MCP Gateway is a promising adapter mode for Agents that already support remote MCP servers, especially HTTPS or Streamable HTTP MCP.
+A Review Room MCP Gateway is the preferred first entry path for Agents that already support remote MCP servers, especially HTTPS or Streamable HTTP MCP.
 
-MCP can reduce the need to install `codex_connector.py` or a Lighthouse-specific sidecar on an Agent host, but it should be treated as one adapter path rather than the only connector architecture.
+Agent invite links now default to `adapterType=mcp-remote`. The invite bootstrap returns the MCP tool base URL, connector token, room id, connector id, role, and supported tools. `codex-sidecar` remains an explicit compatibility adapter for environments that need a local WebSocket process or Codex CLI bridge.
+
+MCP reduces the need to install `codex_connector.py` or a Lighthouse-specific sidecar on an Agent host, while still preserving connector-scoped identity, capabilities, task claiming, first-class `agent_runs`, owner confirmation, and trust labels. Because MCP is tool-call oriented rather than a persistent socket, MCP tool calls mark the connector as `mcp_ready` and update `lastSeenAt`/`eventCount`; they do not count as WebSocket online presence.
+
+MCP connectors observe room activity through a realtime SSE stream plus `poll_events` for reconnect recovery. The MCP bootstrap returns `eventStreamUrl`, bearer authorization details, and a WebSocket fallback URL. A remote Agent that keeps the SSE stream open receives room messages, tasks, findings, handoffs, decisions, scoped threads, thread messages, and agent runs as they happen; `Last-Event-ID` or `poll_events` lets it catch up after disconnect. Receiving a chat message still does not imply executable work unless an explicit assigned or claimed task exists.
 
 Candidate MCP tools:
 
 - `get_snapshot` (implemented in the P0 experiment)
+- `poll_events` (implemented in the P0 experiment)
 - `list_tasks` (implemented in the P0 experiment)
 - `claim_task` (implemented in the P0 experiment)
 - `start_run` (implemented in the P0 experiment)
@@ -103,6 +108,10 @@ Candidate MCP tools:
 - `propose_handoff` (implemented in the P0 experiment)
 - `complete_task` (implemented in the P0 experiment)
 - `request_owner_confirmation` (implemented in the P0 experiment)
+
+Candidate MCP streams:
+
+- `room.events` over SSE at `/api/mcp/events?roomId=<roomId>` (implemented in the P0 experiment)
 
 Candidate MCP resources:
 

@@ -155,9 +155,12 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         developer_ws = await self.client.ws_connect("/ws/rooms/{}?token={}".format(room["id"], developer["connectorToken"]))
         await self._drain_initial_events(owner_ws, reviewer_ws, developer_ws)
 
-        await owner_ws.send_json({"type": "message.create", "body": "请评审这个 MR 的鉴权风险。"})
+        await owner_ws.send_json({"type": "message.create", "body": "@owner 记录一下，@reviewer 请评审这个 MR 的鉴权风险。"})
         owner_message = await self._read_event(owner_ws, "message.created")
         self.assertEqual(owner_message["message"]["senderName"], "review room owner")
+        self.assertEqual(len(owner_message["message"]["payload"]["mentions"]), 1)
+        self.assertEqual(owner_message["message"]["payload"]["mentions"][0]["connectorId"], reviewer["id"])
+        self.assertEqual(owner_message["message"]["payload"]["mentions"][0]["role"], "reviewer")
 
         await reviewer_ws.send_json(
             {
@@ -575,7 +578,14 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         snapshot_after = await snapshot_after_response.json()
 
         self.assertEqual(tools_response.status, 200)
+        self.assertEqual(tools["gateway"], "review-room.mcp-remote")
+        self.assertIn("payload", tools["eventEnvelope"]["required"])
+        self.assertEqual(tools["cursorReconnect"]["resumeHeader"], "Last-Event-ID")
+        self.assertEqual(tools["replyPolicy"]["shouldRespond"][1]["reason"], "direct mention")
+        self.assertEqual(tools["streams"][0]["name"], "room.events")
+        self.assertEqual(tools["streams"][0]["transport"], "sse")
         self.assertIn("get_snapshot", [tool["name"] for tool in tools["tools"]])
+        self.assertIn("poll_events", [tool["name"] for tool in tools["tools"]])
         self.assertIn("list_tasks", [tool["name"] for tool in tools["tools"]])
         self.assertIn("claim_task", [tool["name"] for tool in tools["tools"]])
         self.assertIn("start_run", [tool["name"] for tool in tools["tools"]])
@@ -584,6 +594,9 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("propose_handoff", [tool["name"] for tool in tools["tools"]])
         self.assertEqual(snapshot_response.status, 200)
         self.assertEqual(snapshot["room"]["id"], room["id"])
+        self.assertEqual(snapshot["agentContract"]["replyPolicy"]["shouldRespond"][0]["priority"], "P0")
+        self.assertEqual(snapshot["room"]["connectors"][0]["status"], "mcp_ready")
+        self.assertEqual(snapshot["room"]["statusSummary"]["onlineAgentCount"], 0)
         self.assertIn("trust", snapshot)
         self.assertEqual(denied_owner_message_response.status, 403)
         self.assertEqual(denied_owner_message["error"], "message:reply connector capability required")
@@ -607,13 +620,166 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(denied_owner_start["error"], "connector token required")
         self.assertEqual(start_response.status, 201)
         self.assertEqual(started["agentRun"]["taskId"], task["id"])
+        self.assertEqual(started["agentRun"]["adapterType"], "mcp-remote")
         self.assertEqual(started["agentRun"]["status"], "running")
         self.assertEqual(complete_response.status, 201)
         self.assertEqual(completed["task"]["status"], "completed")
         self.assertIsNone(completed["verificationTask"])
         self.assertEqual(snapshot_after_response.status, 200)
+        self.assertEqual(snapshot_after["connectors"][0]["status"], "mcp_ready")
+        self.assertEqual(snapshot_after["connectors"][0]["eventCount"], 7)
+        self.assertEqual(snapshot_after["statusSummary"]["onlineAgentCount"], 0)
         self.assertEqual(snapshot_after["tasks"][-1]["status"], "completed")
+        self.assertEqual(snapshot_after["agentRuns"][-1]["adapterType"], "mcp-remote")
         self.assertEqual(snapshot_after["agentRuns"][-1]["status"], "completed")
+
+    async def test_mcp_poll_events_returns_room_content_by_cursor(self):
+        _, room = await self.post_json("/api/rooms", {"title": "MCP Poll Events"})
+        _, reviewer = await self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"role": "reviewer", "name": "Reviewer Agent", "adapterType": "mcp-remote"},
+            room["ownerToken"],
+        )
+        _, owner_message = await self.post_json(
+            "/api/rooms/{}/messages".format(room["id"]),
+            {"body": "Owner message for remote Agent.", "senderName": "review room owner"},
+            room["ownerToken"],
+        )
+        _, task = await self.post_json(
+            "/api/rooms/{}/tasks".format(room["id"]),
+            {
+                "kind": "review",
+                "instruction": "Decide whether to answer the owner.",
+                "target": {"mode": "connector", "connectorId": reviewer["id"]},
+            },
+            room["ownerToken"],
+        )
+
+        denied_response, denied = await self.post_json(
+            "/api/mcp/tools/poll_events",
+            {"roomId": room["id"]},
+            room["ownerToken"],
+        )
+        first_response, first = await self.post_json(
+            "/api/mcp/tools/poll_events",
+            {"roomId": room["id"], "limit": 3},
+            reviewer["connectorToken"],
+        )
+        first_event_ids = [event["id"] for event in first["events"]]
+        first_types = [event["type"] for event in first["events"]]
+        next_response, next_page = await self.post_json(
+            "/api/mcp/tools/poll_events",
+            {"roomId": room["id"], "cursor": first["nextCursor"]},
+            reviewer["connectorToken"],
+        )
+        all_first_page_events = first["events"] + next_page["events"]
+        all_first_page_types = [event["type"] for event in all_first_page_events]
+        all_first_page_messages = [
+            event["message"]["body"]
+            for event in all_first_page_events
+            if event["type"] == "message.created"
+        ]
+        _, followup_message = await self.post_json(
+            "/api/rooms/{}/messages".format(room["id"]),
+            {"body": "Follow-up only after cursor.", "senderName": "review room owner"},
+            room["ownerToken"],
+        )
+        followup_response, followup = await self.post_json(
+            "/api/mcp/tools/poll_events",
+            {"roomId": room["id"], "cursor": next_page["nextCursor"]},
+            reviewer["connectorToken"],
+        )
+        followup_message_events = [
+            event for event in followup["events"] if event["type"] == "message.created"
+        ]
+        invalid_response, invalid = await self.post_json(
+            "/api/mcp/tools/poll_events",
+            {"roomId": room["id"], "cursor": "bad-cursor"},
+            reviewer["connectorToken"],
+        )
+        snapshot = self.store.get_room(room["id"])
+
+        self.assertEqual(denied_response.status, 403)
+        self.assertEqual(denied["error"], "connector token required")
+        self.assertEqual(first_response.status, 200)
+        self.assertEqual(first["poller"]["connectorId"], reviewer["id"])
+        self.assertEqual(first["agentContract"]["cursorReconnect"]["fallbackTool"], "poll_events")
+        self.assertEqual(first["events"][0]["cursor"], "1")
+        self.assertIn("payload", first["events"][0])
+        self.assertTrue(first["hasMore"])
+        self.assertEqual(next_response.status, 200)
+        self.assertGreaterEqual(int(next_page["nextCursor"]), int(first["nextCursor"]))
+        self.assertIn("message.created", first_types)
+        self.assertIn("message:{}:created".format(owner_message["id"]), first_event_ids + [event["id"] for event in next_page["events"]])
+        self.assertIn("Owner message for remote Agent.", all_first_page_messages)
+        self.assertIn("task.created", all_first_page_types)
+        task_events = [event for event in all_first_page_events if event.get("task", {}).get("id") == task["id"]]
+        self.assertEqual(task_events[-1]["resource"], "room.tasks")
+        self.assertEqual(task_events[-1]["trust"], "review-room-policy")
+        self.assertEqual(task_events[-1]["payload"]["task"]["id"], task["id"])
+        self.assertIn("assigned or claimed tasks", first["trust"])
+        self.assertEqual(followup_response.status, 200)
+        self.assertEqual(followup_message_events[-1]["message"]["id"], followup_message["id"])
+        self.assertEqual(followup_message_events[-1]["message"]["body"], "Follow-up only after cursor.")
+        self.assertEqual(invalid_response.status, 400)
+        self.assertEqual(invalid["error"], "cursor must be a numeric event cursor")
+        self.assertEqual(snapshot["connectors"][0]["status"], "mcp_ready")
+        self.assertEqual(snapshot["statusSummary"]["onlineAgentCount"], 0)
+
+    async def test_mcp_event_stream_pushes_room_content_realtime(self):
+        _, room = await self.post_json("/api/rooms", {"title": "MCP Realtime Events"})
+        _, reviewer = await self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"role": "reviewer", "name": "Reviewer Agent", "adapterType": "mcp-remote"},
+            room["ownerToken"],
+        )
+
+        denied_response = await self.client.get(
+            "/api/mcp/events?roomId={}".format(room["id"]),
+            headers={"Authorization": "Bearer {}".format(room["ownerToken"])},
+        )
+        invalid_cursor_response = await self.client.get(
+            "/api/mcp/events?roomId={}&cursor=bad-cursor".format(room["id"]),
+            headers={"Authorization": "Bearer {}".format(reviewer["connectorToken"])},
+        )
+        stream_response = await self.client.get(
+            "/api/mcp/events?roomId={}".format(room["id"]),
+            headers={"Authorization": "Bearer {}".format(reviewer["connectorToken"])},
+        )
+        connected = await self._read_sse_event(stream_response, "review_room.connected")
+        _, owner_message = await self.post_json(
+            "/api/rooms/{}/messages".format(room["id"]),
+            {"body": "Realtime push for remote Agent.", "senderName": "review room owner"},
+            room["ownerToken"],
+        )
+        pushed = await self._read_sse_event(
+            stream_response,
+            "message.created",
+            lambda data: data.get("message", {}).get("id") == owner_message["id"],
+        )
+        snapshot = self.store.get_room(room["id"])
+
+        denied_body = await denied_response.json()
+        invalid_body = await invalid_cursor_response.json()
+        denied_response.close()
+        invalid_cursor_response.close()
+        stream_response.close()
+
+        self.assertEqual(denied_response.status, 403)
+        self.assertEqual(denied_body["error"], "connector token required")
+        self.assertEqual(invalid_cursor_response.status, 400)
+        self.assertEqual(invalid_body["error"], "Last-Event-ID must be a numeric event cursor")
+        self.assertEqual(stream_response.status, 200)
+        self.assertIn("text/event-stream", stream_response.headers.get("Content-Type", ""))
+        self.assertEqual(connected["data"]["identity"]["connectorId"], reviewer["id"])
+        self.assertEqual(pushed["data"]["type"], "message.created")
+        self.assertEqual(pushed["data"]["message"]["body"], "Realtime push for remote Agent.")
+        self.assertEqual(pushed["data"]["resource"], "room.timeline")
+        self.assertEqual(pushed["data"]["trust"], "mixed-untrusted")
+        self.assertEqual(pushed["data"]["payload"]["message"]["id"], owner_message["id"])
+        self.assertTrue(pushed["id"].isdigit())
+        self.assertEqual(snapshot["connectors"][0]["status"], "mcp_streaming")
+        self.assertEqual(snapshot["statusSummary"]["onlineAgentCount"], 1)
 
     async def test_rest_scoped_threads_limit_participants_and_summarize_to_owner_decision(self):
         _, room = await self.post_json("/api/rooms", {"title": "Thread REST"})
@@ -1004,6 +1170,36 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
                 return data
         self.fail("did not receive {}".format(expected_type))
 
+    async def _read_sse_event(self, response, expected_type, predicate=None):
+        predicate = predicate or (lambda data: True)
+        event_type = ""
+        event_id = ""
+        data_lines = []
+        for _ in range(200):
+            line = await asyncio.wait_for(response.content.readline(), timeout=5)
+            if not line:
+                self.fail("SSE stream closed before {}".format(expected_type))
+            text = line.decode("utf-8").rstrip("\r\n")
+            if text.startswith(":"):
+                continue
+            if not text:
+                if not event_type and not data_lines:
+                    continue
+                data = json.loads("\n".join(data_lines)) if data_lines else {}
+                if event_type == expected_type and predicate(data):
+                    return {"event": event_type, "id": event_id, "data": data}
+                event_type = ""
+                event_id = ""
+                data_lines = []
+                continue
+            if text.startswith("event:"):
+                event_type = text.split(":", 1)[1].strip()
+            elif text.startswith("id:"):
+                event_id = text.split(":", 1)[1].strip()
+            elif text.startswith("data:"):
+                data_lines.append(text.split(":", 1)[1].strip())
+        self.fail("did not receive SSE {}".format(expected_type))
+
     async def _read_finding_status(self, ws, expected_status):
         for _ in range(20):
             event = await self._read_event(ws, "finding.updated")
@@ -1041,6 +1237,8 @@ class CodexConnectorClientTest(unittest.TestCase):
         self.assertIn("function renderThreads()", html)
         self.assertIn("function decideHandoff", html)
         self.assertIn("function rotateConnectorToken", html)
+        self.assertIn("agentAdapter", html)
+        self.assertIn("MCP Remote", html)
         self.assertIn("/tasks", html)
         self.assertIn("/api/handoffs/", html)
         self.assertIn("/rotate-token", html)

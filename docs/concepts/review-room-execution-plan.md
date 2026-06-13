@@ -70,6 +70,7 @@ User-visible result:
 
 - A minimal MCP-style gateway can read a room snapshot and submit a structured finding through connector identity.
 - The experiment clearly states what still requires real Agent compatibility testing.
+- Agent invite links default to the MCP Remote adapter and expose MCP bootstrap details before falling back to sidecar-specific setup.
 
 Implementation:
 
@@ -83,6 +84,7 @@ Verification:
 
 - Tests prove the gateway can read snapshot and create a finding with a connector token.
 - Tests prove guest/owner tokens cannot impersonate connector tools.
+- Tests prove default Agent invites return `adapterType=mcp-remote`, MCP tool URLs, and bearer-token bootstrap details.
 
 ### Slice 4: Lightweight cloud deployment
 
@@ -219,12 +221,14 @@ Implementation:
 - Add MCP tools `start_run` and `complete_task`.
 - Reuse connector token identity and existing `start_agent_run` / `complete_task_result` store checks.
 - Broadcast the same `agent_run.started`, `task.completed`, optional follow-up `task.created`, and `room.snapshot` events as the REST path.
+- Record MCP-started runs as `adapterType=mcp-remote`, mark MCP callers as `mcp_ready`, and keep MCP tool activity separate from WebSocket online presence.
 
 Verification:
 
 - MCP tests prove owner tokens cannot start runs through connector tools.
 - MCP tests prove a claimed task can be started and completed through the gateway.
 - Snapshot tests prove task and `agent_runs` state are both updated after MCP completion.
+- Snapshot tests prove MCP tool calls update connector usage without inflating `onlineAgentCount`.
 
 ### Slice 11: MCP owner confirmation and decision records
 
@@ -267,7 +271,32 @@ Verification:
 - MCP tests prove `post_message` cannot spoof structured finding kinds or trigger hosted Agent replies.
 - MCP tests prove only reviewer connectors can propose handoffs, and owner acceptance still creates developer work and follow-up verification.
 
-### Slice 13: Scoped deliberation threads
+### Slice 13: MCP realtime room events
+
+User-visible result:
+
+- A connected MCP-style Agent can receive room messages and room state changes in realtime without a WebSocket sidecar.
+- The Agent can decide whether to reply after reading events; ordinary chat remains collaboration input, not automatic execution.
+- The Agent can resume from `Last-Event-ID` or store `nextCursor` and continue from the last observed event after reconnect.
+
+Implementation:
+
+- Add a durable `room_events` table with a numeric cursor sequence.
+- Add MCP SSE stream `room.events` at `/api/mcp/events?roomId=<roomId>` for realtime delivery.
+- Add MCP tool `poll_events` as reconnect and compatibility fallback for messages, tasks, findings, handoffs, decisions, scoped threads, thread messages, and agent runs.
+- Backfill event rows from the current room objects during polling so existing rooms are observable after deployment.
+- Return resource and trust labels on each event.
+- Mark open MCP streams as `mcp_streaming`; keep simple tool calls as `mcp_ready`.
+
+Verification:
+
+- MCP tests prove owner tokens cannot open connector event streams or poll as connectors.
+- MCP tests prove an open SSE stream receives a new room message in realtime.
+- MCP tests prove polling returns room messages and structured task events with trust labels.
+- MCP tests prove cursor pagination returns only events after the supplied cursor.
+- Snapshot tests prove MCP polling marks the connector `mcp_ready` while realtime streams mark the connector `mcp_streaming` and count as online.
+
+### Slice 14: Scoped deliberation threads
 
 User-visible result:
 
@@ -300,8 +329,9 @@ Verification:
 - [ ] MCP run lifecycle tests pass.
 - [ ] MCP owner confirmation and decision record tests pass.
 - [ ] MCP message and handoff proposal tests pass.
+- [ ] MCP realtime event stream and polling tests pass.
 - [ ] Scoped deliberation thread tests pass.
 - [ ] Full `npm test` passes.
 - [ ] Remote service updated.
-- [ ] Remote smoke test proves task/run loop, MCP run lifecycle, MCP message posting, MCP handoff proposal, scoped deliberation threads, owner confirmation, claim routing, token rotation, handoff conversion, and verification task generation.
+- [ ] Remote smoke test proves task/run loop, MCP run lifecycle, MCP realtime event stream, MCP room event polling, MCP message posting, MCP handoff proposal, scoped deliberation threads, owner confirmation, claim routing, token rotation, handoff conversion, and verification task generation.
 - [ ] User receives public URL and curl verification commands.
