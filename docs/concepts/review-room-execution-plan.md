@@ -138,13 +138,36 @@ Verification:
 - HTTP tests prove old connector events fail and new connector events work.
 - WebSocket tests prove active old sessions receive a disconnect event.
 
+### Slice 7: Reviewer-to-Developer handoff
+
+User-visible result:
+
+- Reviewer Agent can propose that a finding should be handed off to another role or capability.
+- Owner can accept or reject the handoff from Review Room state.
+- Accepting a handoff converts it into a structured `fix` task and assigns it to an eligible Developer Agent.
+- Handoffs are visible in the Room snapshot and right-side work panel.
+
+Implementation:
+
+- Add a `handoffs` table.
+- Add `POST /api/findings/{finding_id}/handoffs`.
+- Add `POST /api/handoffs/{handoff_id}/accept` and `/reject`.
+- Add WebSocket events `handoff.propose`, `handoff.proposed`, `handoff.converted_to_task`, and `handoff.rejected`.
+
+Verification:
+
+- Store tests prove `finding -> handoff -> task` conversion.
+- HTTP tests prove owner-accepted handoff creates an assigned Developer task.
+- WebSocket tests prove Developer Agent receives `task.assigned` after owner accepts the handoff.
+
 ## Current acceptance checklist
 
 - [ ] Local task/run tests pass.
 - [ ] Local connector task-assignment tests pass.
 - [ ] Home page exposes visible task/run controls.
 - [ ] Connector token rotation tests pass.
+- [ ] Handoff conversion tests pass.
 - [ ] Full `npm test` passes.
 - [ ] Remote service updated.
-- [ ] Remote smoke test proves task/run loop and token rotation.
+- [ ] Remote smoke test proves task/run loop, token rotation, and handoff conversion.
 - [ ] User receives public URL and curl verification commands.

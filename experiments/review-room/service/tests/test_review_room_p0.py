@@ -187,6 +187,48 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         await reviewer_ws.close()
         await developer_ws.close()
 
+    async def test_websocket_handoff_acceptance_assigns_developer_task(self):
+        _, room = await self.post_json("/api/rooms", {"title": "Handoff realtime"})
+        _, reviewer = await self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"role": "reviewer", "name": "Reviewer Agent"},
+            room["ownerToken"],
+        )
+        _, developer = await self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"role": "developer", "name": "Developer Agent"},
+            room["ownerToken"],
+        )
+        owner_ws = await self.client.ws_connect("/ws/rooms/{}?token={}".format(room["id"], room["ownerToken"]))
+        reviewer_ws = await self.client.ws_connect("/ws/rooms/{}?token={}".format(room["id"], reviewer["connectorToken"]))
+        developer_ws = await self.client.ws_connect("/ws/rooms/{}?token={}".format(room["id"], developer["connectorToken"]))
+        await self._drain_initial_events(owner_ws, reviewer_ws, developer_ws)
+
+        await reviewer_ws.send_json({"type": "finding.create", "claim": "缺少鉴权测试"})
+        finding_created = await self._read_event(owner_ws, "finding.created")
+        await reviewer_ws.send_json(
+            {
+                "type": "handoff.propose",
+                "findingId": finding_created["finding"]["id"],
+                "reason": "需要 Developer Agent 修复并补测试。",
+                "suggestedTask": "补上鉴权测试并回传结果。",
+            }
+        )
+        handoff_event = await self._read_event(owner_ws, "handoff.proposed")
+        await owner_ws.send_json({"type": "handoff.accept", "handoffId": handoff_event["handoff"]["id"]})
+        converted = await self._read_event(owner_ws, "handoff.converted_to_task")
+        assigned = await self._read_event(developer_ws, "task.assigned")
+        snapshot = await self._read_event(owner_ws, "room.snapshot")
+
+        self.assertEqual(converted["handoff"]["status"], "converted_to_task")
+        self.assertEqual(converted["task"]["assignedConnectorId"], developer["id"])
+        self.assertEqual(assigned["task"]["id"], converted["task"]["id"])
+        self.assertEqual(snapshot["room"]["handoffs"][0]["convertedTaskId"], converted["task"]["id"])
+
+        await owner_ws.close()
+        await reviewer_ws.close()
+        await developer_ws.close()
+
     async def test_guest_invite_can_chat_but_cannot_confirm(self):
         _, room = await self.post_json("/api/rooms", {"title": "开放话题", "objective": "验证访客分享链接"})
         _, invite = await self.post_json(
@@ -539,10 +581,13 @@ class CodexConnectorClientTest(unittest.TestCase):
         self.assertIn("房间角色", html)
         self.assertIn("任务与运行", html)
         self.assertIn("分配任务", html)
+        self.assertIn("Handoffs", html)
         self.assertIn("轮换 token", html)
         self.assertIn("function createTask()", html)
+        self.assertIn("function decideHandoff", html)
         self.assertIn("function rotateConnectorToken", html)
         self.assertIn("/tasks", html)
+        self.assertIn("/api/handoffs/", html)
         self.assertIn("/rotate-token", html)
 
     def test_parse_room_url_converts_http_to_websocket_path(self):

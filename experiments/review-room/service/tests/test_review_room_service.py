@@ -153,11 +153,14 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertIn("任务与运行", html)
         self.assertIn("分配结构化任务", html)
         self.assertIn("轮换 token", html)
+        self.assertIn("Handoffs", html)
         self.assertIn("/api/rooms/${encodeURIComponent(state.room.id)}/invites", html)
         self.assertIn("/api/rooms/${encodeURIComponent(state.room.id)}/tasks", html)
+        self.assertIn("/api/handoffs/", html)
         self.assertIn("/rotate-token", html)
         self.assertIn("function submitMessage()", html)
         self.assertIn("function createTask()", html)
+        self.assertIn("function decideHandoff", html)
         self.assertIn("function rotateConnectorToken", html)
         self.assertIn("agentRuns", html)
         self.assertIn("event.key !== 'Enter'", html)
@@ -396,6 +399,49 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertEqual(loaded["agentRuns"][0]["status"], "completed")
         self.assertEqual(loaded["statusSummary"]["activeTaskCount"], 0)
 
+    def test_handoff_acceptance_converts_finding_to_developer_task(self):
+        room = self.store.create_room({"title": "Handoff room"})
+        reviewer = self.store.register_connector(room["id"], {"name": "Reviewer Agent", "role": "reviewer"})
+        developer = self.store.register_connector(room["id"], {"name": "Developer Agent", "role": "developer"})
+        finding = self.store.add_finding(room["id"], {"claim": "权限校验缺失", "createdBy": "Reviewer Agent"})
+        reviewer_identity = self.store.authenticate_room_token(room["id"], reviewer["connectorToken"])
+
+        handoff = self.store.propose_handoff(
+            finding["id"],
+            {
+                "reason": "需要 Developer Agent 修改代码并补测试。",
+                "suggestedTask": "修复权限校验并回传验证结果。",
+            },
+            reviewer_identity,
+        )
+        result = self.store.decide_handoff(handoff["id"], {"decision": "accepted"}, "review room owner")
+        loaded = self.store.get_room(room["id"])
+
+        self.assertEqual(handoff["status"], "proposed")
+        self.assertEqual(result["handoff"]["status"], "converted_to_task")
+        self.assertEqual(result["task"]["kind"], "fix")
+        self.assertEqual(result["task"]["source"]["handoffId"], handoff["id"])
+        self.assertEqual(result["task"]["source"]["findingId"], finding["id"])
+        self.assertEqual(result["task"]["assignedConnectorId"], developer["id"])
+        self.assertEqual(loaded["handoffs"][0]["convertedTaskId"], result["task"]["id"])
+        self.assertEqual(loaded["tasks"][0]["target"]["role"], "developer")
+        self.assertEqual(loaded["statusSummary"]["pendingHandoffCount"], 0)
+        self.assertIn("handoff_proposed", [message["kind"] for message in loaded["messages"]])
+        self.assertIn("handoff_converted", [message["kind"] for message in loaded["messages"]])
+
+    def test_handoff_proposal_requires_reviewer_connector(self):
+        room = self.store.create_room({"title": "Handoff permissions"})
+        developer = self.store.register_connector(room["id"], {"name": "Developer Agent", "role": "developer"})
+        finding = self.store.add_finding(room["id"], {"claim": "Missing auth test", "createdBy": "Reviewer Agent"})
+        developer_identity = self.store.authenticate_room_token(room["id"], developer["connectorToken"])
+
+        with self.assertRaises(PermissionError):
+            self.store.propose_handoff(
+                finding["id"],
+                {"reason": "Developer should not directly propose review handoffs."},
+                developer_identity,
+            )
+
     def test_connector_event_writes_message_and_finding_to_room(self):
         room = self.store.create_room({"title": "MR"})
         local = self.store.register_connector(room["id"], {"name": "本地 Codex", "kind": "local-agent"})
@@ -559,6 +605,44 @@ class ReviewRoomHttpTest(unittest.TestCase):
         self.assertNotEqual(rotated["connectorToken"], connector["connectorToken"])
         self.assertIn(rotated["connectorToken"], rotated["bootstrap"]["command"])
         self.assertEqual(event["body"], "new token works")
+
+    def test_http_handoff_acceptance_creates_developer_task(self):
+        room = self.post_json("/api/rooms", {"title": "Handoff"})
+        reviewer = self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"name": "Reviewer Agent", "role": "reviewer"},
+            {"Authorization": "Bearer {}".format(room["ownerToken"])},
+        )
+        developer = self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"name": "Developer Agent", "role": "developer"},
+            {"Authorization": "Bearer {}".format(room["ownerToken"])},
+        )
+        finding = self.post_json(
+            "/api/rooms/{}/findings".format(room["id"]),
+            {"claim": "缺少鉴权测试"},
+            {"Authorization": "Bearer {}".format(reviewer["connectorToken"])},
+        )
+
+        handoff = self.post_json(
+            "/api/findings/{}/handoffs".format(finding["id"]),
+            {"reason": "需要修复并补测试", "suggestedTask": "补上鉴权测试"},
+            {"Authorization": "Bearer {}".format(reviewer["connectorToken"])},
+        )
+        result = self.post_json(
+            "/api/handoffs/{}/accept".format(handoff["id"]),
+            {},
+            {"Authorization": "Bearer {}".format(room["ownerToken"])},
+        )
+        loaded = self.get_json(
+            "/api/rooms/{}".format(room["id"]),
+            {"Authorization": "Bearer {}".format(room["ownerToken"])},
+        )
+
+        self.assertEqual(result["handoff"]["status"], "converted_to_task")
+        self.assertEqual(result["task"]["assignedConnectorId"], developer["id"])
+        self.assertEqual(loaded["handoffs"][0]["convertedTaskId"], result["task"]["id"])
+        self.assertEqual(loaded["tasks"][0]["kind"], "fix")
 
 
 if __name__ == "__main__":

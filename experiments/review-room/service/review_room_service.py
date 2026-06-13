@@ -172,6 +172,22 @@ class ReviewRoomStore:
                   FOREIGN KEY(room_id) REFERENCES rooms(id)
                 );
 
+                CREATE TABLE IF NOT EXISTS handoffs (
+                  id TEXT PRIMARY KEY,
+                  room_id TEXT NOT NULL,
+                  from_connector_id TEXT NOT NULL,
+                  source_finding_id TEXT NOT NULL,
+                  target_json TEXT NOT NULL,
+                  reason TEXT NOT NULL,
+                  suggested_task TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  converted_task_id TEXT NOT NULL,
+                  created_by TEXT NOT NULL,
+                  created_at INTEGER NOT NULL,
+                  updated_at INTEGER NOT NULL,
+                  FOREIGN KEY(room_id) REFERENCES rooms(id)
+                );
+
                 CREATE TABLE IF NOT EXISTS agent_runs (
                   id TEXT PRIMARY KEY,
                   room_id TEXT NOT NULL,
@@ -312,6 +328,10 @@ class ReviewRoomStore:
                 "SELECT * FROM tasks WHERE room_id = ? ORDER BY created_at ASC",
                 (room_id,),
             ).fetchall()
+            handoff_rows = conn.execute(
+                "SELECT * FROM handoffs WHERE room_id = ? ORDER BY created_at ASC",
+                (room_id,),
+            ).fetchall()
             run_rows = conn.execute(
                 "SELECT * FROM agent_runs WHERE room_id = ? ORDER BY created_at ASC",
                 (room_id,),
@@ -322,6 +342,7 @@ class ReviewRoomStore:
         room["connectors"] = [self._connector_from_row(row) for row in connector_rows]
         room["invites"] = [self._invite_from_row(row) for row in invite_rows]
         room["tasks"] = [self._task_from_row(row) for row in task_rows]
+        room["handoffs"] = [self._handoff_from_row(row) for row in handoff_rows]
         room["agentRuns"] = [self._agent_run_from_row(row) for row in run_rows]
         room["statusSummary"] = self.room_status_summary(room_id)
         return room
@@ -718,6 +739,129 @@ class ReviewRoomStore:
             },
         )
         return self.get_finding(finding_id)
+
+    def propose_handoff(self, finding_id: str, payload: Dict[str, Any], identity: Dict[str, Any]) -> Dict[str, Any]:
+        finding = self.get_finding(finding_id)
+        if identity.get("type") != "connector" or identity.get("role") != "reviewer":
+            raise PermissionError("reviewer connector required")
+        connector = self.get_connector(identity["connectorId"])
+        if connector["roomId"] != finding["roomId"]:
+            raise PermissionError("connector does not belong to finding room")
+        target = dict(payload.get("target") or {})
+        target["mode"] = target.get("mode") or "role"
+        target["role"] = target.get("role") or payload.get("role") or "developer"
+        target["capability"] = target.get("capability") or payload.get("capability") or "finding:respond"
+        reason = payload.get("reason") or "This finding needs a follow-up task."
+        suggested_task = payload.get("suggestedTask") or payload.get("suggested_task") or "Fix finding: {}".format(finding["claim"])
+        timestamp = now_ms()
+        handoff = {
+            "id": make_id("handoff"),
+            "roomId": finding["roomId"],
+            "fromConnectorId": connector["id"],
+            "sourceFindingId": finding_id,
+            "target": target,
+            "reason": reason,
+            "suggestedTask": suggested_task,
+            "status": "proposed",
+            "convertedTaskId": "",
+            "createdBy": identity.get("name") or connector["name"],
+            "createdAt": timestamp,
+            "updatedAt": timestamp,
+        }
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO handoffs
+                  (id, room_id, from_connector_id, source_finding_id, target_json, reason,
+                   suggested_task, status, converted_task_id, created_by, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    handoff["id"],
+                    handoff["roomId"],
+                    handoff["fromConnectorId"],
+                    handoff["sourceFindingId"],
+                    json_dumps(handoff["target"]),
+                    handoff["reason"],
+                    handoff["suggestedTask"],
+                    handoff["status"],
+                    handoff["convertedTaskId"],
+                    handoff["createdBy"],
+                    handoff["createdAt"],
+                    handoff["updatedAt"],
+                ),
+            )
+            conn.execute("UPDATE rooms SET status = ?, updated_at = ? WHERE id = ?", ("needs_owner_decision", timestamp, finding["roomId"]))
+        self.add_message(
+            finding["roomId"],
+            {
+                "senderType": "agent",
+                "senderName": handoff["createdBy"],
+                "kind": "handoff_proposed",
+                "body": reason,
+                "payload": {
+                    "handoffId": handoff["id"],
+                    "findingId": finding_id,
+                    "target": handoff["target"],
+                    "suggestedTask": suggested_task,
+                },
+            },
+        )
+        return handoff
+
+    def get_handoff(self, handoff_id: str) -> Dict[str, Any]:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM handoffs WHERE id = ?", (handoff_id,)).fetchone()
+        if not row:
+            raise KeyError("handoff not found")
+        return self._handoff_from_row(row)
+
+    def decide_handoff(self, handoff_id: str, payload: Dict[str, Any], decided_by: str = "review room owner") -> Dict[str, Any]:
+        handoff = self.get_handoff(handoff_id)
+        decision = payload.get("decision") or "accepted"
+        if decision not in {"accepted", "rejected"}:
+            raise ValueError("decision must be accepted or rejected")
+        if handoff["status"] != "proposed":
+            raise ValueError("handoff is not pending")
+        timestamp = now_ms()
+        task: Optional[Dict[str, Any]] = None
+        status = "rejected"
+        converted_task_id = ""
+        if decision == "accepted":
+            task = self.create_task(
+                handoff["roomId"],
+                {
+                    "kind": payload.get("kind") or "fix",
+                    "instruction": payload.get("instruction") or handoff["suggestedTask"],
+                    "target": payload.get("target") or handoff["target"],
+                    "source": {"handoffId": handoff_id, "findingId": handoff["sourceFindingId"]},
+                },
+                decided_by,
+            )
+            status = "converted_to_task"
+            converted_task_id = task["id"]
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE handoffs
+                SET status = ?, converted_task_id = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (status, converted_task_id, timestamp, handoff_id),
+            )
+            conn.execute("UPDATE rooms SET updated_at = ? WHERE id = ?", (timestamp, handoff["roomId"]))
+        self.add_message(
+            handoff["roomId"],
+            {
+                "senderType": "human",
+                "senderName": decided_by,
+                "kind": "handoff_converted" if task else "handoff_rejected",
+                "body": payload.get("reason") or ("Handoff converted to task." if task else "Handoff rejected."),
+                "payload": {"handoffId": handoff_id, "taskId": converted_task_id, "decision": decision},
+            },
+        )
+        updated = self.get_handoff(handoff_id)
+        return {"handoff": updated, "task": task}
 
     def confirm_finding(self, finding_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         decision = payload.get("decision") or "accepted"
@@ -1451,6 +1595,7 @@ class ReviewRoomStore:
             connectors = conn.execute("SELECT status FROM connectors WHERE room_id = ?", (room_id,)).fetchall()
             findings = conn.execute("SELECT status FROM findings WHERE room_id = ?", (room_id,)).fetchall()
             tasks = conn.execute("SELECT status FROM tasks WHERE room_id = ?", (room_id,)).fetchall()
+            handoffs = conn.execute("SELECT status FROM handoffs WHERE room_id = ?", (room_id,)).fetchall()
             runs = conn.execute("SELECT status FROM agent_runs WHERE room_id = ?", (room_id,)).fetchall()
             messages = conn.execute("SELECT COUNT(*) AS count FROM messages WHERE room_id = ?", (room_id,)).fetchone()
         participants = self.sanitize_participants(json_loads(room_row["participants_json"], []))
@@ -1458,6 +1603,7 @@ class ReviewRoomStore:
         active_agents = sum(1 for row in connectors if row["status"] in {"online", "working", "needs_input", "connected", "invited", "joining"})
         pending_findings = sum(1 for row in findings if row["status"] not in {"accepted", "rejected"})
         active_tasks = sum(1 for row in tasks if row["status"] in {"open", "assigned", "claimed", "running"})
+        pending_handoffs = sum(1 for row in handoffs if row["status"] == "proposed")
         running_agent_runs = sum(1 for row in runs if row["status"] in {"created", "running", "streaming"})
         return {
             "memberCount": len(participants) + len(connectors),
@@ -1467,6 +1613,7 @@ class ReviewRoomStore:
             "onlineAgentCount": online_agents,
             "pendingFindingCount": pending_findings,
             "activeTaskCount": active_tasks,
+            "pendingHandoffCount": pending_handoffs,
             "runningAgentRunCount": running_agent_runs,
             "messageCount": messages["count"] if messages else 0,
             "lastActiveAt": room_row["updated_at"],
@@ -1642,6 +1789,23 @@ class ReviewRoomStore:
         }
 
     @staticmethod
+    def _handoff_from_row(row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "id": row["id"],
+            "roomId": row["room_id"],
+            "fromConnectorId": row["from_connector_id"],
+            "sourceFindingId": row["source_finding_id"],
+            "target": json_loads(row["target_json"], {}),
+            "reason": row["reason"],
+            "suggestedTask": row["suggested_task"],
+            "status": row["status"],
+            "convertedTaskId": row["converted_task_id"],
+            "createdBy": row["created_by"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+
+    @staticmethod
     def _agent_run_from_row(row: sqlite3.Row) -> Dict[str, Any]:
         return {
             "id": row["id"],
@@ -1768,6 +1932,23 @@ class ReviewRoomHandler(BaseHTTPRequestHandler):
                 identity = self.store.authenticate_room_token(match.group(1), self.read_bearer_token(body))
                 require_reviewer_connector(identity)
                 self.send_json(self.store.add_finding(match.group(1), {**body, "createdBy": identity["name"]}), HTTPStatus.CREATED)
+                return
+            match = re.match(r"^/api/findings/([^/]+)/handoffs$", parsed.path)
+            if match:
+                finding = self.store.get_finding(match.group(1))
+                identity = self.store.authenticate_room_token(finding["roomId"], self.read_bearer_token(body))
+                self.send_json(self.store.propose_handoff(match.group(1), body, identity), HTTPStatus.CREATED)
+                return
+            match = re.match(r"^/api/handoffs/([^/]+)/(accept|reject)$", parsed.path)
+            if match:
+                handoff = self.store.get_handoff(match.group(1))
+                identity = self.store.authenticate_room_token(handoff["roomId"], self.read_bearer_token(body))
+                require_owner_role(identity)
+                decision = "accepted" if match.group(2) == "accept" else "rejected"
+                self.send_json(
+                    self.store.decide_handoff(match.group(1), {**body, "decision": decision}, identity["name"]),
+                    HTTPStatus.CREATED,
+                )
                 return
             match = re.match(r"^/api/rooms/([^/]+)/connectors$", parsed.path)
             if match:
@@ -2186,6 +2367,42 @@ async def handle_ws_event(
         await hub.broadcast(room_id, {"type": "finding.updated", "finding": finding})
         return
 
+    if event_type == "handoff.propose":
+        finding_id = payload.get("findingId") or payload.get("finding_id")
+        if not finding_id:
+            await websocket.send_json({"type": "error", "error": "findingId required"})
+            return
+        try:
+            handoff = store.propose_handoff(finding_id, payload, identity)
+        except (KeyError, PermissionError, ValueError) as exc:
+            await websocket.send_json({"type": "error", "error": str(exc)})
+            return
+        await hub.broadcast(room_id, {"type": "handoff.proposed", "handoff": handoff})
+        await hub.broadcast_snapshot(room_id)
+        return
+
+    if event_type in {"handoff.accept", "handoff.accepted", "handoff.reject", "handoff.rejected"}:
+        if identity["type"] != "owner":
+            await websocket.send_json({"type": "error", "error": "owner token required"})
+            return
+        handoff_id = payload.get("handoffId") or payload.get("handoff_id")
+        if not handoff_id:
+            await websocket.send_json({"type": "error", "error": "handoffId required"})
+            return
+        decision = "rejected" if event_type in {"handoff.reject", "handoff.rejected"} else "accepted"
+        try:
+            result = store.decide_handoff(handoff_id, {**payload, "decision": decision}, identity["name"])
+        except (KeyError, PermissionError, ValueError) as exc:
+            await websocket.send_json({"type": "error", "error": str(exc)})
+            return
+        await hub.broadcast(room_id, {"type": "handoff.converted_to_task" if result.get("task") else "handoff.rejected", **result})
+        if result.get("task"):
+            await hub.broadcast(room_id, {"type": "task.created", "task": result["task"]})
+            if result["task"].get("assignedConnectorId"):
+                await hub.broadcast(room_id, {"type": "task.assigned", "task": result["task"]})
+        await hub.broadcast_snapshot(room_id)
+        return
+
     if event_type in {"finding.confirm", "finding.reject"}:
         if identity["type"] != "owner":
             await websocket.send_json({"type": "error", "error": "owner token required"})
@@ -2461,6 +2678,41 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
         await app[HUB_KEY].broadcast(room_id, {"type": "finding.created", "finding": finding})
         return json_response(finding, 201)
 
+    async def propose_handoff(request: web.Request) -> web.Response:
+        finding_id = request.match_info["finding_id"]
+        identity = require_finding_identity(app[STORE_KEY], finding_id, bearer_token_from_request(request))
+        try:
+            handoff = app[STORE_KEY].propose_handoff(finding_id, await request_json(request), identity)
+        except PermissionError as exc:
+            raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        await app[HUB_KEY].broadcast(handoff["roomId"], {"type": "handoff.proposed", "handoff": handoff})
+        await app[HUB_KEY].broadcast_snapshot(handoff["roomId"])
+        return json_response(handoff, 201)
+
+    async def decide_handoff(request: web.Request) -> web.Response:
+        handoff_id = request.match_info["handoff_id"]
+        action = request.match_info["action"]
+        if action not in {"accept", "reject"}:
+            raise web.HTTPNotFound(text=json_dumps({"ok": False, "error": "not found"}), content_type="application/json")
+        try:
+            handoff = app[STORE_KEY].get_handoff(handoff_id)
+        except KeyError as exc:
+            raise web.HTTPNotFound(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        identity = require_identity(app[STORE_KEY], handoff["roomId"], bearer_token_from_request(request))
+        ensure_owner(identity)
+        body = await request_json(request)
+        try:
+            result = app[STORE_KEY].decide_handoff(handoff_id, {**body, "decision": "accepted" if action == "accept" else "rejected"}, identity["name"])
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        await app[HUB_KEY].broadcast(handoff["roomId"], {"type": "handoff.converted_to_task" if result.get("task") else "handoff.rejected", **result})
+        if result.get("task"):
+            await app[HUB_KEY].broadcast(handoff["roomId"], {"type": "task.created", "task": result["task"]})
+            if result["task"].get("assignedConnectorId"):
+                await app[HUB_KEY].broadcast(handoff["roomId"], {"type": "task.assigned", "task": result["task"]})
+        await app[HUB_KEY].broadcast_snapshot(handoff["roomId"])
+        return json_response(result, 201)
+
     async def update_finding(request: web.Request) -> web.Response:
         ensure_owner_for_finding(app[STORE_KEY], request.match_info["finding_id"], bearer_token_from_request(request))
         finding = app[STORE_KEY].update_finding(request.match_info["finding_id"], await request_json(request))
@@ -2576,6 +2828,8 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
     app.router.add_post("/api/rooms/{room_id}/join", join_room)
     app.router.add_post("/api/rooms/{room_id}/messages", add_message)
     app.router.add_post("/api/rooms/{room_id}/findings", add_finding)
+    app.router.add_post("/api/findings/{finding_id}/handoffs", propose_handoff)
+    app.router.add_post("/api/handoffs/{handoff_id}/{action}", decide_handoff)
     app.router.add_post("/api/rooms/{room_id}/connectors", register_connector)
     app.router.add_post("/api/rooms/{room_id}/connectors/{connector_id}/rotate-token", rotate_connector_token)
     app.router.add_post("/api/rooms/{room_id}/tasks", create_task)
@@ -2839,7 +3093,7 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
     }
     function messageKindText(kind, message={}){
       if(message.payload && message.payload.hostedAgent) return '模拟 Agent';
-      return {room_created:'系统', invite_created:'邀请', member_joined:'加入', connector_registered:'Agent', connector_token_rotated:'凭据轮换', owner_topic:'owner', guest_message:'guest', connector_message:'Agent', agent_working:'处理中', review_finding:'Finding', developer_response:'回复', human_confirmation:'确认', mr_sync_preview:'同步预览', mr_webhook:'外部事件'}[kind] || kind;
+      return {room_created:'系统', invite_created:'邀请', member_joined:'加入', connector_registered:'Agent', connector_token_rotated:'凭据轮换', handoff_proposed:'Handoff', handoff_converted:'Handoff', handoff_rejected:'Handoff', task_assigned:'任务', task_created:'任务', owner_topic:'owner', guest_message:'guest', connector_message:'Agent', agent_working:'处理中', review_finding:'Finding', developer_response:'回复', human_confirmation:'确认', mr_sync_preview:'同步预览', mr_webhook:'外部事件'}[kind] || kind;
     }
     function renderFindingCard(finding){
       const canConfirm = isOwner() && finding.status === 'developer_responded';
@@ -2914,8 +3168,23 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
       return `<div class="section-title"><h2>任务与运行</h2><span class="tag">${(state.room.tasks || []).length} tasks</span></div>
         <div class="stack">
           ${taskForm}
-          <div class="work-list">${renderTasks()}${renderAgentRuns()}</div>
+          <div class="work-list">${renderHandoffs()}${renderTasks()}${renderAgentRuns()}</div>
         </div>`;
+    }
+    function renderHandoffs(){
+      const handoffs = state.room.handoffs || [];
+      if(!handoffs.length) return '';
+      return `<div class="section-title" style="margin-top:4px"><h3>Handoffs</h3><span class="tag">${handoffs.length}</span></div>` + handoffs.slice().reverse().map(handoff => {
+        const pending = handoff.status === 'proposed' && isOwner();
+        const finding = (state.room.findings || []).find(item => item.id === handoff.sourceFindingId);
+        const target = handoff.target || {};
+        return `<div class="work-item">
+          <div class="row between"><strong>${esc(target.role || target.capability || 'handoff')}</strong><span class="tag ${handoff.status === 'converted_to_task' ? 'done' : handoff.status === 'rejected' ? 'error' : 'waiting'}">${esc(handoff.status)}</span></div>
+          <div>${esc(handoff.reason)}</div>
+          <div class="muted">${esc(finding ? finding.claim : handoff.sourceFindingId)} · ${esc(handoff.suggestedTask)}</div>
+          ${pending ? `<div class="row"><button class="primary" data-handoff-accept="${esc(handoff.id)}">接受</button><button class="danger" data-handoff-reject="${esc(handoff.id)}">拒绝</button></div>` : ''}
+        </div>`;
+      }).join('');
     }
     function renderTasks(){
       const tasks = state.room.tasks || [];
@@ -2944,6 +3213,8 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
     function bindWorkControls(){
       const create = document.getElementById('createTask');
       if(create) create.addEventListener('click', () => createTask().catch(alert));
+      document.querySelectorAll('[data-handoff-accept]').forEach(button => button.addEventListener('click', () => decideHandoff(button.dataset.handoffAccept, 'accept').catch(alert)));
+      document.querySelectorAll('[data-handoff-reject]').forEach(button => button.addEventListener('click', () => decideHandoff(button.dataset.handoffReject, 'reject').catch(alert)));
     }
     function renderInviteControls(){
       if(!isOwner()) return '<div class="empty">你可以阅读和发言，邀请和确认操作由 owner 完成。</div>';
@@ -3018,6 +3289,11 @@ realtime: ${esc(roomUrl)}</div></details>`;
       const instruction = document.getElementById('taskInstruction').value.trim();
       if(!connectorId || !instruction) return;
       await api(`/api/rooms/${encodeURIComponent(state.room.id)}/tasks`, {method:'POST', headers:authHeaders(), body:JSON.stringify({kind:'review', instruction, target:{mode:'connector', connectorId}})});
+      await selectRoom(state.room.id);
+    }
+    async function decideHandoff(handoffId, action){
+      if(!state.room || !isOwner() || !handoffId) return;
+      await api(`/api/handoffs/${encodeURIComponent(handoffId)}/${action}`, {method:'POST', headers:authHeaders(), body:JSON.stringify({})});
       await selectRoom(state.room.id);
     }
     document.getElementById('createRoom').addEventListener('click', () => createRoom().catch(alert));
