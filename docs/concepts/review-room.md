@@ -85,6 +85,7 @@ It is intentionally small enough to run on a Lighthouse instance after installin
 - `POST /api/rooms/{id}/tasks`
 - `POST /api/rooms/{id}/disconnect`
 - `POST /api/connectors/{id}/events`
+- `POST /api/tasks/{id}/claim`
 - `POST /api/tasks/{id}/runs`
 - `POST /api/tasks/{id}/complete`
 - `POST /api/rooms/{id}/messages`
@@ -99,6 +100,8 @@ It is intentionally small enough to run on a Lighthouse instance after installin
 - `GET /api/mcp/tools`
 - `POST /api/mcp/tools/get_snapshot`
 - `POST /api/mcp/tools/create_finding`
+- `POST /api/mcp/tools/list_tasks`
+- `POST /api/mcp/tools/claim_task`
 - `GET /ws/rooms/{id}?token=...`
 
 ## Productization path
@@ -116,6 +119,7 @@ P0.5: Connector and execution hardening
 - Add connector metadata such as adapter type, protocol version, capabilities, forbidden actions, heartbeat, and version.
 - Add first-class `agent_runs` so background Agent work is visible even when a vendor session list is not.
 - Add `task.create` and direct `task.assigned` so normal room messages do not trigger Agent execution.
+- Add `task.claim` so open role/capability work cannot run until an eligible connector explicitly claims it.
 - Add owner-triggered connector token rotation so leaked or stale connector credentials can be invalidated without deleting the connector record.
 - Add `handoff.propose` and owner accept/reject so Reviewer Agent recommendations become Developer Agent tasks only through visible Review Room state.
 - Add automatic `verify` task generation after completed handoff-backed `fix` tasks, preserving links to the source finding and handoff.

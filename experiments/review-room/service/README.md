@@ -149,6 +149,7 @@ GET /ws/rooms/<room_id>?token=<owner_or_connector_token>
 - `message.created`：服务广播已落库消息。
 - `task.create`：owner 创建结构化任务。
 - `task.created` / `task.assigned`：服务广播任务创建和分配结果。
+- `task.claim` / `task.claimed`：connector 显式 claim 匹配 role/capability 的 open task；未 claim 的 open task 不能启动 run。
 - `agent_run.start` / `agent_run.started`：connector 开始执行任务并生成运行记录。
 - `task.complete` / `task.completed`：connector 完成任务，服务更新任务和运行状态。
 - `connector.token_rotated`：owner 轮换 connector token，旧连接会断开并等待新 token 重连。
@@ -202,6 +203,28 @@ curl -X POST http://127.0.0.1:8707/api/rooms/<room_id>/tasks \
       "connectorId": "<reviewer_connector_id>"
     }
   }'
+```
+
+Owner can also create claimable work. A connector must claim the task before starting an `agent_run`:
+
+```bash
+curl -X POST http://127.0.0.1:8707/api/rooms/<room_id>/tasks \
+  -H 'Authorization: Bearer <owner_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "kind": "review",
+    "instruction": "Review this change and create a finding if needed.",
+    "target": {
+      "mode": "claim",
+      "role": "reviewer",
+      "capability": "finding:create"
+    }
+  }'
+
+curl -X POST http://127.0.0.1:8707/api/tasks/<task_id>/claim \
+  -H 'Authorization: Bearer <reviewer_connector_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{}'
 ```
 
 已连接的 connector 收到 `task.assigned` 后会先发送 `agent_run.start`，完成后发送 finding/message/response 和 `task.complete`。Room 快照里的 `tasks` 和 `agentRuns` 会展示当前任务和后台执行状态。内置 Web 页面右侧的“任务与运行”面板调用同一个接口，可作为最简接入路径，不必先手写 curl。
@@ -392,6 +415,20 @@ curl -X POST http://127.0.0.1:8707/api/mcp/tools/create_finding \
   }'
 ```
 
+List tasks and claim eligible work through the same connector identity:
+
+```bash
+curl -X POST http://127.0.0.1:8707/api/mcp/tools/list_tasks \
+  -H 'Authorization: Bearer <reviewer_connector_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"roomId":"<room_id>"}'
+
+curl -X POST http://127.0.0.1:8707/api/mcp/tools/claim_task \
+  -H 'Authorization: Bearer <reviewer_connector_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"taskId":"<task_id>"}'
+```
+
 ### Connector 写入 Finding
 
 ```bash
@@ -508,7 +545,7 @@ WantedBy=default.target
 - 把当前内置 HTML 页面迁移为 Lighthouse Console Review Room 正式页面。
 - 增加更严格鉴权：房间 token、Webhook secret、Agent 身份签名、Connector token rotation。
 - 把当前 `tasks` / `agent_runs` 正式迁移到 Lighthouse 托管控制面，继续记录 workspace、sandbox、日志或 transcript，避免后台工作不可见。
-- 把结构化任务路由沉淀为正式执行模型：用 `task.create` / `task.assigned` 驱动 Agent 执行，普通聊天消息默认不触发执行。
+- 把结构化任务路由沉淀为正式执行模型：用 `task.create` / `task.claim` / `task.assigned` 驱动 Agent 执行，普通聊天消息默认不触发执行。
 - 把当前 connector token rotation 扩展成完整凭据生命周期：过期时间、刷新令牌、轮换策略、审计查询和告警。
 - 把当前 handoff 和自动验证任务扩展成完整 Review -> Fix -> Verify -> Decision 编排：支持多候选 Agent claim、记录 owner 决策、生成外部同步动作。
 - 抽象通用 Connector Runtime：把当前 `codex_connector.py` 保留为 Codex adapter 样例，后续支持 CLI、HTTP、A2A、MCP、vendor API 等 adapter。

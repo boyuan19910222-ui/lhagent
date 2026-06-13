@@ -399,6 +399,42 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertEqual(loaded["agentRuns"][0]["status"], "completed")
         self.assertEqual(loaded["statusSummary"]["activeTaskCount"], 0)
 
+    def test_claimable_task_requires_matching_connector_claim_before_run(self):
+        room = self.store.create_room({"title": "Claim room"})
+        reviewer = self.store.register_connector(room["id"], {"name": "Reviewer Agent", "role": "reviewer"})
+        developer = self.store.register_connector(room["id"], {"name": "Developer Agent", "role": "developer"})
+        observer = self.store.register_connector(room["id"], {"name": "Observer Agent", "role": "observer"})
+        task = self.store.create_task(
+            room["id"],
+            {
+                "kind": "review",
+                "instruction": "Claim this review task.",
+                "target": {"mode": "claim", "role": "reviewer", "capability": "finding:create"},
+            },
+        )
+
+        with self.assertRaises(PermissionError):
+            self.store.start_agent_run(task["id"], reviewer["id"], {})
+        with self.assertRaises(PermissionError):
+            self.store.claim_task(task["id"], developer["id"], {})
+        broad_task = self.store.create_task(
+            room["id"],
+            {"kind": "research", "instruction": "Only executable agents can claim this.", "target": {"mode": "claim"}},
+        )
+        with self.assertRaises(PermissionError):
+            self.store.claim_task(broad_task["id"], observer["id"], {})
+
+        claimed = self.store.claim_task(task["id"], reviewer["id"], {})
+        run = self.store.start_agent_run(task["id"], reviewer["id"], {"workspace": "G:/Codex/Lighthouse"})
+        loaded = self.store.get_room(room["id"])
+
+        self.assertEqual(task["status"], "open")
+        self.assertEqual(claimed["status"], "claimed")
+        self.assertEqual(claimed["assignedConnectorId"], reviewer["id"])
+        self.assertGreater(claimed["leaseExpiresAt"], claimed["updatedAt"])
+        self.assertEqual(run["status"], "running")
+        self.assertIn("task_claimed", [message["kind"] for message in loaded["messages"]])
+
     def test_handoff_acceptance_converts_finding_to_developer_task(self):
         room = self.store.create_room({"title": "Handoff room"})
         reviewer = self.store.register_connector(room["id"], {"name": "Reviewer Agent", "role": "reviewer"})
@@ -604,6 +640,45 @@ class ReviewRoomHttpTest(unittest.TestCase):
             )
 
         self.assertEqual(raised.exception.code, 403)
+
+    def test_http_claim_task_before_run(self):
+        room = self.post_json("/api/rooms", {"title": "Claim HTTP"})
+        reviewer = self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"name": "Reviewer Agent", "role": "reviewer"},
+            {"Authorization": "Bearer {}".format(room["ownerToken"])},
+        )
+        task = self.post_json(
+            "/api/rooms/{}/tasks".format(room["id"]),
+            {
+                "kind": "review",
+                "instruction": "Claim over HTTP.",
+                "target": {"mode": "claim", "role": "reviewer", "capability": "finding:create"},
+            },
+            {"Authorization": "Bearer {}".format(room["ownerToken"])},
+        )
+
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            self.post_json(
+                "/api/tasks/{}/runs".format(task["id"]),
+                {},
+                {"Authorization": "Bearer {}".format(reviewer["connectorToken"])},
+            )
+        claimed = self.post_json(
+            "/api/tasks/{}/claim".format(task["id"]),
+            {},
+            {"Authorization": "Bearer {}".format(reviewer["connectorToken"])},
+        )
+        run = self.post_json(
+            "/api/tasks/{}/runs".format(task["id"]),
+            {},
+            {"Authorization": "Bearer {}".format(reviewer["connectorToken"])},
+        )
+
+        self.assertEqual(raised.exception.code, 403)
+        self.assertEqual(claimed["assignedConnectorId"], reviewer["id"])
+        self.assertEqual(claimed["status"], "claimed")
+        self.assertEqual(run["status"], "running")
 
     def test_http_owner_can_rotate_connector_token(self):
         room = self.post_json("/api/rooms", {"title": "MR"})

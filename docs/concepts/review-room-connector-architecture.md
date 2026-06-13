@@ -94,12 +94,12 @@ MCP can reduce the need to install `codex_connector.py` or a Lighthouse-specific
 
 Candidate MCP tools:
 
-- `get_snapshot`
-- `list_tasks`
-- `claim_task`
+- `get_snapshot` (implemented in the P0 experiment)
+- `list_tasks` (implemented in the P0 experiment)
+- `claim_task` (implemented in the P0 experiment)
 - `start_run`
 - `post_message`
-- `create_finding`
+- `create_finding` (implemented in the P0 experiment)
 - `propose_handoff`
 - `complete_task`
 - `request_owner_confirmation`

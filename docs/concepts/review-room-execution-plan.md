@@ -182,15 +182,40 @@ Verification:
 - HTTP tests prove Developer task completion creates a Reviewer verification task in the room snapshot.
 - WebSocket tests prove the Reviewer connector receives `task.assigned` for the generated verification task.
 
+### Slice 9: Claimable tasks and MCP task discovery
+
+User-visible result:
+
+- Owner can create an open task with `target.mode=claim`.
+- A connector must explicitly claim matching work before it can start an `agent_run`.
+- Claim checks enforce connector room, revoked status, target role, and target capability.
+- MCP-style connectors can list room tasks and claim eligible tasks without installing the Codex sidecar.
+
+Implementation:
+
+- Add `claim_task` store logic with lease assignment and `task_claimed` audit messages.
+- Add `POST /api/tasks/{task_id}/claim`.
+- Add WebSocket `task.claim`, broadcasting `task.claimed` and then `task.assigned`.
+- Reject `agent_run.start` and `task.complete` for unassigned open tasks.
+- Add MCP tools `list_tasks` and `claim_task` on the experimental gateway.
+
+Verification:
+
+- Store tests prove unmatched connectors cannot claim and open tasks cannot run before claim.
+- HTTP tests prove claim is required before starting a run.
+- WebSocket tests prove claim produces realtime assignment and then allows run start.
+- MCP tests prove task listing marks claimable work and `claim_task` assigns it.
+
 ## Current acceptance checklist
 
 - [ ] Local task/run tests pass.
 - [ ] Local connector task-assignment tests pass.
+- [ ] Claimable task routing tests pass.
 - [ ] Home page exposes visible task/run controls.
 - [ ] Connector token rotation tests pass.
 - [ ] Handoff conversion tests pass.
 - [ ] Verification task generation tests pass.
 - [ ] Full `npm test` passes.
 - [ ] Remote service updated.
-- [ ] Remote smoke test proves task/run loop, token rotation, handoff conversion, and verification task generation.
+- [ ] Remote smoke test proves task/run loop, claim routing, token rotation, handoff conversion, and verification task generation.
 - [ ] User receives public URL and curl verification commands.

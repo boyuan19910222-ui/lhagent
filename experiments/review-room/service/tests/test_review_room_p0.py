@@ -423,6 +423,53 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         await owner_ws.close()
         await connector_ws.close()
 
+    async def test_claimable_task_requires_claim_before_agent_run(self):
+        _, room = await self.post_json("/api/rooms", {"title": "Claim realtime"})
+        _, reviewer = await self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"role": "reviewer", "name": "Reviewer Agent"},
+            room["ownerToken"],
+        )
+        _, developer = await self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"role": "developer", "name": "Developer Agent"},
+            room["ownerToken"],
+        )
+
+        owner_ws = await self.client.ws_connect("/ws/rooms/{}?token={}".format(room["id"], room["ownerToken"]))
+        reviewer_ws = await self.client.ws_connect("/ws/rooms/{}?token={}".format(room["id"], reviewer["connectorToken"]))
+        developer_ws = await self.client.ws_connect("/ws/rooms/{}?token={}".format(room["id"], developer["connectorToken"]))
+        await self._drain_initial_events(owner_ws, reviewer_ws, developer_ws)
+
+        _, task = await self.post_json(
+            "/api/rooms/{}/tasks".format(room["id"]),
+            {
+                "kind": "review",
+                "instruction": "Claimable review work.",
+                "target": {"mode": "claim", "role": "reviewer", "capability": "finding:create"},
+            },
+            room["ownerToken"],
+        )
+        await reviewer_ws.send_json({"type": "agent_run.start", "taskId": task["id"]})
+        run_error = await self._read_event(reviewer_ws, "error")
+        await developer_ws.send_json({"type": "task.claim", "taskId": task["id"]})
+        claim_error = await self._read_event(developer_ws, "error")
+        await reviewer_ws.send_json({"type": "task.claim", "taskId": task["id"]})
+        claimed = await self._read_event(owner_ws, "task.claimed")
+        assigned = await self._read_assigned_task_kind(reviewer_ws, "review")
+        await reviewer_ws.send_json({"type": "agent_run.start", "taskId": task["id"], "workspace": "G:/Codex/Lighthouse"})
+        started = await self._read_event(owner_ws, "agent_run.started")
+
+        self.assertEqual(run_error["error"], "task must be claimed before running")
+        self.assertEqual(claim_error["error"], "connector does not match task target")
+        self.assertEqual(claimed["task"]["assignedConnectorId"], reviewer["id"])
+        self.assertEqual(assigned["task"]["id"], task["id"])
+        self.assertEqual(started["agentRun"]["taskId"], task["id"])
+
+        await owner_ws.close()
+        await reviewer_ws.close()
+        await developer_ws.close()
+
     async def test_mcp_gateway_snapshot_and_finding_use_connector_identity(self):
         _, room = await self.post_json("/api/rooms", {"title": "MCP Gateway"})
         _, reviewer = await self.post_json(
@@ -454,9 +501,30 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
             },
             reviewer["connectorToken"],
         )
+        _, task = await self.post_json(
+            "/api/rooms/{}/tasks".format(room["id"]),
+            {
+                "kind": "review",
+                "instruction": "Claim from MCP.",
+                "target": {"mode": "claim", "role": "reviewer", "capability": "finding:create"},
+            },
+            room["ownerToken"],
+        )
+        list_response, listed = await self.post_json(
+            "/api/mcp/tools/list_tasks",
+            {"roomId": room["id"]},
+            reviewer["connectorToken"],
+        )
+        claim_response, claimed = await self.post_json(
+            "/api/mcp/tools/claim_task",
+            {"taskId": task["id"]},
+            reviewer["connectorToken"],
+        )
 
         self.assertEqual(tools_response.status, 200)
         self.assertIn("get_snapshot", [tool["name"] for tool in tools["tools"]])
+        self.assertIn("list_tasks", [tool["name"] for tool in tools["tools"]])
+        self.assertIn("claim_task", [tool["name"] for tool in tools["tools"]])
         self.assertEqual(snapshot_response.status, 200)
         self.assertEqual(snapshot["room"]["id"], room["id"])
         self.assertIn("trust", snapshot)
@@ -464,6 +532,10 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(denied_owner["error"], "finding:create connector capability required")
         self.assertEqual(finding_response.status, 201)
         self.assertEqual(finding_result["finding"]["createdBy"], "Reviewer Agent")
+        self.assertEqual(list_response.status, 200)
+        self.assertTrue([item for item in listed["tasks"] if item["id"] == task["id"] and item["claimable"]])
+        self.assertEqual(claim_response.status, 201)
+        self.assertEqual(claimed["task"]["assignedConnectorId"], reviewer["id"])
 
     async def test_rest_finding_mutations_require_matching_roles(self):
         _, room = await self.post_json("/api/rooms", {"title": "开放话题", "objective": "验证 REST 权限边界"})

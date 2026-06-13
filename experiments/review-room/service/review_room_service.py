@@ -1201,12 +1201,82 @@ class ReviewRoomStore:
             return connector["id"]
         return ""
 
+    @staticmethod
+    def task_matches_connector(task: Dict[str, Any], connector: Dict[str, Any]) -> bool:
+        target = task.get("target") or {}
+        mode = target.get("mode") or ""
+        if mode == "connector":
+            return target.get("connectorId") == connector["id"]
+        role = target.get("role") or ""
+        capability = target.get("capability") or ""
+        if role and role != connector["agentRole"]:
+            return False
+        if capability and capability not in connector["capabilities"]:
+            return False
+        if mode == "capability" and not capability:
+            return False
+        if mode not in {"claim", "role", "capability", ""}:
+            return False
+        if "task:execute" not in connector["capabilities"]:
+            return False
+        return True
+
     def get_task(self, task_id: str) -> Dict[str, Any]:
         with self.connect() as conn:
             row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
         if not row:
             raise KeyError("task not found")
         return self._task_from_row(row)
+
+    def claim_task(self, task_id: str, connector_id: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        payload = payload or {}
+        task = self.get_task(task_id)
+        connector = self.get_connector(connector_id)
+        if connector["roomId"] != task["roomId"]:
+            raise PermissionError("connector does not belong to task room")
+        if connector["status"] == "revoked":
+            raise PermissionError("connector is revoked")
+        if task["assignedConnectorId"]:
+            if task["assignedConnectorId"] == connector_id:
+                return task
+            raise PermissionError("task is already assigned")
+        if task["status"] not in {"open", "stale"}:
+            raise ValueError("task is not claimable")
+        if not self.task_matches_connector(task, connector):
+            raise PermissionError("connector does not match task target")
+        timestamp = now_ms()
+        lease_expires_at = payload.get("leaseExpiresAt") or payload.get("lease_expires_at") or timestamp + 30 * 60 * 1000
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE tasks
+                SET status = ?, assigned_connector_id = ?, lease_expires_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                ("claimed", connector_id, lease_expires_at, timestamp, task_id),
+            )
+            conn.execute(
+                "UPDATE connectors SET status = ?, last_seen_at = ?, heartbeat_at = ?, updated_at = ? WHERE id = ?",
+                ("online", timestamp, timestamp, timestamp, connector_id),
+            )
+            conn.execute("UPDATE rooms SET status = ?, updated_at = ? WHERE id = ?", ("task_assigned", timestamp, task["roomId"]))
+        updated = self.get_task(task_id)
+        self.add_message(
+            task["roomId"],
+            {
+                "senderType": "system",
+                "senderName": "Review Room",
+                "kind": "task_claimed",
+                "body": "{} claimed {}".format(connector["name"], task["kind"]),
+                "payload": {
+                    "taskId": task_id,
+                    "connectorId": connector_id,
+                    "kind": task["kind"],
+                    "leaseExpiresAt": lease_expires_at,
+                },
+            },
+        )
+        return updated
 
     def start_agent_run(self, task_id: str, connector_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         task = self.get_task(task_id)
@@ -1215,7 +1285,9 @@ class ReviewRoomStore:
             raise PermissionError("connector does not belong to task room")
         if connector["status"] == "revoked":
             raise PermissionError("connector is revoked")
-        if task["assignedConnectorId"] and task["assignedConnectorId"] != connector_id:
+        if not task["assignedConnectorId"]:
+            raise PermissionError("task must be claimed before running")
+        if task["assignedConnectorId"] != connector_id:
             raise PermissionError("task is assigned to another connector")
         timestamp = now_ms()
         run = {
@@ -1301,7 +1373,9 @@ class ReviewRoomStore:
             raise PermissionError("connector does not belong to task room")
         if connector["status"] == "revoked":
             raise PermissionError("connector is revoked")
-        if task["assignedConnectorId"] and task["assignedConnectorId"] != connector_id:
+        if not task["assignedConnectorId"]:
+            raise PermissionError("task must be claimed before completion")
+        if task["assignedConnectorId"] != connector_id:
             raise PermissionError("task is assigned to another connector")
         timestamp = now_ms()
         status = payload.get("status") or ("failed" if payload.get("error") else "completed")
@@ -2050,6 +2124,12 @@ class ReviewRoomHandler(BaseHTTPRequestHandler):
                     HTTPStatus.CREATED,
                 )
                 return
+            match = re.match(r"^/api/rooms/([^/]+)/tasks$", parsed.path)
+            if match:
+                identity = self.store.authenticate_room_token(match.group(1), self.read_bearer_token(body))
+                require_owner_role(identity)
+                self.send_json(self.store.create_task(match.group(1), body, identity["name"]), HTTPStatus.CREATED)
+                return
             match = re.match(r"^/api/rooms/([^/]+)/disconnect$", parsed.path)
             if match:
                 identity = self.store.authenticate_room_token(match.group(1), self.read_bearer_token(body))
@@ -2062,6 +2142,14 @@ class ReviewRoomHandler(BaseHTTPRequestHandler):
                     self.store.ingest_connector_event(match.group(1), self.read_bearer_token(body), body),
                     HTTPStatus.CREATED,
                 )
+                return
+            match = re.match(r"^/api/tasks/([^/]+)/claim$", parsed.path)
+            if match:
+                task = self.store.get_task(match.group(1))
+                identity = self.store.authenticate_room_token(task["roomId"], self.read_bearer_token(body))
+                if identity["type"] != "connector":
+                    raise PermissionError("connector token required")
+                self.send_json(self.store.claim_task(task["id"], identity["connectorId"], body), HTTPStatus.CREATED)
                 return
             match = re.match(r"^/api/tasks/([^/]+)/runs$", parsed.path)
             if match:
@@ -2539,6 +2627,24 @@ async def handle_ws_event(
         await hub.broadcast_snapshot(room_id)
         return
 
+    if event_type == "task.claim":
+        if identity["type"] != "connector":
+            await websocket.send_json({"type": "error", "error": "connector token required"})
+            return
+        task_id = payload.get("taskId") or payload.get("task_id")
+        if not task_id:
+            await websocket.send_json({"type": "error", "error": "taskId required"})
+            return
+        try:
+            task = store.claim_task(task_id, identity["connectorId"], payload)
+        except (KeyError, PermissionError, ValueError) as exc:
+            await websocket.send_json({"type": "error", "error": str(exc)})
+            return
+        await hub.broadcast(room_id, {"type": "task.claimed", "task": task, "connectorId": identity["connectorId"]})
+        await hub.broadcast(room_id, {"type": "task.assigned", "task": task})
+        await hub.broadcast_snapshot(room_id)
+        return
+
     if event_type == "agent_run.start":
         if identity["type"] != "connector":
             await websocket.send_json({"type": "error", "error": "connector token required"})
@@ -2742,6 +2848,25 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
         await app[HUB_KEY].broadcast_snapshot(task["roomId"])
         return json_response(run, 201)
 
+    async def claim_task(request: web.Request) -> web.Response:
+        try:
+            task = app[STORE_KEY].get_task(request.match_info["task_id"])
+        except KeyError as exc:
+            raise web.HTTPNotFound(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        identity = require_identity(app[STORE_KEY], task["roomId"], bearer_token_from_request(request))
+        if identity["type"] != "connector":
+            raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": "connector token required"}), content_type="application/json")
+        try:
+            claimed = app[STORE_KEY].claim_task(task["id"], identity["connectorId"], await request_json(request))
+        except PermissionError as exc:
+            raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        await app[HUB_KEY].broadcast(task["roomId"], {"type": "task.claimed", "task": claimed, "connectorId": identity["connectorId"]})
+        await app[HUB_KEY].broadcast(task["roomId"], {"type": "task.assigned", "task": claimed})
+        await app[HUB_KEY].broadcast_snapshot(task["roomId"])
+        return json_response(claimed, 201)
+
     async def complete_task(request: web.Request) -> web.Response:
         try:
             task = app[STORE_KEY].get_task(request.match_info["task_id"])
@@ -2866,6 +2991,16 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
                         "description": "Create a structured review finding using a reviewer connector token.",
                         "inputSchema": {"required": ["roomId", "claim", "evidence", "suggestedFix"]},
                     },
+                    {
+                        "name": "list_tasks",
+                        "description": "List Review Room tasks visible to a connector, including claimable tasks.",
+                        "inputSchema": {"required": ["roomId"]},
+                    },
+                    {
+                        "name": "claim_task",
+                        "description": "Claim an open task that matches the connector role or capability.",
+                        "inputSchema": {"required": ["taskId"]},
+                    },
                 ],
                 "resources": [
                     {"name": "room.timeline", "trust": "mixed-untrusted"},
@@ -2902,6 +3037,52 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
         await app[HUB_KEY].broadcast(room_id, {"type": "finding.created", "finding": finding})
         await app[HUB_KEY].broadcast_snapshot(room_id)
         return json_response({"ok": True, "finding": finding}, 201)
+
+    async def mcp_list_tasks(request: web.Request) -> web.Response:
+        body = await request_json(request)
+        room_id = body.get("roomId") or body.get("room_id")
+        if not room_id:
+            raise web.HTTPBadRequest(text=json_dumps({"ok": False, "error": "roomId required"}), content_type="application/json")
+        identity = require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
+        if identity["type"] != "connector":
+            raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": "connector token required"}), content_type="application/json")
+        connector = app[STORE_KEY].get_connector(identity["connectorId"])
+        room = app[STORE_KEY].get_room(room_id)
+        if not room:
+            raise web.HTTPNotFound(text=json_dumps({"ok": False, "error": "room not found"}), content_type="application/json")
+        tasks = []
+        for task in room.get("tasks", []):
+            item = dict(task)
+            item["claimable"] = (
+                not task.get("assignedConnectorId")
+                and task.get("status") in {"open", "stale"}
+                and app[STORE_KEY].task_matches_connector(task, connector)
+            )
+            tasks.append(item)
+        return json_response({"ok": True, "tasks": tasks, "trust": "room tasks are Review Room policy objects"})
+
+    async def mcp_claim_task(request: web.Request) -> web.Response:
+        body = await request_json(request)
+        task_id = body.get("taskId") or body.get("task_id")
+        if not task_id:
+            raise web.HTTPBadRequest(text=json_dumps({"ok": False, "error": "taskId required"}), content_type="application/json")
+        try:
+            task = app[STORE_KEY].get_task(task_id)
+        except KeyError as exc:
+            raise web.HTTPNotFound(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        identity = require_identity(app[STORE_KEY], task["roomId"], bearer_token_from_request(request))
+        if identity["type"] != "connector":
+            raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": "connector token required"}), content_type="application/json")
+        try:
+            claimed = app[STORE_KEY].claim_task(task_id, identity["connectorId"], body)
+        except PermissionError as exc:
+            raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        await app[HUB_KEY].broadcast(task["roomId"], {"type": "task.claimed", "task": claimed, "connectorId": identity["connectorId"]})
+        await app[HUB_KEY].broadcast(task["roomId"], {"type": "task.assigned", "task": claimed})
+        await app[HUB_KEY].broadcast_snapshot(task["roomId"])
+        return json_response({"ok": True, "task": claimed}, 201)
 
     async def websocket_room(request: web.Request) -> web.WebSocketResponse:
         room_id = request.match_info["room_id"]
@@ -2948,6 +3129,7 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
     app.router.add_post("/api/rooms/{room_id}/tasks", create_task)
     app.router.add_post("/api/rooms/{room_id}/disconnect", disconnect_member)
     app.router.add_post("/api/connectors/{connector_id}/events", connector_event)
+    app.router.add_post("/api/tasks/{task_id}/claim", claim_task)
     app.router.add_post("/api/tasks/{task_id}/runs", start_agent_run)
     app.router.add_post("/api/tasks/{task_id}/complete", complete_task)
     app.router.add_patch("/api/findings/{finding_id}", update_finding)
@@ -2956,6 +3138,8 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
     app.router.add_get("/api/mcp/tools", mcp_tools)
     app.router.add_post("/api/mcp/tools/get_snapshot", mcp_get_snapshot)
     app.router.add_post("/api/mcp/tools/create_finding", mcp_create_finding)
+    app.router.add_post("/api/mcp/tools/list_tasks", mcp_list_tasks)
+    app.router.add_post("/api/mcp/tools/claim_task", mcp_claim_task)
     app.router.add_get("/ws/rooms/{room_id}", websocket_room)
     return app
 
@@ -3206,7 +3390,7 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
     }
     function messageKindText(kind, message={}){
       if(message.payload && message.payload.hostedAgent) return '模拟 Agent';
-      return {room_created:'系统', invite_created:'邀请', member_joined:'加入', connector_registered:'Agent', connector_token_rotated:'凭据轮换', handoff_proposed:'Handoff', handoff_converted:'Handoff', handoff_rejected:'Handoff', task_assigned:'任务', task_created:'任务', owner_topic:'owner', guest_message:'guest', connector_message:'Agent', agent_working:'处理中', review_finding:'Finding', developer_response:'回复', human_confirmation:'确认', mr_sync_preview:'同步预览', mr_webhook:'外部事件'}[kind] || kind;
+      return {room_created:'系统', invite_created:'邀请', member_joined:'加入', connector_registered:'Agent', connector_token_rotated:'凭据轮换', handoff_proposed:'Handoff', handoff_converted:'Handoff', handoff_rejected:'Handoff', task_assigned:'任务', task_created:'任务', task_claimed:'任务', owner_topic:'owner', guest_message:'guest', connector_message:'Agent', agent_working:'处理中', review_finding:'Finding', developer_response:'回复', human_confirmation:'确认', mr_sync_preview:'同步预览', mr_webhook:'外部事件'}[kind] || kind;
     }
     function renderFindingCard(finding){
       const canConfirm = isOwner() && finding.status === 'developer_responded';
