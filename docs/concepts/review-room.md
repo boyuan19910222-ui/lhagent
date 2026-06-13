@@ -101,7 +101,9 @@ It is intentionally small enough to run on a Lighthouse instance after installin
 - `POST /api/webhooks/merge-request`
 - `GET /api/mcp/tools`
 - `POST /api/mcp/tools/get_snapshot`
+- `POST /api/mcp/tools/post_message`
 - `POST /api/mcp/tools/create_finding`
+- `POST /api/mcp/tools/propose_handoff`
 - `POST /api/mcp/tools/list_tasks`
 - `POST /api/mcp/tools/claim_task`
 - `POST /api/mcp/tools/start_run`
@@ -130,6 +132,7 @@ P0.5: Connector and execution hardening
 - Add automatic `verify` task generation after completed handoff-backed `fix` tasks, preserving links to the source finding and handoff.
 - Add MCP `start_run` and `complete_task` tools so MCP-style connectors can produce first-class `agent_runs`.
 - Add decision records and MCP `request_owner_confirmation` so external actions stay behind owner approval.
+- Add MCP `post_message` and `propose_handoff` so lightweight connectors can join room discussion and propose owner-visible handoffs without a sidecar.
 - Extract a generic connector runtime or sidecar with adapter dispatch.
 - Add bootstrap commands, generated config, service setup, logs, reconnect policy, and token rotation.
 - Build a minimal MCP Gateway experiment for read-only room snapshots and structured finding submission.

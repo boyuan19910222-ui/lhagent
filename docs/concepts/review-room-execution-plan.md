@@ -247,6 +247,26 @@ Verification:
 - MCP tests prove connector requests create pending decision records and room status `needs_owner_decision`.
 - API tests prove connectors cannot decide requests and owner decisions clear the pending count.
 
+### Slice 12: MCP message and handoff proposal tools
+
+User-visible result:
+
+- MCP-style connectors can post ordinary room messages without installing the Codex sidecar.
+- MCP-style reviewer connectors can propose a handoff from a finding into follow-up work, while the owner still decides whether it becomes a task.
+- Chat remains separate from execution: `post_message` writes timeline state only and does not trigger Agent work.
+
+Implementation:
+
+- Add MCP tool `post_message` for connector-authored room messages.
+- Add MCP tool `propose_handoff` that reuses the existing reviewer-only handoff policy.
+- Broadcast the same `message.created`, `handoff.proposed`, and `room.snapshot` events as the WebSocket/REST paths.
+
+Verification:
+
+- MCP tests prove owner tokens cannot use connector message tools.
+- MCP tests prove `post_message` cannot spoof structured finding kinds or trigger hosted Agent replies.
+- MCP tests prove only reviewer connectors can propose handoffs, and owner acceptance still creates developer work and follow-up verification.
+
 ## Current acceptance checklist
 
 - [ ] Local task/run tests pass.
@@ -258,7 +278,8 @@ Verification:
 - [ ] Verification task generation tests pass.
 - [ ] MCP run lifecycle tests pass.
 - [ ] MCP owner confirmation and decision record tests pass.
+- [ ] MCP message and handoff proposal tests pass.
 - [ ] Full `npm test` passes.
 - [ ] Remote service updated.
-- [ ] Remote smoke test proves task/run loop, MCP run lifecycle, owner confirmation, claim routing, token rotation, handoff conversion, and verification task generation.
+- [ ] Remote smoke test proves task/run loop, MCP run lifecycle, MCP message posting, MCP handoff proposal, owner confirmation, claim routing, token rotation, handoff conversion, and verification task generation.
 - [ ] User receives public URL and curl verification commands.

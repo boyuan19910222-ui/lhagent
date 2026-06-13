@@ -98,9 +98,9 @@ Candidate MCP tools:
 - `list_tasks` (implemented in the P0 experiment)
 - `claim_task` (implemented in the P0 experiment)
 - `start_run` (implemented in the P0 experiment)
-- `post_message`
+- `post_message` (implemented in the P0 experiment)
 - `create_finding` (implemented in the P0 experiment)
-- `propose_handoff`
+- `propose_handoff` (implemented in the P0 experiment)
 - `complete_task` (implemented in the P0 experiment)
 - `request_owner_confirmation` (implemented in the P0 experiment)
 

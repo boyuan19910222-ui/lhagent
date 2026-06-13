@@ -494,6 +494,24 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
             {"roomId": room["id"]},
             reviewer["connectorToken"],
         )
+        denied_owner_message_response, denied_owner_message = await self.post_json(
+            "/api/mcp/tools/post_message",
+            {"roomId": room["id"], "body": "owner cannot use connector chat"},
+            room["ownerToken"],
+        )
+        invalid_message_payload_response, invalid_message_payload = await self.post_json(
+            "/api/mcp/tools/post_message",
+            {"roomId": room["id"], "body": "bad payload", "payload": []},
+            reviewer["connectorToken"],
+        )
+        with patch.dict(os.environ, {"REVIEW_ROOM_ENABLE_HOSTED_AGENT": "true"}):
+            message_response, message_result = await self.post_json(
+                "/api/mcp/tools/post_message",
+                {"roomId": room["id"], "body": "MCP connector says hello.", "kind": "review_finding"},
+                reviewer["connectorToken"],
+            )
+        snapshot_after_message = self.store.get_room(room["id"])
+        connector_messages = [message for message in snapshot_after_message["messages"] if message["kind"] == "connector_message"]
         denied_owner_response, denied_owner = await self.post_json(
             "/api/mcp/tools/create_finding",
             {"roomId": room["id"], "claim": "owner cannot use connector tool"},
@@ -562,9 +580,21 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("claim_task", [tool["name"] for tool in tools["tools"]])
         self.assertIn("start_run", [tool["name"] for tool in tools["tools"]])
         self.assertIn("complete_task", [tool["name"] for tool in tools["tools"]])
+        self.assertIn("post_message", [tool["name"] for tool in tools["tools"]])
+        self.assertIn("propose_handoff", [tool["name"] for tool in tools["tools"]])
         self.assertEqual(snapshot_response.status, 200)
         self.assertEqual(snapshot["room"]["id"], room["id"])
         self.assertIn("trust", snapshot)
+        self.assertEqual(denied_owner_message_response.status, 403)
+        self.assertEqual(denied_owner_message["error"], "message:reply connector capability required")
+        self.assertEqual(invalid_message_payload_response.status, 400)
+        self.assertEqual(invalid_message_payload["error"], "payload must be an object")
+        self.assertEqual(message_response.status, 201)
+        self.assertEqual(message_result["message"]["kind"], "connector_message")
+        self.assertEqual(message_result["message"]["senderName"], "Reviewer Agent")
+        self.assertIn("not executable work", message_result["trust"])
+        self.assertEqual(len(connector_messages), 1)
+        self.assertFalse(connector_messages[0]["payload"].get("hostedAgent"))
         self.assertEqual(denied_owner_response.status, 403)
         self.assertEqual(denied_owner["error"], "finding:create connector capability required")
         self.assertEqual(finding_response.status, 201)
@@ -608,15 +638,25 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
             },
             reviewer["connectorToken"],
         )
-        _, handoff = await self.post_json(
-            "/api/findings/{}/handoffs".format(finding_result["finding"]["id"]),
+        denied_handoff_response, denied_handoff = await self.post_json(
+            "/api/mcp/tools/propose_handoff",
             {
+                "findingId": finding_result["finding"]["id"],
+                "reason": "Developer should not propose reviewer handoffs.",
+            },
+            developer["connectorToken"],
+        )
+        handoff_response, handoff_result = await self.post_json(
+            "/api/mcp/tools/propose_handoff",
+            {
+                "findingId": finding_result["finding"]["id"],
                 "reason": "Needs developer fix.",
                 "suggestedTask": "Patch and report through MCP.",
                 "target": {"mode": "role", "role": "developer", "capability": "finding:respond"},
             },
             reviewer["connectorToken"],
         )
+        handoff = handoff_result["handoff"]
         _, accepted = await self.post_json(
             "/api/handoffs/{}/accept".format(handoff["id"]),
             {},
@@ -645,6 +685,11 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         verify_tasks = [task for task in snapshot["tasks"] if task["kind"] == "verify"]
 
         self.assertEqual(fix_task["assignedConnectorId"], developer["id"])
+        self.assertEqual(denied_handoff_response.status, 403)
+        self.assertEqual(denied_handoff["error"], "reviewer connector required")
+        self.assertEqual(handoff_response.status, 201)
+        self.assertEqual(handoff["status"], "proposed")
+        self.assertEqual(handoff["sourceFindingId"], finding_result["finding"]["id"])
         self.assertEqual(start_response.status, 201)
         self.assertEqual(started["agentRun"]["taskId"], fix_task["id"])
         self.assertEqual(complete_response.status, 201)
