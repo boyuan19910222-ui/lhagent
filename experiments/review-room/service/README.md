@@ -427,6 +427,26 @@ curl -X POST http://127.0.0.1:8707/api/mcp/tools/claim_task \
   -H 'Authorization: Bearer <reviewer_connector_token>' \
   -H 'Content-Type: application/json' \
   -d '{"taskId":"<task_id>"}'
+
+curl -X POST http://127.0.0.1:8707/api/mcp/tools/start_run \
+  -H 'Authorization: Bearer <reviewer_connector_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "taskId":"<task_id>",
+    "promptSummary":"MCP connector started review work.",
+    "workspace":"<workspace>",
+    "model":"<model>",
+    "sandbox":"read-only"
+  }'
+
+curl -X POST http://127.0.0.1:8707/api/mcp/tools/complete_task \
+  -H 'Authorization: Bearer <reviewer_connector_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "taskId":"<task_id>",
+    "status":"completed",
+    "finalMessage":"MCP connector completed the task."
+  }'
 ```
 
 ### Connector 写入 Finding

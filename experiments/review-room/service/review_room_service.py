@@ -3011,6 +3011,16 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
                         "description": "Claim an open task that matches the connector role or capability.",
                         "inputSchema": {"required": ["taskId"]},
                     },
+                    {
+                        "name": "start_run",
+                        "description": "Start an observable agent run for an assigned or claimed task.",
+                        "inputSchema": {"required": ["taskId"]},
+                    },
+                    {
+                        "name": "complete_task",
+                        "description": "Complete an assigned task and record the final message.",
+                        "inputSchema": {"required": ["taskId"]},
+                    },
                 ],
                 "resources": [
                     {"name": "room.timeline", "trust": "mixed-untrusted"},
@@ -3094,6 +3104,54 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
         await app[HUB_KEY].broadcast_snapshot(task["roomId"])
         return json_response({"ok": True, "task": claimed}, 201)
 
+    async def mcp_start_run(request: web.Request) -> web.Response:
+        body = await request_json(request)
+        task_id = body.get("taskId") or body.get("task_id")
+        if not task_id:
+            raise web.HTTPBadRequest(text=json_dumps({"ok": False, "error": "taskId required"}), content_type="application/json")
+        try:
+            task = app[STORE_KEY].get_task(task_id)
+        except KeyError as exc:
+            raise web.HTTPNotFound(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        identity = require_identity(app[STORE_KEY], task["roomId"], bearer_token_from_request(request))
+        if identity["type"] != "connector":
+            raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": "connector token required"}), content_type="application/json")
+        try:
+            run = app[STORE_KEY].start_agent_run(task_id, identity["connectorId"], body)
+        except PermissionError as exc:
+            raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        await app[HUB_KEY].broadcast(task["roomId"], {"type": "agent_run.started", "agentRun": run})
+        await app[HUB_KEY].broadcast_snapshot(task["roomId"])
+        return json_response({"ok": True, "agentRun": run}, 201)
+
+    async def mcp_complete_task(request: web.Request) -> web.Response:
+        body = await request_json(request)
+        task_id = body.get("taskId") or body.get("task_id")
+        if not task_id:
+            raise web.HTTPBadRequest(text=json_dumps({"ok": False, "error": "taskId required"}), content_type="application/json")
+        try:
+            task = app[STORE_KEY].get_task(task_id)
+        except KeyError as exc:
+            raise web.HTTPNotFound(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        identity = require_identity(app[STORE_KEY], task["roomId"], bearer_token_from_request(request))
+        if identity["type"] != "connector":
+            raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": "connector token required"}), content_type="application/json")
+        try:
+            completion = app[STORE_KEY].complete_task_result(task_id, identity["connectorId"], body)
+        except PermissionError as exc:
+            raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        completed = completion["task"]
+        await app[HUB_KEY].broadcast(task["roomId"], {"type": "task.completed", "task": completed})
+        verification_task = completion.get("verificationTask")
+        if verification_task:
+            await app[HUB_KEY].broadcast(task["roomId"], {"type": "task.created", "task": verification_task})
+            if verification_task.get("assignedConnectorId"):
+                await app[HUB_KEY].broadcast(task["roomId"], {"type": "task.assigned", "task": verification_task})
+        await app[HUB_KEY].broadcast_snapshot(task["roomId"])
+        return json_response({"ok": True, "task": completed, "verificationTask": verification_task}, 201)
+
     async def websocket_room(request: web.Request) -> web.WebSocketResponse:
         room_id = request.match_info["room_id"]
         identity = require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
@@ -3150,6 +3208,8 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
     app.router.add_post("/api/mcp/tools/create_finding", mcp_create_finding)
     app.router.add_post("/api/mcp/tools/list_tasks", mcp_list_tasks)
     app.router.add_post("/api/mcp/tools/claim_task", mcp_claim_task)
+    app.router.add_post("/api/mcp/tools/start_run", mcp_start_run)
+    app.router.add_post("/api/mcp/tools/complete_task", mcp_complete_task)
     app.router.add_get("/ws/rooms/{room_id}", websocket_room)
     return app
 

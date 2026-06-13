@@ -206,6 +206,26 @@ Verification:
 - WebSocket tests prove claim produces realtime assignment and then allows run start.
 - MCP tests prove task listing marks claimable work and `claim_task` assigns it.
 
+### Slice 10: MCP run lifecycle tools
+
+User-visible result:
+
+- MCP-style connectors can start an observable `agent_run` for an assigned or claimed task.
+- MCP-style connectors can complete their assigned task and record the final message without installing the Codex sidecar.
+- Completion through MCP reuses the same follow-up task behavior as REST and WebSocket completion.
+
+Implementation:
+
+- Add MCP tools `start_run` and `complete_task`.
+- Reuse connector token identity and existing `start_agent_run` / `complete_task_result` store checks.
+- Broadcast the same `agent_run.started`, `task.completed`, optional follow-up `task.created`, and `room.snapshot` events as the REST path.
+
+Verification:
+
+- MCP tests prove owner tokens cannot start runs through connector tools.
+- MCP tests prove a claimed task can be started and completed through the gateway.
+- Snapshot tests prove task and `agent_runs` state are both updated after MCP completion.
+
 ## Current acceptance checklist
 
 - [ ] Local task/run tests pass.
@@ -215,7 +235,8 @@ Verification:
 - [ ] Connector token rotation tests pass.
 - [ ] Handoff conversion tests pass.
 - [ ] Verification task generation tests pass.
+- [ ] MCP run lifecycle tests pass.
 - [ ] Full `npm test` passes.
 - [ ] Remote service updated.
-- [ ] Remote smoke test proves task/run loop, claim routing, token rotation, handoff conversion, and verification task generation.
+- [ ] Remote smoke test proves task/run loop, MCP run lifecycle, claim routing, token rotation, handoff conversion, and verification task generation.
 - [ ] User receives public URL and curl verification commands.

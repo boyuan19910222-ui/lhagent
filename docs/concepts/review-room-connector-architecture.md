@@ -97,11 +97,11 @@ Candidate MCP tools:
 - `get_snapshot` (implemented in the P0 experiment)
 - `list_tasks` (implemented in the P0 experiment)
 - `claim_task` (implemented in the P0 experiment)
-- `start_run`
+- `start_run` (implemented in the P0 experiment)
 - `post_message`
 - `create_finding` (implemented in the P0 experiment)
 - `propose_handoff`
-- `complete_task`
+- `complete_task` (implemented in the P0 experiment)
 - `request_owner_confirmation`
 
 Candidate MCP resources:

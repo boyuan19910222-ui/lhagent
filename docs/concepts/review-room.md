@@ -102,6 +102,8 @@ It is intentionally small enough to run on a Lighthouse instance after installin
 - `POST /api/mcp/tools/create_finding`
 - `POST /api/mcp/tools/list_tasks`
 - `POST /api/mcp/tools/claim_task`
+- `POST /api/mcp/tools/start_run`
+- `POST /api/mcp/tools/complete_task`
 - `GET /ws/rooms/{id}?token=...`
 
 ## Productization path
@@ -123,6 +125,7 @@ P0.5: Connector and execution hardening
 - Add owner-triggered connector token rotation so leaked or stale connector credentials can be invalidated without deleting the connector record.
 - Add `handoff.propose` and owner accept/reject so Reviewer Agent recommendations become Developer Agent tasks only through visible Review Room state.
 - Add automatic `verify` task generation after completed handoff-backed `fix` tasks, preserving links to the source finding and handoff.
+- Add MCP `start_run` and `complete_task` tools so MCP-style connectors can produce first-class `agent_runs`.
 - Extract a generic connector runtime or sidecar with adapter dispatch.
 - Add bootstrap commands, generated config, service setup, logs, reconnect policy, and token rotation.
 - Build a minimal MCP Gateway experiment for read-only room snapshots and structured finding submission.

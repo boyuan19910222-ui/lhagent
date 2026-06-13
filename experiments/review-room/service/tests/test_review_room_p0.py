@@ -520,11 +520,39 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
             {"taskId": task["id"]},
             reviewer["connectorToken"],
         )
+        denied_owner_start_response, denied_owner_start = await self.post_json(
+            "/api/mcp/tools/start_run",
+            {"taskId": task["id"]},
+            room["ownerToken"],
+        )
+        start_response, started = await self.post_json(
+            "/api/mcp/tools/start_run",
+            {
+                "taskId": task["id"],
+                "promptSummary": "MCP run lifecycle",
+                "workspace": "G:/Codex/Lighthouse",
+                "model": "gpt-test",
+                "sandbox": "read-only",
+            },
+            reviewer["connectorToken"],
+        )
+        complete_response, completed = await self.post_json(
+            "/api/mcp/tools/complete_task",
+            {"taskId": task["id"], "finalMessage": "MCP task completed."},
+            reviewer["connectorToken"],
+        )
+        snapshot_after_response = await self.client.get(
+            "/api/rooms/{}".format(room["id"]),
+            headers={"Authorization": "Bearer {}".format(room["ownerToken"])},
+        )
+        snapshot_after = await snapshot_after_response.json()
 
         self.assertEqual(tools_response.status, 200)
         self.assertIn("get_snapshot", [tool["name"] for tool in tools["tools"]])
         self.assertIn("list_tasks", [tool["name"] for tool in tools["tools"]])
         self.assertIn("claim_task", [tool["name"] for tool in tools["tools"]])
+        self.assertIn("start_run", [tool["name"] for tool in tools["tools"]])
+        self.assertIn("complete_task", [tool["name"] for tool in tools["tools"]])
         self.assertEqual(snapshot_response.status, 200)
         self.assertEqual(snapshot["room"]["id"], room["id"])
         self.assertIn("trust", snapshot)
@@ -536,6 +564,88 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue([item for item in listed["tasks"] if item["id"] == task["id"] and item["claimable"]])
         self.assertEqual(claim_response.status, 201)
         self.assertEqual(claimed["task"]["assignedConnectorId"], reviewer["id"])
+        self.assertEqual(denied_owner_start_response.status, 403)
+        self.assertEqual(denied_owner_start["error"], "connector token required")
+        self.assertEqual(start_response.status, 201)
+        self.assertEqual(started["agentRun"]["taskId"], task["id"])
+        self.assertEqual(started["agentRun"]["status"], "running")
+        self.assertEqual(complete_response.status, 201)
+        self.assertEqual(completed["task"]["status"], "completed")
+        self.assertIsNone(completed["verificationTask"])
+        self.assertEqual(snapshot_after_response.status, 200)
+        self.assertEqual(snapshot_after["tasks"][-1]["status"], "completed")
+        self.assertEqual(snapshot_after["agentRuns"][-1]["status"], "completed")
+
+    async def test_mcp_complete_task_creates_verification_after_handoff_fix(self):
+        _, room = await self.post_json("/api/rooms", {"title": "MCP verify follow-up"})
+        _, reviewer = await self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"role": "reviewer", "name": "Reviewer Agent", "adapterType": "mcp-remote"},
+            room["ownerToken"],
+        )
+        _, developer = await self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"role": "developer", "name": "Developer Agent", "adapterType": "mcp-remote"},
+            room["ownerToken"],
+        )
+        _, finding_result = await self.post_json(
+            "/api/mcp/tools/create_finding",
+            {
+                "roomId": room["id"],
+                "severity": "P1",
+                "claim": "MCP follow-up finding",
+                "evidence": "Developer completion should create a verify task.",
+                "suggestedFix": "Complete the handoff fix through MCP.",
+            },
+            reviewer["connectorToken"],
+        )
+        _, handoff = await self.post_json(
+            "/api/findings/{}/handoffs".format(finding_result["finding"]["id"]),
+            {
+                "reason": "Needs developer fix.",
+                "suggestedTask": "Patch and report through MCP.",
+                "target": {"mode": "role", "role": "developer", "capability": "finding:respond"},
+            },
+            reviewer["connectorToken"],
+        )
+        _, accepted = await self.post_json(
+            "/api/handoffs/{}/accept".format(handoff["id"]),
+            {},
+            room["ownerToken"],
+        )
+        fix_task = accepted["task"]
+        start_response, started = await self.post_json(
+            "/api/mcp/tools/start_run",
+            {"taskId": fix_task["id"], "promptSummary": "MCP developer fix", "sandbox": "workspace-write"},
+            developer["connectorToken"],
+        )
+        complete_response, completed = await self.post_json(
+            "/api/mcp/tools/complete_task",
+            {
+                "taskId": fix_task["id"],
+                "finalMessage": "MCP developer fix completed.",
+                "verificationInstruction": "Verify the MCP-completed fix.",
+            },
+            developer["connectorToken"],
+        )
+        snapshot_response = await self.client.get(
+            "/api/rooms/{}".format(room["id"]),
+            headers={"Authorization": "Bearer {}".format(room["ownerToken"])},
+        )
+        snapshot = await snapshot_response.json()
+        verify_tasks = [task for task in snapshot["tasks"] if task["kind"] == "verify"]
+
+        self.assertEqual(fix_task["assignedConnectorId"], developer["id"])
+        self.assertEqual(start_response.status, 201)
+        self.assertEqual(started["agentRun"]["taskId"], fix_task["id"])
+        self.assertEqual(complete_response.status, 201)
+        self.assertEqual(completed["task"]["status"], "completed")
+        self.assertEqual(completed["verificationTask"]["kind"], "verify")
+        self.assertEqual(completed["verificationTask"]["assignedConnectorId"], reviewer["id"])
+        self.assertEqual(snapshot_response.status, 200)
+        self.assertEqual(len(verify_tasks), 1)
+        self.assertEqual(verify_tasks[0]["source"]["fixTaskId"], fix_task["id"])
+        self.assertEqual(verify_tasks[0]["source"]["handoffId"], handoff["id"])
 
     async def test_rest_finding_mutations_require_matching_roles(self):
         _, room = await self.post_json("/api/rooms", {"title": "开放话题", "objective": "验证 REST 权限边界"})
