@@ -429,6 +429,36 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertIn("handoff_proposed", [message["kind"] for message in loaded["messages"]])
         self.assertIn("handoff_converted", [message["kind"] for message in loaded["messages"]])
 
+    def test_fix_completion_creates_reviewer_verification_task(self):
+        room = self.store.create_room({"title": "Verify handoff room"})
+        reviewer = self.store.register_connector(room["id"], {"name": "Reviewer Agent", "role": "reviewer"})
+        developer = self.store.register_connector(room["id"], {"name": "Developer Agent", "role": "developer"})
+        finding = self.store.add_finding(room["id"], {"claim": "Missing auth test", "createdBy": "Reviewer Agent"})
+        reviewer_identity = self.store.authenticate_room_token(room["id"], reviewer["connectorToken"])
+        handoff = self.store.propose_handoff(
+            finding["id"],
+            {"reason": "Needs a fix.", "suggestedTask": "Patch the auth path and report tests."},
+            reviewer_identity,
+        )
+        accepted = self.store.decide_handoff(handoff["id"], {"decision": "accepted"}, "review room owner")
+
+        completion = self.store.complete_task_result(
+            accepted["task"]["id"],
+            developer["id"],
+            {"finalMessage": "Fix applied and regression test passed."},
+        )
+        loaded = self.store.get_room(room["id"])
+        verify_tasks = [task for task in loaded["tasks"] if task["kind"] == "verify"]
+
+        self.assertEqual(completion["task"]["status"], "completed")
+        self.assertEqual(completion["verificationTask"]["kind"], "verify")
+        self.assertEqual(completion["verificationTask"]["assignedConnectorId"], reviewer["id"])
+        self.assertEqual(completion["verificationTask"]["source"]["fixTaskId"], accepted["task"]["id"])
+        self.assertEqual(completion["verificationTask"]["source"]["findingId"], finding["id"])
+        self.assertEqual(completion["verificationTask"]["source"]["handoffId"], handoff["id"])
+        self.assertEqual(len(verify_tasks), 1)
+        self.assertEqual(verify_tasks[0]["target"]["capability"], "verify:run")
+
     def test_handoff_proposal_requires_reviewer_connector(self):
         room = self.store.create_room({"title": "Handoff permissions"})
         developer = self.store.register_connector(room["id"], {"name": "Developer Agent", "role": "developer"})
@@ -634,15 +664,25 @@ class ReviewRoomHttpTest(unittest.TestCase):
             {},
             {"Authorization": "Bearer {}".format(room["ownerToken"])},
         )
+        completed = self.post_json(
+            "/api/tasks/{}/complete".format(result["task"]["id"]),
+            {"finalMessage": "Fix landed."},
+            {"Authorization": "Bearer {}".format(developer["connectorToken"])},
+        )
         loaded = self.get_json(
             "/api/rooms/{}".format(room["id"]),
             {"Authorization": "Bearer {}".format(room["ownerToken"])},
         )
+        verify_tasks = [task for task in loaded["tasks"] if task["kind"] == "verify"]
 
         self.assertEqual(result["handoff"]["status"], "converted_to_task")
         self.assertEqual(result["task"]["assignedConnectorId"], developer["id"])
+        self.assertEqual(completed["status"], "completed")
         self.assertEqual(loaded["handoffs"][0]["convertedTaskId"], result["task"]["id"])
         self.assertEqual(loaded["tasks"][0]["kind"], "fix")
+        self.assertEqual(len(verify_tasks), 1)
+        self.assertEqual(verify_tasks[0]["assignedConnectorId"], reviewer["id"])
+        self.assertEqual(verify_tasks[0]["source"]["fixTaskId"], result["task"]["id"])
 
 
 if __name__ == "__main__":

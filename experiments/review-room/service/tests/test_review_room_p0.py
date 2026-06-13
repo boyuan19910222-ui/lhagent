@@ -225,6 +225,22 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(assigned["task"]["id"], converted["task"]["id"])
         self.assertEqual(snapshot["room"]["handoffs"][0]["convertedTaskId"], converted["task"]["id"])
 
+        await developer_ws.send_json(
+            {
+                "type": "task.complete",
+                "taskId": converted["task"]["id"],
+                "finalMessage": "Fix applied and tests passed.",
+            }
+        )
+        completed = await self._read_event(owner_ws, "task.completed")
+        verify_assigned = await self._read_assigned_task_kind(reviewer_ws, "verify")
+        verify_snapshot = await self._read_event(owner_ws, "room.snapshot")
+
+        self.assertEqual(completed["task"]["status"], "completed")
+        self.assertEqual(verify_assigned["task"]["assignedConnectorId"], reviewer["id"])
+        self.assertEqual(verify_assigned["task"]["source"]["fixTaskId"], converted["task"]["id"])
+        self.assertEqual(verify_snapshot["room"]["tasks"][-1]["kind"], "verify")
+
         await owner_ws.close()
         await reviewer_ws.close()
         await developer_ws.close()
@@ -564,6 +580,13 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
             if event["finding"]["status"] == expected_status:
                 return event
         self.fail("did not receive finding status {}".format(expected_status))
+
+    async def _read_assigned_task_kind(self, ws, expected_kind):
+        for _ in range(20):
+            event = await self._read_event(ws, "task.assigned")
+            if event["task"]["kind"] == expected_kind:
+                return event
+        self.fail("did not receive assigned {} task".format(expected_kind))
 
 
 class CodexConnectorClientTest(unittest.TestCase):

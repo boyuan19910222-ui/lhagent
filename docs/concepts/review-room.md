@@ -66,6 +66,7 @@ The service uses SQLite for state, `aiohttp` for the realtime HTTP/WebSocket sur
 - Developer Agent responses.
 - Human confirmation and MR sync preview.
 - Reviewer-to-Developer handoffs that owner can convert into tasks.
+- Automatic Reviewer verification tasks after Developer fix completion.
 - GitLab/GitHub-style merge request webhook ingestion.
 
 It is intentionally small enough to run on a Lighthouse instance after installing the service requirements, and concrete enough to validate the full Room -> Connector -> Finding -> Developer response -> human confirmation loop with real Agent processes.
@@ -117,6 +118,7 @@ P0.5: Connector and execution hardening
 - Add `task.create` and direct `task.assigned` so normal room messages do not trigger Agent execution.
 - Add owner-triggered connector token rotation so leaked or stale connector credentials can be invalidated without deleting the connector record.
 - Add `handoff.propose` and owner accept/reject so Reviewer Agent recommendations become Developer Agent tasks only through visible Review Room state.
+- Add automatic `verify` task generation after completed handoff-backed `fix` tasks, preserving links to the source finding and handoff.
 - Extract a generic connector runtime or sidecar with adapter dispatch.
 - Add bootstrap commands, generated config, service setup, logs, reconnect policy, and token rotation.
 - Build a minimal MCP Gateway experiment for read-only room snapshots and structured finding submission.

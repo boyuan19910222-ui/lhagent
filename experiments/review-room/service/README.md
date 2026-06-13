@@ -154,6 +154,7 @@ GET /ws/rooms/<room_id>?token=<owner_or_connector_token>
 - `connector.token_rotated`：owner 轮换 connector token，旧连接会断开并等待新 token 重连。
 - `handoff.propose` / `handoff.proposed`：connector 建议把 finding 交给另一个角色或能力处理。
 - `handoff.converted_to_task` / `handoff.rejected`：owner 接受或拒绝 handoff；接受后会生成结构化任务。
+- `task.completed` may also create and assign a follow-up `verify` task when a Developer Agent completes a handoff-backed `fix` task.
 - `finding.create`：Reviewer Agent 提交结构化 Finding。
 - `finding.created`：服务广播新 Finding。
 - `finding.respond` / `decision.propose`：Developer Agent 回复修复计划。
@@ -234,6 +235,10 @@ curl -X POST http://127.0.0.1:8707/api/handoffs/<handoff_id>/accept \
   -H 'Content-Type: application/json' \
   -d '{}'
 ```
+
+When the Developer Agent later completes that generated `fix` task with `POST /api/tasks/<task_id>/complete`,
+Review Room creates a `verify` task linked to the fix task, source finding, and handoff. If the original Reviewer
+Agent is still eligible, it receives the verification task through the normal `task.assigned` event.
 
 ### 真实 Agent 接入测试
 
@@ -505,7 +510,7 @@ WantedBy=default.target
 - 把当前 `tasks` / `agent_runs` 正式迁移到 Lighthouse 托管控制面，继续记录 workspace、sandbox、日志或 transcript，避免后台工作不可见。
 - 把结构化任务路由沉淀为正式执行模型：用 `task.create` / `task.assigned` 驱动 Agent 执行，普通聊天消息默认不触发执行。
 - 把当前 connector token rotation 扩展成完整凭据生命周期：过期时间、刷新令牌、轮换策略、审计查询和告警。
-- 把当前 handoff 转 task 扩展成完整 Review -> Fix -> Verify 编排：自动生成验证任务、支持多候选 Agent claim、记录 owner 决策。
+- 把当前 handoff 和自动验证任务扩展成完整 Review -> Fix -> Verify -> Decision 编排：支持多候选 Agent claim、记录 owner 决策、生成外部同步动作。
 - 抽象通用 Connector Runtime：把当前 `codex_connector.py` 保留为 Codex adapter 样例，后续支持 CLI、HTTP、A2A、MCP、vendor API 等 adapter。
 - 增加托管控制面同步：把本实例 Connector 中的事件转发到 Lighthouse 平台 Room。
 - 增加 A2A Adapter：把 `message`、`finding`、`artifact` 映射到 A2A Task/Message/Artifact。

@@ -160,6 +160,28 @@ Verification:
 - HTTP tests prove owner-accepted handoff creates an assigned Developer task.
 - WebSocket tests prove Developer Agent receives `task.assigned` after owner accepts the handoff.
 
+### Slice 8: Automatic verification task after fix
+
+User-visible result:
+
+- When a Developer Agent completes a `fix` task created from a handoff, Review Room creates a follow-up `verify` task.
+- The verification task keeps source links to the fix task, finding, and handoff.
+- Review Room assigns the verification task back to the original Reviewer Agent when that connector is still eligible.
+- The Reviewer Agent receives a normal `task.assigned` event; verification remains explicit task execution, not hidden chat-triggered work.
+
+Implementation:
+
+- Add a `complete_task_result` path that returns the completed task plus any newly-created follow-up task.
+- Generate an idempotent `verify` task for completed handoff-backed `fix` tasks.
+- Broadcast `task.created` and `task.assigned` for the verification task over HTTP/WebSocket realtime paths.
+- Keep the legacy `complete_task` return shape as the completed task for connector compatibility.
+
+Verification:
+
+- Store tests prove `fix -> verify` task generation and source linkage.
+- HTTP tests prove Developer task completion creates a Reviewer verification task in the room snapshot.
+- WebSocket tests prove the Reviewer connector receives `task.assigned` for the generated verification task.
+
 ## Current acceptance checklist
 
 - [ ] Local task/run tests pass.
@@ -167,7 +189,8 @@ Verification:
 - [ ] Home page exposes visible task/run controls.
 - [ ] Connector token rotation tests pass.
 - [ ] Handoff conversion tests pass.
+- [ ] Verification task generation tests pass.
 - [ ] Full `npm test` passes.
 - [ ] Remote service updated.
-- [ ] Remote smoke test proves task/run loop, token rotation, and handoff conversion.
+- [ ] Remote smoke test proves task/run loop, token rotation, handoff conversion, and verification task generation.
 - [ ] User receives public URL and curl verification commands.

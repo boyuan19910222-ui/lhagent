@@ -1292,7 +1292,15 @@ class ReviewRoomStore:
         return run
 
     def complete_task(self, task_id: str, connector_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return self.complete_task_result(task_id, connector_id, payload)["task"]
+
+    def complete_task_result(self, task_id: str, connector_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         task = self.get_task(task_id)
+        connector = self.get_connector(connector_id)
+        if connector["roomId"] != task["roomId"]:
+            raise PermissionError("connector does not belong to task room")
+        if connector["status"] == "revoked":
+            raise PermissionError("connector is revoked")
         if task["assignedConnectorId"] and task["assignedConnectorId"] != connector_id:
             raise PermissionError("task is assigned to another connector")
         timestamp = now_ms()
@@ -1341,7 +1349,84 @@ class ReviewRoomStore:
                 "payload": {"taskId": task_id, "connectorId": connector_id, "status": status},
             },
         )
-        return self.get_task(task_id)
+        completed = self.get_task(task_id)
+        verification_task = self.create_verification_task_after_fix(completed, payload)
+        return {"task": completed, "verificationTask": verification_task}
+
+    def create_verification_task_after_fix(self, completed_task: Dict[str, Any], completion_payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if completed_task["status"] != "completed" or completed_task["kind"] != "fix":
+            return None
+        source = completed_task.get("source") or {}
+        finding_id = source.get("findingId") or source.get("finding_id")
+        handoff_id = source.get("handoffId") or source.get("handoff_id")
+        if not finding_id and not handoff_id:
+            return None
+        if self.find_verification_task_for_fix(completed_task["roomId"], completed_task["id"]):
+            return None
+
+        target = {"mode": "role", "role": "reviewer", "capability": "verify:run"}
+        handoff: Optional[Dict[str, Any]] = None
+        if handoff_id:
+            try:
+                handoff = self.get_handoff(handoff_id)
+                finding_id = finding_id or handoff["sourceFindingId"]
+                reviewer = self.get_connector(handoff["fromConnectorId"])
+                if (
+                    reviewer["roomId"] == completed_task["roomId"]
+                    and reviewer["status"] != "revoked"
+                    and reviewer["agentRole"] == "reviewer"
+                    and "verify:run" in reviewer["capabilities"]
+                ):
+                    target = {
+                        "mode": "connector",
+                        "connectorId": reviewer["id"],
+                        "role": "reviewer",
+                        "capability": "verify:run",
+                    }
+            except KeyError:
+                pass
+
+        developer_report = (
+            completion_payload.get("finalMessage")
+            or completion_payload.get("final_message")
+            or completion_payload.get("body")
+            or "Developer Agent completed the fix task."
+        )
+        instruction = completion_payload.get("verificationInstruction") or completion_payload.get("verification_instruction")
+        if not instruction:
+            instruction = "Verify fix task {} for finding {}. Developer report: {}".format(
+                completed_task["id"],
+                finding_id or "unknown",
+                developer_report,
+            )
+        return self.create_task(
+            completed_task["roomId"],
+            {
+                "kind": "verify",
+                "instruction": instruction,
+                "target": target,
+                "source": {
+                    "fixTaskId": completed_task["id"],
+                    "findingId": finding_id or "",
+                    "handoffId": handoff_id or "",
+                    "trigger": "fix_task_completed",
+                },
+            },
+            "Review Room",
+        )
+
+    def find_verification_task_for_fix(self, room_id: str, fix_task_id: str) -> Optional[Dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM tasks WHERE room_id = ? AND kind = ? ORDER BY created_at ASC",
+                (room_id, "verify"),
+            ).fetchall()
+        for row in rows:
+            task = self._task_from_row(row)
+            source = task.get("source") or {}
+            if source.get("fixTaskId") == fix_task_id or source.get("fix_task_id") == fix_task_id:
+                return task
+        return None
 
     def ingest_merge_request_webhook(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         attrs = payload.get("object_attributes") or payload.get("pull_request") or {}
@@ -1978,6 +2063,22 @@ class ReviewRoomHandler(BaseHTTPRequestHandler):
                     HTTPStatus.CREATED,
                 )
                 return
+            match = re.match(r"^/api/tasks/([^/]+)/runs$", parsed.path)
+            if match:
+                task = self.store.get_task(match.group(1))
+                identity = self.store.authenticate_room_token(task["roomId"], self.read_bearer_token(body))
+                if identity["type"] != "connector":
+                    raise PermissionError("connector token required")
+                self.send_json(self.store.start_agent_run(task["id"], identity["connectorId"], body), HTTPStatus.CREATED)
+                return
+            match = re.match(r"^/api/tasks/([^/]+)/complete$", parsed.path)
+            if match:
+                task = self.store.get_task(match.group(1))
+                identity = self.store.authenticate_room_token(task["roomId"], self.read_bearer_token(body))
+                if identity["type"] != "connector":
+                    raise PermissionError("connector token required")
+                self.send_json(self.store.complete_task(task["id"], identity["connectorId"], body), HTTPStatus.CREATED)
+                return
             match = re.match(r"^/api/findings/([^/]+)/developer-response$", parsed.path)
             if match:
                 finding = self.store.get_finding(match.group(1))
@@ -2464,11 +2565,17 @@ async def handle_ws_event(
             await websocket.send_json({"type": "error", "error": "taskId required"})
             return
         try:
-            task = store.complete_task(task_id, identity["connectorId"], payload)
+            completion = store.complete_task_result(task_id, identity["connectorId"], payload)
         except (KeyError, PermissionError, ValueError) as exc:
             await websocket.send_json({"type": "error", "error": str(exc)})
             return
+        task = completion["task"]
         await hub.broadcast(room_id, {"type": "task.completed", "task": task})
+        verification_task = completion.get("verificationTask")
+        if verification_task:
+            await hub.broadcast(room_id, {"type": "task.created", "task": verification_task})
+            if verification_task.get("assignedConnectorId"):
+                await hub.broadcast(room_id, {"type": "task.assigned", "task": verification_task})
         await hub.broadcast_snapshot(room_id)
         return
 
@@ -2645,12 +2752,18 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
             raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": "connector token required"}), content_type="application/json")
         body = await request_json(request)
         try:
-            completed = app[STORE_KEY].complete_task(task["id"], identity["connectorId"], body)
+            completion = app[STORE_KEY].complete_task_result(task["id"], identity["connectorId"], body)
         except PermissionError as exc:
             raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
         except ValueError as exc:
             raise web.HTTPBadRequest(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        completed = completion["task"]
         await app[HUB_KEY].broadcast(task["roomId"], {"type": "task.completed", "task": completed})
+        verification_task = completion.get("verificationTask")
+        if verification_task:
+            await app[HUB_KEY].broadcast(task["roomId"], {"type": "task.created", "task": verification_task})
+            if verification_task.get("assignedConnectorId"):
+                await app[HUB_KEY].broadcast(task["roomId"], {"type": "task.assigned", "task": verification_task})
         await app[HUB_KEY].broadcast_snapshot(task["roomId"])
         return json_response(completed, 201)
 
