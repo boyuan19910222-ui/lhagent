@@ -226,6 +226,27 @@ Verification:
 - MCP tests prove a claimed task can be started and completed through the gateway.
 - Snapshot tests prove task and `agent_runs` state are both updated after MCP completion.
 
+### Slice 11: MCP owner confirmation and decision records
+
+User-visible result:
+
+- MCP-style connectors can ask the room owner to approve or reject a proposed action without executing it.
+- Review Room records the request as a first-class decision object in room state.
+- The owner can accept or reject the decision from Review Room state, leaving an auditable message trail before any external sync adapter acts.
+
+Implementation:
+
+- Add a `decisions` table and include decisions in room snapshots.
+- Add MCP tool `request_owner_confirmation`.
+- Add owner-only `POST /api/decisions/{decision_id}/accept` and `/reject`.
+- Surface pending decisions in the right-side work panel with accept/reject actions.
+
+Verification:
+
+- MCP tests prove owner tokens cannot impersonate connector tools.
+- MCP tests prove connector requests create pending decision records and room status `needs_owner_decision`.
+- API tests prove connectors cannot decide requests and owner decisions clear the pending count.
+
 ## Current acceptance checklist
 
 - [ ] Local task/run tests pass.
@@ -236,7 +257,8 @@ Verification:
 - [ ] Handoff conversion tests pass.
 - [ ] Verification task generation tests pass.
 - [ ] MCP run lifecycle tests pass.
+- [ ] MCP owner confirmation and decision record tests pass.
 - [ ] Full `npm test` passes.
 - [ ] Remote service updated.
-- [ ] Remote smoke test proves task/run loop, MCP run lifecycle, claim routing, token rotation, handoff conversion, and verification task generation.
+- [ ] Remote smoke test proves task/run loop, MCP run lifecycle, owner confirmation, claim routing, token rotation, handoff conversion, and verification task generation.
 - [ ] User receives public URL and curl verification commands.

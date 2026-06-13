@@ -447,6 +447,22 @@ curl -X POST http://127.0.0.1:8707/api/mcp/tools/complete_task \
     "status":"completed",
     "finalMessage":"MCP connector completed the task."
   }'
+
+curl -X POST http://127.0.0.1:8707/api/mcp/tools/request_owner_confirmation \
+  -H 'Authorization: Bearer <reviewer_connector_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "roomId":"<room_id>",
+    "question":"Should Review Room publish this result externally?",
+    "proposal":"Post the accepted review summary to the MR.",
+    "risk":"This would leave Review Room and affect an external system.",
+    "syncTarget":"GitHub MR comment"
+  }'
+
+curl -X POST http://127.0.0.1:8707/api/decisions/<decision_id>/accept \
+  -H 'Authorization: Bearer <owner_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"note":"Owner approved this external sync boundary."}'
 ```
 
 ### Connector 写入 Finding
@@ -571,6 +587,6 @@ WantedBy=default.target
 - 抽象通用 Connector Runtime：把当前 `codex_connector.py` 保留为 Codex adapter 样例，后续支持 CLI、HTTP、A2A、MCP、vendor API 等 adapter。
 - 增加托管控制面同步：把本实例 Connector 中的事件转发到 Lighthouse 平台 Room。
 - 增加 A2A Adapter：把 `message`、`finding`、`artifact` 映射到 A2A Task/Message/Artifact。
-- 增加 MCP Gateway 实验：暴露 `get_snapshot`、`list_tasks`、`claim_task`、`start_run`、`create_finding`、`complete_task` 等工具，并验证远程 MCP、stdio MCP 和无 MCP Agent 的接入差异。
+- 增加 MCP Gateway 实验：暴露 `get_snapshot`、`list_tasks`、`claim_task`、`start_run`、`create_finding`、`complete_task`、`request_owner_confirmation` 等工具，并验证远程 MCP、stdio MCP 和无 MCP Agent 的接入差异。
 
 更完整的架构说明见 `docs/concepts/review-room-connector-architecture.md`、`docs/concepts/review-room-protocol.md`、`docs/concepts/review-room-security.md` 和 `docs/concepts/review-room-agent-collaboration.md`。

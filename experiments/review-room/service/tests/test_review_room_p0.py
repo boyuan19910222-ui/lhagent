@@ -78,6 +78,15 @@ class ReviewRoomP0StoreTest(unittest.TestCase):
         self.assertEqual(confirmed["status"], "accepted")
         self.assertEqual(self.store.get_room(room["id"])["status"], "completed")
 
+    def test_owner_confirmation_rejects_invalid_decision_value(self):
+        room = self.store.create_room({"title": "MR"})
+        connector = self.store.register_connector(room["id"], {"role": "reviewer"})
+        identity = self.store.authenticate_room_token(room["id"], connector["connectorToken"])
+        decision = self.store.create_owner_confirmation_request(room["id"], {"question": "Approve external sync?"}, identity)
+
+        with self.assertRaisesRegex(ValueError, "decision must be accepted or rejected"):
+            self.store.decide_owner_confirmation(decision["id"], {"decision": "maybe"})
+
 
 @unittest.skipIf(TestClient is None, "aiohttp is not installed")
 class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
@@ -646,6 +655,95 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(verify_tasks), 1)
         self.assertEqual(verify_tasks[0]["source"]["fixTaskId"], fix_task["id"])
         self.assertEqual(verify_tasks[0]["source"]["handoffId"], handoff["id"])
+
+    async def test_mcp_request_owner_confirmation_creates_decision_record(self):
+        _, room = await self.post_json("/api/rooms", {"title": "MCP owner decision"})
+        _, reviewer = await self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"role": "reviewer", "name": "Reviewer Agent", "adapterType": "mcp-remote"},
+            room["ownerToken"],
+        )
+        owner_denied_response, owner_denied = await self.post_json(
+            "/api/mcp/tools/request_owner_confirmation",
+            {
+                "roomId": room["id"],
+                "question": "Should this external sync be published?",
+                "proposal": "Publish the approved review result.",
+            },
+            room["ownerToken"],
+        )
+        invalid_source_response, invalid_source = await self.post_json(
+            "/api/mcp/tools/request_owner_confirmation",
+            {
+                "roomId": room["id"],
+                "question": "Should this malformed source be accepted?",
+                "source": "finding_smoke",
+            },
+            reviewer["connectorToken"],
+        )
+        request_response, requested = await self.post_json(
+            "/api/mcp/tools/request_owner_confirmation",
+            {
+                "roomId": room["id"],
+                "question": "Should this external sync be published?",
+                "proposal": "Publish the approved review result.",
+                "risk": "This would leave Review Room and affect an external MR.",
+                "syncTarget": "GitHub MR comment",
+                "source": {"findingId": "finding_smoke"},
+            },
+            reviewer["connectorToken"],
+        )
+        decision = requested["decision"]
+        snapshot_response = await self.client.get(
+            "/api/rooms/{}".format(room["id"]),
+            headers={"Authorization": "Bearer {}".format(room["ownerToken"])},
+        )
+        snapshot = await snapshot_response.json()
+        connector_decide_response, connector_decide = await self.post_json(
+            "/api/decisions/{}/accept".format(decision["id"]),
+            {},
+            reviewer["connectorToken"],
+        )
+        accept_response, accepted = await self.post_json(
+            "/api/decisions/{}/accept".format(decision["id"]),
+            {"note": "Approved after checking the requested target."},
+            room["ownerToken"],
+        )
+        repeat_response, repeat = await self.post_json(
+            "/api/decisions/{}/reject".format(decision["id"]),
+            {},
+            room["ownerToken"],
+        )
+        final_snapshot_response = await self.client.get(
+            "/api/rooms/{}".format(room["id"]),
+            headers={"Authorization": "Bearer {}".format(room["ownerToken"])},
+        )
+        final_snapshot = await final_snapshot_response.json()
+        message_kinds = [message["kind"] for message in final_snapshot["messages"]]
+
+        self.assertEqual(owner_denied_response.status, 403)
+        self.assertEqual(owner_denied["error"], "connector token required")
+        self.assertEqual(invalid_source_response.status, 400)
+        self.assertEqual(invalid_source["error"], "source must be an object")
+        self.assertEqual(request_response.status, 201)
+        self.assertEqual(decision["status"], "requested")
+        self.assertEqual(decision["requestedByConnectorId"], reviewer["id"])
+        self.assertEqual(decision["syncTarget"], "GitHub MR comment")
+        self.assertEqual(snapshot_response.status, 200)
+        self.assertEqual(snapshot["status"], "needs_owner_decision")
+        self.assertEqual(snapshot["decisions"][0]["id"], decision["id"])
+        self.assertEqual(snapshot["statusSummary"]["pendingDecisionCount"], 1)
+        self.assertEqual(connector_decide_response.status, 403)
+        self.assertEqual(connector_decide["error"], "owner token required")
+        self.assertEqual(accept_response.status, 201)
+        self.assertEqual(accepted["status"], "accepted")
+        self.assertEqual(accepted["decidedBy"], "review room owner")
+        self.assertEqual(repeat_response.status, 400)
+        self.assertEqual(repeat["error"], "decision is not pending")
+        self.assertEqual(final_snapshot_response.status, 200)
+        self.assertEqual(final_snapshot["statusSummary"]["pendingDecisionCount"], 0)
+        self.assertIn("owner_confirmation_requested", message_kinds)
+        self.assertIn("owner_confirmation_decided", message_kinds)
 
     async def test_rest_finding_mutations_require_matching_roles(self):
         _, room = await self.post_json("/api/rooms", {"title": "开放话题", "objective": "验证 REST 权限边界"})

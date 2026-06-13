@@ -102,7 +102,7 @@ Candidate MCP tools:
 - `create_finding` (implemented in the P0 experiment)
 - `propose_handoff`
 - `complete_task` (implemented in the P0 experiment)
-- `request_owner_confirmation`
+- `request_owner_confirmation` (implemented in the P0 experiment)
 
 Candidate MCP resources:
 

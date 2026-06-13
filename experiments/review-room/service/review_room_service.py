@@ -188,6 +188,25 @@ class ReviewRoomStore:
                   FOREIGN KEY(room_id) REFERENCES rooms(id)
                 );
 
+                CREATE TABLE IF NOT EXISTS decisions (
+                  id TEXT PRIMARY KEY,
+                  room_id TEXT NOT NULL,
+                  requested_by_connector_id TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  question TEXT NOT NULL,
+                  proposal TEXT NOT NULL,
+                  risk TEXT NOT NULL,
+                  sync_target TEXT NOT NULL,
+                  source_json TEXT NOT NULL,
+                  created_by TEXT NOT NULL,
+                  decided_by TEXT NOT NULL,
+                  decision_note TEXT NOT NULL,
+                  decided_at INTEGER,
+                  created_at INTEGER NOT NULL,
+                  updated_at INTEGER NOT NULL,
+                  FOREIGN KEY(room_id) REFERENCES rooms(id)
+                );
+
                 CREATE TABLE IF NOT EXISTS agent_runs (
                   id TEXT PRIMARY KEY,
                   room_id TEXT NOT NULL,
@@ -332,6 +351,10 @@ class ReviewRoomStore:
                 "SELECT * FROM handoffs WHERE room_id = ? ORDER BY created_at ASC",
                 (room_id,),
             ).fetchall()
+            decision_rows = conn.execute(
+                "SELECT * FROM decisions WHERE room_id = ? ORDER BY created_at ASC",
+                (room_id,),
+            ).fetchall()
             run_rows = conn.execute(
                 "SELECT * FROM agent_runs WHERE room_id = ? ORDER BY created_at ASC",
                 (room_id,),
@@ -343,6 +366,7 @@ class ReviewRoomStore:
         room["invites"] = [self._invite_from_row(row) for row in invite_rows]
         room["tasks"] = [self._task_from_row(row) for row in task_rows]
         room["handoffs"] = [self._handoff_from_row(row) for row in handoff_rows]
+        room["decisions"] = [self._decision_from_row(row) for row in decision_rows]
         room["agentRuns"] = [self._agent_run_from_row(row) for row in run_rows]
         room["statusSummary"] = self.room_status_summary(room_id)
         return room
@@ -891,6 +915,138 @@ class ReviewRoomStore:
         )
         self.refresh_room_status(updated["roomId"])
         return self.get_finding(finding_id)
+
+    def create_owner_confirmation_request(self, room_id: str, payload: Dict[str, Any], identity: Dict[str, Any]) -> Dict[str, Any]:
+        self.require_room(room_id)
+        if identity["type"] != "connector":
+            raise PermissionError("connector token required")
+        connector = self.get_connector(identity["connectorId"])
+        if connector["roomId"] != room_id:
+            raise PermissionError("connector does not belong to this room")
+        if connector["status"] == "revoked":
+            raise PermissionError("connector is revoked")
+        question = str(payload.get("question") or payload.get("title") or payload.get("body") or "").strip()
+        proposal = str(payload.get("proposal") or payload.get("recommendedAction") or payload.get("recommended_action") or "").strip()
+        if not question.strip() and not proposal.strip():
+            raise ValueError("question or proposal required")
+        timestamp = now_ms()
+        source_payload = payload.get("source")
+        if source_payload is None:
+            source_payload = {}
+        if not isinstance(source_payload, dict):
+            raise ValueError("source must be an object")
+        source = dict(source_payload)
+        for key in ("taskId", "task_id", "findingId", "finding_id", "handoffId", "handoff_id", "agentRunId", "agent_run_id"):
+            if payload.get(key) and key not in source:
+                source[key] = payload[key]
+        decision = {
+            "id": make_id("decision"),
+            "roomId": room_id,
+            "requestedByConnectorId": connector["id"],
+            "status": "requested",
+            "question": question or "Owner confirmation requested.",
+            "proposal": proposal,
+            "risk": str(payload.get("risk") or payload.get("riskSummary") or payload.get("risk_summary") or ""),
+            "syncTarget": str(payload.get("syncTarget") or payload.get("sync_target") or "Review Room owner decision"),
+            "source": source,
+            "createdBy": identity["name"],
+            "decidedBy": "",
+            "decisionNote": "",
+            "decidedAt": None,
+            "createdAt": timestamp,
+            "updatedAt": timestamp,
+        }
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO decisions
+                  (id, room_id, requested_by_connector_id, status, question, proposal, risk,
+                   sync_target, source_json, created_by, decided_by, decision_note, decided_at,
+                   created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    decision["id"],
+                    decision["roomId"],
+                    decision["requestedByConnectorId"],
+                    decision["status"],
+                    decision["question"],
+                    decision["proposal"],
+                    decision["risk"],
+                    decision["syncTarget"],
+                    json_dumps(decision["source"]),
+                    decision["createdBy"],
+                    decision["decidedBy"],
+                    decision["decisionNote"],
+                    decision["decidedAt"],
+                    decision["createdAt"],
+                    decision["updatedAt"],
+                ),
+            )
+            conn.execute("UPDATE rooms SET status = ?, updated_at = ? WHERE id = ?", ("needs_owner_decision", timestamp, room_id))
+        self.add_message(
+            room_id,
+            {
+                "senderType": "agent",
+                "senderName": identity["name"],
+                "kind": "owner_confirmation_requested",
+                "body": decision["question"],
+                "payload": {
+                    "decisionId": decision["id"],
+                    "proposal": decision["proposal"],
+                    "risk": decision["risk"],
+                    "syncTarget": decision["syncTarget"],
+                    "source": decision["source"],
+                },
+            },
+        )
+        return decision
+
+    def get_decision(self, decision_id: str) -> Dict[str, Any]:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM decisions WHERE id = ?", (decision_id,)).fetchone()
+        if not row:
+            raise KeyError("decision not found")
+        return self._decision_from_row(row)
+
+    def decide_owner_confirmation(self, decision_id: str, payload: Dict[str, Any], decided_by: str = "review room owner") -> Dict[str, Any]:
+        decision = self.get_decision(decision_id)
+        if decision["status"] != "requested":
+            raise ValueError("decision is not pending")
+        value = payload.get("decision") or payload.get("status") or "accepted"
+        value = str(value).strip().lower()
+        if value in {"accept", "accepted"}:
+            status = "accepted"
+        elif value in {"reject", "rejected"}:
+            status = "rejected"
+        else:
+            raise ValueError("decision must be accepted or rejected")
+        timestamp = now_ms()
+        note = str(payload.get("body") or payload.get("note") or ("Owner accepted the request." if status == "accepted" else "Owner rejected the request."))
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE decisions
+                SET status = ?, decided_by = ?, decision_note = ?, decided_at = ?, updated_at = ?
+                WHERE id = ? AND status = ?
+                """,
+                (status, decided_by, note, timestamp, timestamp, decision_id, "requested"),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("decision is not pending")
+            conn.execute("UPDATE rooms SET updated_at = ? WHERE id = ?", (timestamp, decision["roomId"]))
+        self.add_message(
+            decision["roomId"],
+            {
+                "senderType": "human",
+                "senderName": decided_by,
+                "kind": "owner_confirmation_decided",
+                "body": note,
+                "payload": {"decisionId": decision_id, "decision": status, "syncTarget": decision["syncTarget"]},
+            },
+        )
+        self.refresh_room_status(decision["roomId"])
+        return self.get_decision(decision_id)
 
     def register_connector(self, room_id: str, payload: Dict[str, Any], base_url: str = "") -> Dict[str, Any]:
         self.require_room(room_id)
@@ -1736,13 +1892,19 @@ class ReviewRoomStore:
         timestamp = now_ms()
         with self.connect() as conn:
             rows = conn.execute("SELECT status FROM findings WHERE room_id = ?", (room_id,)).fetchall()
-            if not rows:
+            decisions = conn.execute("SELECT status FROM decisions WHERE room_id = ?", (room_id,)).fetchall()
+            if not rows and not decisions:
                 return
             statuses = [row["status"] for row in rows]
-            if all(status in terminal_statuses for status in statuses):
+            decision_statuses = [row["status"] for row in decisions]
+            if any(status == "requested" for status in decision_statuses):
+                room_status = "needs_owner_decision"
+            elif statuses and all(status in terminal_statuses for status in statuses):
                 room_status = "completed"
             elif any(status == "developer_responded" for status in statuses):
                 room_status = "needs_owner_decision"
+            elif decision_statuses and all(status in terminal_statuses for status in decision_statuses):
+                room_status = "completed"
             else:
                 room_status = "agent_working"
             conn.execute(
@@ -1765,6 +1927,7 @@ class ReviewRoomStore:
             findings = conn.execute("SELECT status FROM findings WHERE room_id = ?", (room_id,)).fetchall()
             tasks = conn.execute("SELECT status FROM tasks WHERE room_id = ?", (room_id,)).fetchall()
             handoffs = conn.execute("SELECT status FROM handoffs WHERE room_id = ?", (room_id,)).fetchall()
+            decisions = conn.execute("SELECT status FROM decisions WHERE room_id = ?", (room_id,)).fetchall()
             runs = conn.execute("SELECT status FROM agent_runs WHERE room_id = ?", (room_id,)).fetchall()
             messages = conn.execute("SELECT COUNT(*) AS count FROM messages WHERE room_id = ?", (room_id,)).fetchone()
         participants = self.sanitize_participants(json_loads(room_row["participants_json"], []))
@@ -1773,6 +1936,7 @@ class ReviewRoomStore:
         pending_findings = sum(1 for row in findings if row["status"] not in {"accepted", "rejected"})
         active_tasks = sum(1 for row in tasks if row["status"] in {"open", "assigned", "claimed", "running"})
         pending_handoffs = sum(1 for row in handoffs if row["status"] == "proposed")
+        pending_decisions = sum(1 for row in decisions if row["status"] == "requested")
         running_agent_runs = sum(1 for row in runs if row["status"] in {"created", "running", "streaming"})
         return {
             "memberCount": len(participants) + len(connectors),
@@ -1783,6 +1947,7 @@ class ReviewRoomStore:
             "pendingFindingCount": pending_findings,
             "activeTaskCount": active_tasks,
             "pendingHandoffCount": pending_handoffs,
+            "pendingDecisionCount": pending_decisions,
             "runningAgentRunCount": running_agent_runs,
             "messageCount": messages["count"] if messages else 0,
             "lastActiveAt": room_row["updated_at"],
@@ -1970,6 +2135,26 @@ class ReviewRoomStore:
             "status": row["status"],
             "convertedTaskId": row["converted_task_id"],
             "createdBy": row["created_by"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+
+    @staticmethod
+    def _decision_from_row(row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "id": row["id"],
+            "roomId": row["room_id"],
+            "requestedByConnectorId": row["requested_by_connector_id"],
+            "status": row["status"],
+            "question": row["question"],
+            "proposal": row["proposal"],
+            "risk": row["risk"],
+            "syncTarget": row["sync_target"],
+            "source": json_loads(row["source_json"], {}),
+            "createdBy": row["created_by"],
+            "decidedBy": row["decided_by"],
+            "decisionNote": row["decision_note"],
+            "decidedAt": row["decided_at"],
             "createdAt": row["created_at"],
             "updatedAt": row["updated_at"],
         }
@@ -2961,6 +3146,26 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
         await app[HUB_KEY].broadcast_snapshot(handoff["roomId"])
         return json_response(result, 201)
 
+    async def decide_owner_confirmation(request: web.Request) -> web.Response:
+        decision_id = request.match_info["decision_id"]
+        action = request.match_info["action"]
+        if action not in {"accept", "reject"}:
+            raise web.HTTPNotFound(text=json_dumps({"ok": False, "error": "not found"}), content_type="application/json")
+        try:
+            decision = app[STORE_KEY].get_decision(decision_id)
+        except KeyError as exc:
+            raise web.HTTPNotFound(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        identity = require_identity(app[STORE_KEY], decision["roomId"], bearer_token_from_request(request))
+        ensure_owner(identity)
+        body = await request_json(request)
+        try:
+            updated = app[STORE_KEY].decide_owner_confirmation(decision_id, {**body, "decision": "accepted" if action == "accept" else "rejected"}, identity["name"])
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        await app[HUB_KEY].broadcast(decision["roomId"], {"type": "decision.decided", "decision": updated})
+        await app[HUB_KEY].broadcast_snapshot(decision["roomId"])
+        return json_response(updated, 201)
+
     async def update_finding(request: web.Request) -> web.Response:
         ensure_owner_for_finding(app[STORE_KEY], request.match_info["finding_id"], bearer_token_from_request(request))
         finding = app[STORE_KEY].update_finding(request.match_info["finding_id"], await request_json(request))
@@ -3021,11 +3226,17 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
                         "description": "Complete an assigned task and record the final message.",
                         "inputSchema": {"required": ["taskId"]},
                     },
+                    {
+                        "name": "request_owner_confirmation",
+                        "description": "Create a decision record that asks the room owner to approve or reject a proposed action.",
+                        "inputSchema": {"required": ["roomId", "question"]},
+                    },
                 ],
                 "resources": [
                     {"name": "room.timeline", "trust": "mixed-untrusted"},
                     {"name": "room.tasks", "trust": "review-room-policy"},
                     {"name": "room.findings", "trust": "agent-output-untrusted"},
+                    {"name": "room.decisions", "trust": "owner-approval-state"},
                     {"name": "mr.diff", "trust": "untrusted"},
                     {"name": "artifacts", "trust": "mixed-untrusted"},
                 ],
@@ -3152,6 +3363,24 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
         await app[HUB_KEY].broadcast_snapshot(task["roomId"])
         return json_response({"ok": True, "task": completed, "verificationTask": verification_task}, 201)
 
+    async def mcp_request_owner_confirmation(request: web.Request) -> web.Response:
+        body = await request_json(request)
+        room_id = body.get("roomId") or body.get("room_id")
+        if not room_id:
+            raise web.HTTPBadRequest(text=json_dumps({"ok": False, "error": "roomId required"}), content_type="application/json")
+        identity = require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
+        if identity["type"] != "connector":
+            raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": "connector token required"}), content_type="application/json")
+        try:
+            decision = app[STORE_KEY].create_owner_confirmation_request(room_id, body, identity)
+        except PermissionError as exc:
+            raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        await app[HUB_KEY].broadcast(room_id, {"type": "decision.requested", "decision": decision})
+        await app[HUB_KEY].broadcast_snapshot(room_id)
+        return json_response({"ok": True, "decision": decision}, 201)
+
     async def websocket_room(request: web.Request) -> web.WebSocketResponse:
         room_id = request.match_info["room_id"]
         identity = require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
@@ -3192,6 +3421,7 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
     app.router.add_post("/api/rooms/{room_id}/findings", add_finding)
     app.router.add_post("/api/findings/{finding_id}/handoffs", propose_handoff)
     app.router.add_post("/api/handoffs/{handoff_id}/{action}", decide_handoff)
+    app.router.add_post("/api/decisions/{decision_id}/{action}", decide_owner_confirmation)
     app.router.add_post("/api/rooms/{room_id}/connectors", register_connector)
     app.router.add_post("/api/rooms/{room_id}/connectors/{connector_id}/rotate-token", rotate_connector_token)
     app.router.add_post("/api/rooms/{room_id}/tasks", create_task)
@@ -3210,6 +3440,7 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
     app.router.add_post("/api/mcp/tools/claim_task", mcp_claim_task)
     app.router.add_post("/api/mcp/tools/start_run", mcp_start_run)
     app.router.add_post("/api/mcp/tools/complete_task", mcp_complete_task)
+    app.router.add_post("/api/mcp/tools/request_owner_confirmation", mcp_request_owner_confirmation)
     app.router.add_get("/ws/rooms/{room_id}", websocket_room)
     return app
 
@@ -3535,8 +3766,22 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
       return `<div class="section-title"><h2>任务与运行</h2><span class="tag">${(state.room.tasks || []).length} tasks</span></div>
         <div class="stack">
           ${taskForm}
-          <div class="work-list">${renderHandoffs()}${renderTasks()}${renderAgentRuns()}</div>
+          <div class="work-list">${renderDecisions()}${renderHandoffs()}${renderTasks()}${renderAgentRuns()}</div>
         </div>`;
+    }
+    function renderDecisions(){
+      const decisions = state.room.decisions || [];
+      if(!decisions.length) return '';
+      return `<div class="section-title" style="margin-top:4px"><h3>Decisions</h3><span class="tag">${decisions.length}</span></div>` + decisions.slice().reverse().map(decision => {
+        const pending = decision.status === 'requested' && isOwner();
+        return `<div class="work-item">
+          <div class="row between"><strong>${esc(decision.syncTarget || 'owner decision')}</strong><span class="tag ${decision.status === 'accepted' ? 'done' : decision.status === 'rejected' ? 'error' : 'waiting'}">${esc(decision.status)}</span></div>
+          <div>${esc(decision.question || '')}</div>
+          ${decision.proposal ? `<div class="muted">${esc(decision.proposal)}</div>` : ''}
+          ${decision.risk ? `<div>${esc(decision.risk)}</div>` : ''}
+          ${pending ? `<div class="row"><button class="primary" data-decision-accept="${esc(decision.id)}">Accept</button><button class="danger" data-decision-reject="${esc(decision.id)}">Reject</button></div>` : ''}
+        </div>`;
+      }).join('');
     }
     function renderHandoffs(){
       const handoffs = state.room.handoffs || [];
@@ -3582,6 +3827,8 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
       if(create) create.addEventListener('click', () => createTask().catch(alert));
       document.querySelectorAll('[data-handoff-accept]').forEach(button => button.addEventListener('click', () => decideHandoff(button.dataset.handoffAccept, 'accept').catch(alert)));
       document.querySelectorAll('[data-handoff-reject]').forEach(button => button.addEventListener('click', () => decideHandoff(button.dataset.handoffReject, 'reject').catch(alert)));
+      document.querySelectorAll('[data-decision-accept]').forEach(button => button.addEventListener('click', () => decideDecision(button.dataset.decisionAccept, 'accept').catch(alert)));
+      document.querySelectorAll('[data-decision-reject]').forEach(button => button.addEventListener('click', () => decideDecision(button.dataset.decisionReject, 'reject').catch(alert)));
     }
     function renderInviteControls(){
       if(!isOwner()) return '<div class="empty">你可以阅读和发言，邀请和确认操作由 owner 完成。</div>';
@@ -3661,6 +3908,11 @@ realtime: ${esc(roomUrl)}</div></details>`;
     async function decideHandoff(handoffId, action){
       if(!state.room || !isOwner() || !handoffId) return;
       await api(`/api/handoffs/${encodeURIComponent(handoffId)}/${action}`, {method:'POST', headers:authHeaders(), body:JSON.stringify({})});
+      await selectRoom(state.room.id);
+    }
+    async function decideDecision(decisionId, action){
+      if(!state.room || !isOwner() || !decisionId) return;
+      await api(`/api/decisions/${encodeURIComponent(decisionId)}/${action}`, {method:'POST', headers:authHeaders(), body:JSON.stringify({})});
       await selectRoom(state.room.id);
     }
     document.getElementById('createRoom').addEventListener('click', () => createRoom().catch(alert));
