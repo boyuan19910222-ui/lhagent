@@ -8,6 +8,11 @@ The repository is intentionally experimental. Different experiments may look unr
 
 See [EXPERIMENTS.md](./EXPERIMENTS.md) for the full index.
 
+Agent guide: [AGENTS.md](./AGENTS.md) with [Agent.md](./Agent.md) as a
+compatibility pointer.
+
+Roadmap: [Lighthouse Roadmap](./docs/roadmap/README.md)
+
 | Experiment | Status | Entry | Focus |
 | --- | --- | --- | --- |
 | OpenClaw Billing Guardian | validated | [experiments/openclaw-billing-guardian](./experiments/openclaw-billing-guardian) | Translate provider billing/runtime errors into beginner-readable Chinese recovery guidance. |
