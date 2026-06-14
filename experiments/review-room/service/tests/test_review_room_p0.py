@@ -949,6 +949,167 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot_after_close["connectors"][0]["status"], "mcp_ready")
         self.assertEqual(snapshot_after_close["statusSummary"]["onlineAgentCount"], 0)
 
+    async def test_standard_mcp_streamable_http_session_tools_and_events(self):
+        _, room = await self.post_json("/api/rooms", {"title": "Standard MCP"})
+        _, reviewer = await self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"role": "reviewer", "name": "Reviewer Agent", "adapterType": "mcp-remote"},
+            room["ownerToken"],
+        )
+        auth = {"Authorization": "Bearer {}".format(reviewer["connectorToken"])}
+        denied_init = await self.client.post(
+            "/api/mcp",
+            json={"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {}},
+            headers={"Authorization": "Bearer {}".format(room["ownerToken"])},
+        )
+        init_response = await self.client.post(
+            "/api/mcp",
+            json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "remote-agent-test"}}},
+            headers=auth,
+        )
+        init = await init_response.json()
+        session_id = init_response.headers.get("Mcp-Session-Id")
+        session_headers = {**auth, "Mcp-Session-Id": session_id}
+        initialized_response = await self.client.post(
+            "/api/mcp",
+            json={"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+            headers=session_headers,
+        )
+        tools_response = await self.client.post(
+            "/api/mcp",
+            json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+            headers=session_headers,
+        )
+        tools = await tools_response.json()
+        bad_connect_response = await self.client.post(
+            "/api/mcp",
+            json={"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "review_room.connect", "arguments": {"roomId": room["id"], "encodingProbe": "????"}}},
+            headers=session_headers,
+        )
+        bad_connect = await bad_connect_response.json()
+        connect_response = await self.client.post(
+            "/api/mcp",
+            json={"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "review_room.connect", "arguments": {"roomId": room["id"], "encodingProbe": MCP_ENCODING_PROBE}}},
+            headers=session_headers,
+        )
+        connected = await connect_response.json()
+        stream_response = await self.client.get("/api/mcp", headers=session_headers)
+        connected_notification = await self._read_sse_event(
+            stream_response,
+            "message",
+            lambda data: data.get("method") == "notifications/review_room.connected",
+        )
+        snapshot_response = await self.client.post(
+            "/api/mcp",
+            json={"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "review_room.get_snapshot", "arguments": {"roomId": room["id"]}}},
+            headers=session_headers,
+        )
+        streaming_snapshot = self.store.get_room(room["id"])
+        _, owner_message = await self.post_json(
+            "/api/rooms/{}/messages".format(room["id"]),
+            {"body": "@reviewer 请确认你收到消息", "senderName": "review room owner"},
+            room["ownerToken"],
+        )
+        pushed = await self._read_sse_event(
+            stream_response,
+            "message",
+            lambda data: data.get("method") == "notifications/review_room.event"
+            and data.get("params", {}).get("message", {}).get("id") == owner_message["id"],
+        )
+        mentioned_snapshot = self.store.get_room(room["id"])
+        poll_response = await self.client.post(
+            "/api/mcp",
+            json={"jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": {"name": "review_room.poll_events", "arguments": {"roomId": room["id"], "cursor": "0"}}},
+            headers=session_headers,
+        )
+        polled_mentioned_snapshot = self.store.get_room(room["id"])
+        reply_response = await self.client.post(
+            "/api/mcp",
+            json={"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": "review_room.post_message", "arguments": {"roomId": room["id"], "body": "已收到。", "payload": {"replyToMessageId": owner_message["id"]}}}},
+            headers=session_headers,
+        )
+        reply = await reply_response.json()
+        replied_snapshot = self.store.get_room(room["id"])
+        _, task = await self.post_json(
+            "/api/rooms/{}/tasks".format(room["id"]),
+            {
+                "kind": "review",
+                "instruction": "检查标准 MCP Agent 是否能处理任务。",
+                "target": {"mode": "connector", "connectorId": reviewer["id"]},
+            },
+            room["ownerToken"],
+        )
+        task_pushed = await self._read_sse_event(
+            stream_response,
+            "message",
+            lambda data: data.get("method") == "notifications/review_room.event"
+            and data.get("params", {}).get("task", {}).get("id") == task["id"],
+        )
+        task_snapshot = self.store.get_room(room["id"])
+        list_tasks_response = await self.client.post(
+            "/api/mcp",
+            json={"jsonrpc": "2.0", "id": 8, "method": "tools/call", "params": {"name": "review_room.list_tasks", "arguments": {"roomId": room["id"]}}},
+            headers=session_headers,
+        )
+        listed_task_snapshot = self.store.get_room(room["id"])
+        start_response = await self.client.post(
+            "/api/mcp",
+            json={"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {"name": "review_room.start_run", "arguments": {"taskId": task["id"], "promptSummary": "standard MCP task"}}},
+            headers=session_headers,
+        )
+        started = await start_response.json()
+        running_snapshot = self.store.get_room(room["id"])
+        complete_response = await self.client.post(
+            "/api/mcp",
+            json={"jsonrpc": "2.0", "id": 10, "method": "tools/call", "params": {"name": "review_room.complete_task", "arguments": {"taskId": task["id"], "finalMessage": "standard MCP task done"}}},
+            headers=session_headers,
+        )
+        completed = await complete_response.json()
+        completed_snapshot = self.store.get_room(room["id"])
+
+        denied_init_body = await denied_init.json()
+        stream_response.close()
+        await asyncio.sleep(0.05)
+        closed_snapshot = self.store.get_room(room["id"])
+
+        self.assertEqual(denied_init.status, 403)
+        self.assertIn("connector", denied_init_body["error"]["message"])
+        self.assertEqual(init_response.status, 200)
+        self.assertTrue(session_id)
+        self.assertEqual(init["result"]["protocolVersion"], "2025-03-26")
+        self.assertEqual(initialized_response.status, 202)
+        self.assertEqual(tools_response.status, 200)
+        self.assertIn("review_room.connect", [tool["name"] for tool in tools["result"]["tools"]])
+        self.assertEqual(bad_connect_response.status, 400)
+        self.assertIn("encodingProbe", bad_connect["error"]["data"]["encoding"]["field"])
+        self.assertEqual(connect_response.status, 200)
+        self.assertTrue(connected["result"]["structuredContent"]["connected"])
+        self.assertEqual(stream_response.status, 200)
+        self.assertEqual(connected_notification["data"]["params"]["identity"]["connectorId"], reviewer["id"])
+        self.assertEqual(snapshot_response.status, 200)
+        self.assertEqual(streaming_snapshot["connectors"][0]["status"], "mcp_streaming")
+        self.assertEqual(pushed["data"]["params"]["type"], "message.created")
+        self.assertEqual(pushed["data"]["params"]["actionHint"], "reply")
+        self.assertEqual(mentioned_snapshot["connectors"][0]["status"], "mentioned")
+        self.assertEqual(mentioned_snapshot["statusSummary"]["onlineAgentCount"], 1)
+        self.assertEqual(poll_response.status, 200)
+        self.assertEqual(polled_mentioned_snapshot["connectors"][0]["status"], "mentioned")
+        self.assertEqual(reply_response.status, 200)
+        self.assertEqual(reply["result"]["structuredContent"]["message"]["body"], "已收到。")
+        self.assertEqual(replied_snapshot["connectors"][0]["status"], "mcp_streaming")
+        self.assertEqual(task_pushed["data"]["params"]["actionHint"], "claim_or_start_run")
+        self.assertEqual(task_snapshot["connectors"][0]["status"], "task_pending")
+        self.assertEqual(list_tasks_response.status, 200)
+        self.assertEqual(listed_task_snapshot["connectors"][0]["status"], "task_pending")
+        self.assertEqual(start_response.status, 200)
+        self.assertEqual(started["result"]["structuredContent"]["agentRun"]["taskId"], task["id"])
+        self.assertEqual(running_snapshot["connectors"][0]["status"], "executing")
+        self.assertEqual(complete_response.status, 200)
+        self.assertEqual(completed["result"]["structuredContent"]["task"]["status"], "completed")
+        self.assertEqual(completed_snapshot["connectors"][0]["status"], "mcp_streaming")
+        self.assertEqual(closed_snapshot["connectors"][0]["status"], "mcp_ready")
+        self.assertEqual(closed_snapshot["statusSummary"]["onlineAgentCount"], 0)
+
     async def test_rest_scoped_threads_limit_participants_and_summarize_to_owner_decision(self):
         _, room = await self.post_json("/api/rooms", {"title": "Thread REST"})
         _, reviewer = await self.post_json(
@@ -1406,7 +1567,7 @@ class CodexConnectorClientTest(unittest.TestCase):
         self.assertIn("function decideHandoff", html)
         self.assertIn("function rotateConnectorToken", html)
         self.assertIn("agentAdapter", html)
-        self.assertIn("MCP Remote", html)
+        self.assertIn("MCP Agent 接入", html)
         self.assertIn("/tasks", html)
         self.assertIn("/api/handoffs/", html)
         self.assertIn("/rotate-token", html)
