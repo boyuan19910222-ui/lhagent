@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import os
 import sys
@@ -19,7 +20,7 @@ ROOT = os.path.dirname(os.path.dirname(__file__))
 sys.path.insert(0, ROOT)
 
 from codex_connector import build_agent_response, is_assigned_task_event, parse_room_url, summarize_connector_response  # noqa: E402
-from review_room_service import ReviewRoomStore, build_app  # noqa: E402
+from review_room_service import MCP_ENCODING_PROBE, ReviewRoomStore, build_app  # noqa: E402
 
 
 class ReviewRoomP0StoreTest(unittest.TestCase):
@@ -507,6 +508,17 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
             {"roomId": room["id"], "body": "bad payload", "payload": []},
             reviewer["connectorToken"],
         )
+        mojibake_message_response, mojibake_message = await self.post_json(
+            "/api/mcp/tools/post_message",
+            {"roomId": room["id"], "body": "?? @reviewer????????"},
+            reviewer["connectorToken"],
+        )
+        utf8_body = "\u6536\u5230 @reviewer\uff0c\u4e2d\u6587\u56de\u590d\u6b63\u5e38\u3002"
+        base64_message_response, base64_message = await self.post_json(
+            "/api/mcp/tools/post_message",
+            {"roomId": room["id"], "bodyUtf8Base64": base64.b64encode(utf8_body.encode("utf-8")).decode("ascii")},
+            reviewer["connectorToken"],
+        )
         with patch.dict(os.environ, {"REVIEW_ROOM_ENABLE_HOSTED_AGENT": "true"}):
             message_response, message_result = await self.post_json(
                 "/api/mcp/tools/post_message",
@@ -519,6 +531,17 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
             "/api/mcp/tools/create_finding",
             {"roomId": room["id"], "claim": "owner cannot use connector tool"},
             room["ownerToken"],
+        )
+        mojibake_finding_response, mojibake_finding = await self.post_json(
+            "/api/mcp/tools/create_finding",
+            {
+                "roomId": room["id"],
+                "severity": "P2",
+                "claim": "????????",
+                "evidence": "Gateway used connector token.",
+                "suggestedFix": "Use UTF-8.",
+            },
+            reviewer["connectorToken"],
         )
         finding_response, finding_result = await self.post_json(
             "/api/mcp/tools/create_finding",
@@ -604,14 +627,21 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(denied_owner_message["error"], "message:reply connector capability required")
         self.assertEqual(invalid_message_payload_response.status, 400)
         self.assertEqual(invalid_message_payload["error"], "payload must be an object")
+        self.assertEqual(mojibake_message_response.status, 400)
+        self.assertIn("mojibake", mojibake_message["error"])
+        self.assertEqual(base64_message_response.status, 201)
+        self.assertEqual(base64_message["message"]["body"], utf8_body)
         self.assertEqual(message_response.status, 201)
         self.assertEqual(message_result["message"]["kind"], "connector_message")
         self.assertEqual(message_result["message"]["senderName"], "Reviewer Agent")
         self.assertIn("not executable work", message_result["trust"])
-        self.assertEqual(len(connector_messages), 1)
-        self.assertFalse(connector_messages[0]["payload"].get("hostedAgent"))
+        self.assertEqual(len(connector_messages), 2)
+        self.assertIn(utf8_body, [message["body"] for message in connector_messages])
+        self.assertFalse(any(message["payload"].get("hostedAgent") for message in connector_messages))
         self.assertEqual(denied_owner_response.status, 403)
         self.assertEqual(denied_owner["error"], "finding:create connector capability required")
+        self.assertEqual(mojibake_finding_response.status, 400)
+        self.assertIn("mojibake", mojibake_finding["error"])
         self.assertEqual(finding_response.status, 201)
         self.assertEqual(finding_result["finding"]["createdBy"], "Reviewer Agent")
         self.assertEqual(list_response.status, 200)
@@ -629,7 +659,7 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(completed["verificationTask"])
         self.assertEqual(snapshot_after_response.status, 200)
         self.assertEqual(snapshot_after["connectors"][0]["status"], "mcp_ready")
-        self.assertEqual(snapshot_after["connectors"][0]["eventCount"], 7)
+        self.assertEqual(snapshot_after["connectors"][0]["eventCount"], 8)
         self.assertEqual(snapshot_after["statusSummary"]["onlineAgentCount"], 0)
         self.assertEqual(snapshot_after["tasks"][-1]["status"], "completed")
         self.assertEqual(snapshot_after["agentRuns"][-1]["adapterType"], "mcp-remote")
@@ -662,9 +692,19 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
             {"roomId": room["id"]},
             guest["guestToken"],
         )
+        missing_probe_response, missing_probe = await self.post_json(
+            "/api/mcp/tools/connect",
+            {"roomId": room["id"], "clientName": "Fast MCP Agent"},
+            reviewer["connectorToken"],
+        )
+        bad_probe_response, bad_probe = await self.post_json(
+            "/api/mcp/tools/connect",
+            {"roomId": room["id"], "clientName": "Fast MCP Agent", "encodingProbe": "????"},
+            reviewer["connectorToken"],
+        )
         connect_response, connected = await self.post_json(
             "/api/mcp/tools/connect",
-            {"roomId": room["id"], "clientName": "Fast MCP Agent", "clientVersion": "0.1.0"},
+            {"roomId": room["id"], "clientName": "Fast MCP Agent", "clientVersion": "0.1.0", "encodingProbe": MCP_ENCODING_PROBE},
             reviewer["connectorToken"],
         )
         first_seen = connected["connector"]["firstSeenAt"]
@@ -672,7 +712,7 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.01)
         repeat_response, repeated = await self.post_json(
             "/api/mcp/tools/connect",
-            {"roomId": room["id"], "clientName": "Fast MCP Agent", "clientVersion": "0.1.1"},
+            {"roomId": room["id"], "clientName": "Fast MCP Agent", "clientVersion": "0.1.1", "encodingProbe": MCP_ENCODING_PROBE},
             reviewer["connectorToken"],
         )
         snapshot = self.store.get_room(room["id"])
@@ -681,6 +721,10 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(denied_owner["error"], "connector token required")
         self.assertEqual(denied_guest_response.status, 403)
         self.assertEqual(denied_guest["error"], "connector token required")
+        self.assertEqual(missing_probe_response.status, 400)
+        self.assertEqual(missing_probe["encoding"]["requiredProbe"], MCP_ENCODING_PROBE)
+        self.assertEqual(bad_probe_response.status, 400)
+        self.assertTrue(bad_probe["encoding"]["looksLikeMojibake"])
         self.assertEqual(connect_response.status, 201)
         self.assertTrue(connected["connected"])
         self.assertEqual(connected["connector"]["status"], "connected")
@@ -693,6 +737,7 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(connected["next"]["listen"]["transport"], "sse")
         self.assertIn("/api/mcp/events?roomId={}".format(room["id"]), connected["next"]["listen"]["eventStreamUrl"])
         self.assertEqual(connected["next"]["fallbackTool"], "poll_events")
+        self.assertEqual(connected["encoding"]["status"], "verified")
         self.assertEqual(repeat_response.status, 201)
         self.assertEqual(repeated["connector"]["firstSeenAt"], first_seen)
         self.assertEqual(repeated["connector"]["version"], "0.1.1")
@@ -843,7 +888,7 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         )
         connect_response, connected_agent = await self.post_json(
             "/api/mcp/tools/connect",
-            {"roomId": room["id"], "clientName": "Realtime MCP Agent"},
+            {"roomId": room["id"], "clientName": "Realtime MCP Agent", "encodingProbe": MCP_ENCODING_PROBE},
             reviewer["connectorToken"],
         )
         first_seen = connected_agent["connector"]["firstSeenAt"]
@@ -880,6 +925,8 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         denied_response.close()
         invalid_cursor_response.close()
         stream_response.close()
+        await asyncio.sleep(0.05)
+        snapshot_after_close = self.store.get_room(room["id"])
 
         self.assertEqual(connect_response.status, 201)
         self.assertEqual(denied_response.status, 403)
@@ -899,6 +946,8 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot["connectors"][0]["firstSeenAt"], first_seen)
         self.assertEqual(snapshot["connectors"][0]["connectLatencyMs"], first_latency)
         self.assertEqual(snapshot["statusSummary"]["onlineAgentCount"], 1)
+        self.assertEqual(snapshot_after_close["connectors"][0]["status"], "mcp_ready")
+        self.assertEqual(snapshot_after_close["statusSummary"]["onlineAgentCount"], 0)
 
     async def test_rest_scoped_threads_limit_participants_and_summarize_to_owner_decision(self):
         _, room = await self.post_json("/api/rooms", {"title": "Thread REST"})

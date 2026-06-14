@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
+import binascii
 import json
 import os
 import re
@@ -139,6 +141,8 @@ MCP_AGENT_CONTRACT = {
     "replyPolicy": MCP_REPLY_POLICY,
     "cursorReconnect": MCP_CURSOR_RECONNECT,
 }
+MCP_ENCODING_PROBE = "\u4e2d\u6587\u7f16\u7801\u786e\u8ba4 Review Room \u2713"
+MCP_ENCODING_PROBE_FIELD = "encodingProbe"
 
 
 def now_ms() -> int:
@@ -160,6 +164,75 @@ def json_loads(value: Optional[str], fallback: Any) -> Any:
         return json.loads(value)
     except json.JSONDecodeError:
         return fallback
+
+
+def mcp_encoding_probe_hint() -> Dict[str, Any]:
+    return {
+        "field": MCP_ENCODING_PROBE_FIELD,
+        "requiredProbe": MCP_ENCODING_PROBE,
+        "contentType": "application/json; charset=utf-8",
+        "fallbackBodyField": "bodyUtf8Base64",
+        "guidance": "Send JSON bytes as UTF-8. If the local shell corrupts non-ASCII text, send visible message text as bodyUtf8Base64.",
+    }
+
+
+def text_has_cjk(value: str) -> bool:
+    return any("\u4e00" <= char <= "\u9fff" for char in value)
+
+
+def looks_like_mojibake(value: str) -> bool:
+    if not value:
+        return False
+    if "\ufffd" in value:
+        return True
+    question_count = value.count("?")
+    if re.search(r"\?{3,}", value) or (question_count >= 4 and question_count / max(len(value), 1) >= 0.08):
+        return True
+    if not text_has_cjk(value):
+        mojibake_markers = ("Ã", "Â", "ä", "å", "ç", "ï¼", "ã€")
+        marker_count = sum(value.count(marker) for marker in mojibake_markers)
+        if marker_count >= 2:
+            return True
+    return False
+
+
+def validate_mcp_encoding_probe(payload: Dict[str, Any]) -> Dict[str, Any]:
+    probe = payload.get(MCP_ENCODING_PROBE_FIELD)
+    if probe is None:
+        probe = payload.get("encoding_probe") or payload.get("utf8Probe") or payload.get("utf8_probe")
+    hint = mcp_encoding_probe_hint()
+    if probe is None:
+        return {**hint, "ok": False, "status": "missing", "error": "encodingProbe required"}
+    probe_text = str(probe)
+    if probe_text != MCP_ENCODING_PROBE:
+        return {
+            **hint,
+            "ok": False,
+            "status": "failed",
+            "error": "encodingProbe mismatch; UTF-8 path is not safe for the first visible reply",
+            "received": probe_text[:120],
+            "looksLikeMojibake": looks_like_mojibake(probe_text),
+        }
+    return {**hint, "ok": True, "status": "verified"}
+
+
+def decode_utf8_base64_text(value: Any) -> str:
+    try:
+        raw = base64.b64decode(str(value or ""), validate=True)
+        return raw.decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError, ValueError) as exc:
+        raise ValueError("bodyUtf8Base64 must be valid base64-encoded UTF-8 text") from exc
+
+
+def validate_visible_text_encoding(value: Any, field: str) -> Optional[Dict[str, Any]]:
+    text = str(value or "")
+    if text and looks_like_mojibake(text):
+        return {
+            "ok": False,
+            "error": "{} looks like mojibake; send UTF-8 JSON or use a UTF-8-safe fallback".format(field),
+            "encoding": mcp_encoding_probe_hint(),
+        }
+    return None
 
 
 def truthy_env(name: str) -> bool:
@@ -1967,6 +2040,8 @@ class ReviewRoomStore:
                     "tools": list(MCP_TOOL_NAMES),
                     "firstTool": "connect",
                     "targetConnectMs": 30000,
+                    "encodingProbeField": MCP_ENCODING_PROBE_FIELD,
+                    "encodingProbe": MCP_ENCODING_PROBE,
                 },
                 "realtime": {
                     "preferredTransport": "sse",
@@ -2831,6 +2906,37 @@ class ReviewRoomStore:
                 conn.execute("UPDATE rooms SET updated_at = ? WHERE id = ?", (timestamp, row["room_id"]))
         return self.get_connector(connector_id)
 
+    def mark_connector_stream_closed(self, connector_id: str) -> None:
+        timestamp = now_ms()
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT connectors.room_id, connectors.status, rooms.status AS room_status
+                FROM connectors
+                JOIN rooms ON rooms.id = connectors.room_id
+                WHERE connectors.id = ?
+                """,
+                (connector_id,),
+            ).fetchone()
+            if not row:
+                raise KeyError("connector not found")
+            if row["status"] != "mcp_streaming":
+                conn.execute("UPDATE rooms SET updated_at = ? WHERE id = ?", (timestamp, row["room_id"]))
+                return
+            conn.execute(
+                """
+                UPDATE connectors
+                SET status = ?, last_seen_at = ?, heartbeat_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                ("mcp_ready", timestamp, None, timestamp, connector_id),
+            )
+            room_status = connector_room_status_transition(row["room_status"], "mcp_ready")
+            if room_status:
+                conn.execute("UPDATE rooms SET status = ?, updated_at = ? WHERE id = ?", (room_status, timestamp, row["room_id"]))
+            else:
+                conn.execute("UPDATE rooms SET updated_at = ? WHERE id = ?", (timestamp, row["room_id"]))
+
     def set_connector_status(self, connector_id: str, status: str) -> None:
         status = normalize_connector_status(status)
         timestamp = now_ms()
@@ -3634,7 +3740,7 @@ class RealtimeHub:
         if meta and meta["identity"].get("type") == "connector":
             connector_id = meta["identity"].get("connectorId")
             if connector_id and not self.has_realtime_connector(room_id, connector_id):
-                self.store.mark_connector_seen(connector_id, "mcp_ready", "")
+                self.store.mark_connector_stream_closed(connector_id)
         if notify:
             await self.broadcast(room_id, {"type": "presence.updated", "presence": self.presence(room_id)})
             await self.broadcast_snapshot(room_id)
@@ -3731,8 +3837,18 @@ def base_url_from_aiohttp_request(request: web.Request) -> str:
 async def request_json(request: web.Request) -> Dict[str, Any]:
     if not request.can_read_body:
         return {}
+    if request.charset and request.charset.lower().replace("-", "") != "utf8":
+        raise web.HTTPBadRequest(
+            text=json_dumps({"ok": False, "error": "json requests must use UTF-8", "encoding": mcp_encoding_probe_hint()}),
+            content_type="application/json",
+        )
     try:
         data = await request.json()
+    except UnicodeDecodeError as exc:
+        raise web.HTTPBadRequest(
+            text=json_dumps({"ok": False, "error": "invalid UTF-8 json body: {}".format(exc), "encoding": mcp_encoding_probe_hint()}),
+            content_type="application/json",
+        )
     except json.JSONDecodeError as exc:
         raise web.HTTPBadRequest(
             text=json_dumps({"ok": False, "error": "invalid json: {}".format(exc)}),
@@ -4438,8 +4554,12 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
                 "tools": [
                     {
                         "name": "connect",
-                        "description": "Perform the first MCP Agent handshake. Marks the connector as connected and returns the next listening step.",
-                        "inputSchema": {"required": ["roomId"], "optional": ["clientName", "clientVersion"]},
+                        "description": "Perform the first MCP Agent handshake with a UTF-8 encoding probe. Marks the connector as connected and returns the next listening step.",
+                        "inputSchema": {
+                            "required": ["roomId", MCP_ENCODING_PROBE_FIELD],
+                            "optional": ["clientName", "clientVersion"],
+                            "encodingProbe": MCP_ENCODING_PROBE,
+                        },
                     },
                     {
                         "name": "get_snapshot",
@@ -4458,8 +4578,8 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
                     },
                     {
                         "name": "post_message",
-                        "description": "Post a connector-authored room message without triggering task execution.",
-                        "inputSchema": {"required": ["roomId", "body"]},
+                        "description": "Post a connector-authored room message without triggering task execution. Use bodyUtf8Base64 if the local shell may corrupt Chinese text.",
+                        "inputSchema": {"required": ["roomId"], "optional": ["body", "bodyUtf8Base64", "payload"]},
                     },
                     {
                         "name": "create_finding",
@@ -4526,6 +4646,9 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
         identity = require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
         if identity["type"] != "connector":
             raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": "connector token required"}), content_type="application/json")
+        encoding = validate_mcp_encoding_probe(body)
+        if not encoding["ok"]:
+            raise web.HTTPBadRequest(text=json_dumps({"ok": False, "error": encoding["error"], "encoding": encoding}), content_type="application/json")
         try:
             connector = app[STORE_KEY].connect_mcp_connector(identity["connectorId"], body)
         except PermissionError as exc:
@@ -4558,6 +4681,7 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
                     "fallbackTool": "poll_events",
                     "firstSnapshotTool": "get_snapshot",
                 },
+                "encoding": encoding,
                 "targetConnectMs": 30000,
             },
             201,
@@ -4640,9 +4764,22 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
         room_id = body.get("roomId") or body.get("room_id")
         if not room_id:
             raise web.HTTPBadRequest(text=json_dumps({"ok": False, "error": "roomId required"}), content_type="application/json")
-        message_body = str(body.get("body") or body.get("message") or body.get("text") or "").strip()
+        body_base64 = body.get("bodyUtf8Base64") or body.get("body_utf8_base64")
+        if body_base64:
+            try:
+                message_body = decode_utf8_base64_text(body_base64).strip()
+            except ValueError as exc:
+                raise web.HTTPBadRequest(text=json_dumps({"ok": False, "error": str(exc), "encoding": mcp_encoding_probe_hint()}), content_type="application/json")
+        else:
+            message_body = str(body.get("body") or body.get("message") or body.get("text") or "").strip()
         if not message_body:
             raise web.HTTPBadRequest(text=json_dumps({"ok": False, "error": "body required"}), content_type="application/json")
+        encoding_error = validate_visible_text_encoding(message_body, "body")
+        if encoding_error:
+            raise web.HTTPBadRequest(
+                text=json_dumps(encoding_error),
+                content_type="application/json",
+            )
         payload = body.get("payload")
         if payload is None:
             payload = {}
@@ -4675,6 +4812,10 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
         identity = require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
         if identity["type"] != "connector" or "finding:create" not in identity.get("capabilities", []):
             raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": "finding:create connector capability required"}), content_type="application/json")
+        for field in ("claim", "evidence", "suggestedFix", "suggested_fix"):
+            encoding_error = validate_visible_text_encoding(body.get(field), field)
+            if encoding_error:
+                raise web.HTTPBadRequest(text=json_dumps(encoding_error), content_type="application/json")
         app[STORE_KEY].mark_connector_seen(identity["connectorId"], "mcp_ready", "")
         finding = app[STORE_KEY].add_finding(room_id, {**body, "createdBy": identity["name"]})
         await app[HUB_KEY].broadcast(room_id, {"type": "finding.created", "finding": finding})
@@ -5682,8 +5823,9 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
 Tools: ${mcp.toolsUrl || ''}
 Room: ${advanced.roomId || ''}
 Authorization: Bearer ${mcp.bearerToken || advanced.connectorToken || ''}
+Encoding-Probe: ${mcp.encodingProbe || ''}
 
-第一步先调用 connect。接入成功后监听 room.events；只有被明确 @、被分配任务，或收到 owner confirmation 时才行动。`;
+第一步先调用 connect，并带上 encodingProbe。接入成功后监听 room.events；只有被明确 @、被分配任务，或收到 owner confirmation 时才行动。`;
       }
       return bootstrap.command || invite.inviteUrl || '';
     }
@@ -5699,8 +5841,9 @@ Use:
 - roomId: ${advanced.roomId || ''}
 - connectorId: ${advanced.connectorId || ''}
 - role: ${advanced.role || ''}
+- encodingProbe: ${mcp.encodingProbe || ''}
 
-First call connect with roomId=${advanced.roomId || ''}.
+First call connect with roomId=${advanced.roomId || ''} and encodingProbe=${mcp.encodingProbe || ''}.
 Then keep listening to room.events SSE, or fallback to poll_events.
 Reply only when directly mentioned, explicitly assigned a task, or context is clearly relevant.`;
     }
@@ -5719,6 +5862,7 @@ tools: ${esc(mcp.toolsUrl || '')}
 events: ${esc(mcp.eventStreamUrl || '')}
 bearer: ${esc(mcp.bearerToken || result.connectorToken || connector.connectorToken || '')}
 firstTool: connect
+encodingProbe: ${esc(mcp.encodingProbe || '')}
 resumeHeader: Last-Event-ID` : `command: ${esc(bootstrap.command || '')}`;
       const quickText = mcp.toolsUrl ? agentInviteAccessText({advanced:{...bootstrap, connectorToken:result.connectorToken || connector.connectorToken || ''}}) : (bootstrap.command || '');
       return `<div class="invite-box"><strong>新 Agent token</strong>
@@ -5739,6 +5883,7 @@ tools: ${esc(mcp.toolsUrl)}
 events: ${esc(mcp.eventStreamUrl || '')}
 bearer: ${esc(mcp.bearerToken || invite.advanced.connectorToken || '')}
 firstTool: connect
+encodingProbe: ${esc(mcp.encodingProbe || '')}
 resumeHeader: Last-Event-ID` : `realtime: ${esc(roomUrl)}`;
       const quickText = agentInviteAccessText(invite);
       const prompt = mcp.toolsUrl ? `<details><summary>高级接入信息</summary><div class="mono">invite: ${esc(invite.inviteUrl)}

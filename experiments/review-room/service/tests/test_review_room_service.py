@@ -11,7 +11,7 @@ from unittest.mock import patch
 ROOT = os.path.dirname(os.path.dirname(__file__))
 sys.path.insert(0, ROOT)
 
-from review_room_service import ReviewRoomStore, build_handler, index_html  # noqa: E402
+from review_room_service import MCP_ENCODING_PROBE, ReviewRoomStore, build_handler, index_html  # noqa: E402
 from http.server import ThreadingHTTPServer  # noqa: E402
 from threading import Barrier, Thread  # noqa: E402
 
@@ -173,6 +173,8 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertIn("复制给 Agent", html)
         self.assertIn("高级接入信息", html)
         self.assertIn("第一步先调用 connect", html)
+        self.assertIn("Encoding-Probe", html)
+        self.assertIn("encodingProbe", html)
         self.assertIn("等待接入", html)
         self.assertIn("超过 30s 未接入", html)
         self.assertIn("已接入", html)
@@ -265,6 +267,8 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertIn("connect", invite["advanced"]["mcp"]["tools"])
         self.assertEqual(invite["advanced"]["mcp"]["firstTool"], "connect")
         self.assertEqual(invite["advanced"]["mcp"]["targetConnectMs"], 30000)
+        self.assertEqual(invite["advanced"]["mcp"]["encodingProbeField"], "encodingProbe")
+        self.assertEqual(invite["advanced"]["mcp"]["encodingProbe"], MCP_ENCODING_PROBE)
         self.assertIn("get_snapshot", invite["advanced"]["mcp"]["tools"])
         self.assertIn("poll_events", invite["advanced"]["mcp"]["tools"])
         self.assertEqual(invite["advanced"]["mcp"]["bearerToken"], invite["advanced"]["connectorToken"])
@@ -295,6 +299,13 @@ class ReviewRoomStoreTest(unittest.TestCase):
 
         self.assertEqual(preserved["status"], "needs_owner_decision")
         self.assertEqual(preserved["connectors"][0]["firstSeenAt"], first_seen)
+
+        self.store.mark_connector_stream_closed(connector["id"])
+        closed = self.store.get_room(room["id"])
+
+        self.assertEqual(closed["connectors"][0]["status"], "mcp_ready")
+        self.assertEqual(closed["connectors"][0]["firstSeenAt"], first_seen)
+        self.assertIsNotNone(closed["connectors"][0]["connectLatencyMs"])
 
     def test_legacy_provisioned_connector_status_remains_active(self):
         room = self.store.create_room({"title": "topic"})
