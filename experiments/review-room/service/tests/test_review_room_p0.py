@@ -20,6 +20,7 @@ ROOT = os.path.dirname(os.path.dirname(__file__))
 sys.path.insert(0, ROOT)
 
 from codex_connector import build_agent_response, is_assigned_task_event, parse_room_url, summarize_connector_response  # noqa: E402
+from mcp_action_runner import RunnerConfig, discover_connectors, run_connector_worker  # noqa: E402
 from review_room_service import MCP_ENCODING_PROBE, ReviewRoomStore, build_app  # noqa: E402
 
 
@@ -604,12 +605,14 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tools["gateway"], "review-room.mcp-remote")
         self.assertIn("payload", tools["eventEnvelope"]["required"])
         self.assertEqual(tools["cursorReconnect"]["resumeHeader"], "Last-Event-ID")
+        self.assertEqual(tools["actionLoop"]["tool"], "review_room.wait_for_action")
         self.assertEqual(tools["replyPolicy"]["shouldRespond"][1]["reason"], "direct mention")
         self.assertEqual(tools["streams"][0]["name"], "room.events")
         self.assertEqual(tools["streams"][0]["transport"], "sse")
         self.assertIn("connect", [tool["name"] for tool in tools["tools"]])
         self.assertIn("get_snapshot", [tool["name"] for tool in tools["tools"]])
         self.assertIn("poll_events", [tool["name"] for tool in tools["tools"]])
+        self.assertIn("wait_for_action", [tool["name"] for tool in tools["tools"]])
         self.assertIn("set_status", [tool["name"] for tool in tools["tools"]])
         self.assertIn("list_tasks", [tool["name"] for tool in tools["tools"]])
         self.assertIn("claim_task", [tool["name"] for tool in tools["tools"]])
@@ -742,6 +745,8 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repeated["connector"]["firstSeenAt"], first_seen)
         self.assertEqual(repeated["connector"]["version"], "0.1.1")
         self.assertEqual(snapshot["connectors"][0]["status"], "connected")
+        self.assertEqual(snapshot["statusSummary"]["onlineAgentCount"], 0)
+        self.assertEqual(snapshot["statusSummary"]["activeAgentCount"], 1)
         self.assertEqual(snapshot["connectors"][0]["firstSeenAt"], first_seen)
         self.assertEqual(snapshot["connectors"][0]["connectLatencyMs"], first_latency)
 
@@ -1080,10 +1085,12 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(initialized_response.status, 202)
         self.assertEqual(tools_response.status, 200)
         self.assertIn("review_room.connect", [tool["name"] for tool in tools["result"]["tools"]])
+        self.assertIn("review_room.wait_for_action", [tool["name"] for tool in tools["result"]["tools"]])
         self.assertEqual(bad_connect_response.status, 400)
         self.assertIn("encodingProbe", bad_connect["error"]["data"]["encoding"]["field"])
         self.assertEqual(connect_response.status, 200)
         self.assertTrue(connected["result"]["structuredContent"]["connected"])
+        self.assertEqual(connected["result"]["structuredContent"]["next"]["actionTool"], "review_room.wait_for_action")
         self.assertEqual(stream_response.status, 200)
         self.assertEqual(connected_notification["data"]["params"]["identity"]["connectorId"], reviewer["id"])
         self.assertEqual(snapshot_response.status, 200)
@@ -1109,6 +1116,327 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(completed_snapshot["connectors"][0]["status"], "mcp_streaming")
         self.assertEqual(closed_snapshot["connectors"][0]["status"], "mcp_ready")
         self.assertEqual(closed_snapshot["statusSummary"]["onlineAgentCount"], 0)
+
+    async def test_standard_mcp_wait_for_action_filters_connector_actions(self):
+        _, room = await self.post_json("/api/rooms", {"title": "MCP action loop"})
+        _, developer = await self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"role": "developer", "name": "Developer Agent", "adapterType": "mcp-remote"},
+            room["ownerToken"],
+        )
+        _, reviewer = await self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"role": "reviewer", "name": "Reviewer Agent", "adapterType": "mcp-remote"},
+            room["ownerToken"],
+        )
+        auth = {"Authorization": "Bearer {}".format(developer["connectorToken"])}
+        init_response = await self.client.post(
+            "/api/mcp",
+            json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "developer-action-test"}}},
+            headers=auth,
+        )
+        session_id = init_response.headers.get("Mcp-Session-Id")
+        session_headers = {**auth, "Mcp-Session-Id": session_id}
+        await self.client.post("/api/mcp", json={"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}, headers=session_headers)
+
+        async def call_tool(request_id, name, arguments):
+            response = await self.client.post(
+                "/api/mcp",
+                json={"jsonrpc": "2.0", "id": request_id, "method": "tools/call", "params": {"name": name, "arguments": arguments}},
+                headers=session_headers,
+            )
+            body = await response.json()
+            return response, body
+
+        connect_response, connected = await call_tool(
+            2,
+            "review_room.connect",
+            {"roomId": room["id"], "encodingProbe": MCP_ENCODING_PROBE},
+        )
+        empty_response, empty = await call_tool(
+            3,
+            "review_room.wait_for_action",
+            {"roomId": room["id"], "cursor": "0", "timeoutMs": 0},
+        )
+        cursor = empty["result"]["structuredContent"]["nextCursor"]
+
+        _, _ = await self.post_json(
+            "/api/rooms/{}/messages".format(room["id"]),
+            {"body": "General update for the room.", "senderName": "review room owner"},
+            room["ownerToken"],
+        )
+        _, _ = await self.post_json(
+            "/api/rooms/{}/messages".format(room["id"]),
+            {"body": "@reviewer please check this.", "senderName": "review room owner"},
+            room["ownerToken"],
+        )
+        _, self_message = await call_tool(
+            4,
+            "review_room.post_message",
+            {"roomId": room["id"], "body": "@developer self-check"},
+        )
+        ignored_response, ignored = await call_tool(
+            5,
+            "review_room.wait_for_action",
+            {"roomId": room["id"], "cursor": cursor, "timeoutMs": 0},
+        )
+        cursor = ignored["result"]["structuredContent"]["nextCursor"]
+
+        _, owner_message = await self.post_json(
+            "/api/rooms/{}/messages".format(room["id"]),
+            {"body": "@developer can you hear this?", "senderName": "review room owner"},
+            room["ownerToken"],
+        )
+        mention_response, mention = await call_tool(
+            6,
+            "review_room.wait_for_action",
+            {"roomId": room["id"], "cursor": cursor, "timeoutMs": 0},
+        )
+        mention_action = mention["result"]["structuredContent"]["actions"][0]
+        cursor = mention["result"]["structuredContent"]["nextCursor"]
+        reply_response, reply = await call_tool(
+            7,
+            "review_room.post_message",
+            {"roomId": room["id"], "body": "I can hear this.", "payload": {"replyToMessageId": owner_message["id"]}},
+        )
+
+        _, _ = await self.post_json(
+            "/api/rooms/{}/tasks".format(room["id"]),
+            {
+                "kind": "review",
+                "instruction": "Reviewer-only task.",
+                "target": {"mode": "connector", "connectorId": reviewer["id"]},
+            },
+            room["ownerToken"],
+        )
+        other_task_response, other_task = await call_tool(
+            8,
+            "review_room.wait_for_action",
+            {"roomId": room["id"], "cursor": cursor, "timeoutMs": 0},
+        )
+        cursor = other_task["result"]["structuredContent"]["nextCursor"]
+        _, developer_task = await self.post_json(
+            "/api/rooms/{}/tasks".format(room["id"]),
+            {
+                "kind": "fix",
+                "instruction": "Developer-only task.",
+                "target": {"mode": "connector", "connectorId": developer["id"]},
+            },
+            room["ownerToken"],
+        )
+        task_response, task_action_body = await call_tool(
+            9,
+            "review_room.wait_for_action",
+            {"roomId": room["id"], "cursor": cursor, "timeoutMs": 0},
+        )
+        task_action = task_action_body["result"]["structuredContent"]["actions"][0]
+        cursor = task_action_body["result"]["structuredContent"]["nextCursor"]
+
+        decision_response, decision_body = await call_tool(
+            10,
+            "review_room.request_owner_confirmation",
+            {
+                "roomId": room["id"],
+                "question": "Approve this external action?",
+                "proposal": "Use the approved result outside the room.",
+                "source": {"taskId": developer_task["id"]},
+            },
+        )
+        decision = decision_body["result"]["structuredContent"]["decision"]
+        await self.post_json(
+            "/api/decisions/{}/accept".format(decision["id"]),
+            {},
+            room["ownerToken"],
+        )
+        decision_action_response, decision_action_body = await call_tool(
+            11,
+            "review_room.wait_for_action",
+            {"roomId": room["id"], "cursor": cursor, "timeoutMs": 0},
+        )
+        decision_action = decision_action_body["result"]["structuredContent"]["actions"][0]
+
+        self.assertEqual(connect_response.status, 200)
+        self.assertEqual(connected["result"]["structuredContent"]["next"]["actionTool"], "review_room.wait_for_action")
+        self.assertEqual(empty_response.status, 200)
+        self.assertEqual(empty["result"]["structuredContent"]["actions"], [])
+        self.assertTrue(empty["result"]["structuredContent"]["timedOut"])
+        snapshot_after_empty_wait = self.store.get_room(room["id"])
+        self.assertEqual(snapshot_after_empty_wait["connectors"][0]["status"], "mcp_ready")
+        self.assertEqual(snapshot_after_empty_wait["statusSummary"]["onlineAgentCount"], 0)
+        self.assertEqual(self_message["result"]["structuredContent"]["message"]["body"], "@developer self-check")
+        self.assertEqual(ignored_response.status, 200)
+        self.assertEqual(ignored["result"]["structuredContent"]["actions"], [])
+        self.assertTrue(ignored["result"]["structuredContent"]["timedOut"])
+        self.assertEqual(mention_response.status, 200)
+        self.assertEqual(mention_action["kind"], "reply")
+        self.assertEqual(mention_action["suggestedTool"], "review_room.post_message")
+        self.assertEqual(mention_action["messageId"], owner_message["id"])
+        self.assertEqual(reply_response.status, 200)
+        self.assertTrue(reply["result"]["structuredContent"]["ok"])
+        self.assertEqual(other_task_response.status, 200)
+        self.assertEqual(other_task["result"]["structuredContent"]["actions"], [])
+        self.assertEqual(task_response.status, 200)
+        self.assertEqual(task_action["kind"], "claim_or_start_run")
+        self.assertEqual(task_action["suggestedTool"], "review_room.start_run")
+        self.assertEqual(task_action["taskId"], developer_task["id"])
+        self.assertEqual(decision_response.status, 200)
+        self.assertEqual(decision_action_response.status, 200)
+        self.assertEqual(decision_action["kind"], "owner_decision")
+        self.assertEqual(decision_action["suggestedTool"], "review_room.post_message")
+        self.assertEqual(decision_action["decisionId"], decision["id"])
+
+    async def test_standard_mcp_wait_for_action_counts_only_active_wait_as_online(self):
+        _, room = await self.post_json("/api/rooms", {"title": "MCP active wait status"})
+        _, developer = await self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"role": "developer", "name": "Developer Agent", "adapterType": "mcp-remote"},
+            room["ownerToken"],
+        )
+        auth = {"Authorization": "Bearer {}".format(developer["connectorToken"])}
+        init_response = await self.client.post(
+            "/api/mcp",
+            json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "developer-action-test"}}},
+            headers=auth,
+        )
+        session_id = init_response.headers.get("Mcp-Session-Id")
+        session_headers = {**auth, "Mcp-Session-Id": session_id}
+        await self.client.post("/api/mcp", json={"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}, headers=session_headers)
+
+        async def call_tool(request_id, name, arguments):
+            response = await self.client.post(
+                "/api/mcp",
+                json={"jsonrpc": "2.0", "id": request_id, "method": "tools/call", "params": {"name": name, "arguments": arguments}},
+                headers=session_headers,
+            )
+            body = await response.json()
+            return response, body
+
+        await call_tool(
+            2,
+            "review_room.connect",
+            {"roomId": room["id"], "encodingProbe": MCP_ENCODING_PROBE},
+        )
+        after_connect = self.store.get_room(room["id"])
+        wait_task = asyncio.create_task(
+            call_tool(
+                3,
+                "review_room.wait_for_action",
+                {"roomId": room["id"], "cursor": "0", "timeoutMs": 500},
+            )
+        )
+        active_snapshot = None
+        for _ in range(20):
+            await asyncio.sleep(0.05)
+            snapshot = self.store.get_room(room["id"])
+            if snapshot["connectors"][0]["status"] == "mcp_streaming":
+                active_snapshot = snapshot
+                break
+        wait_response, wait_body = await wait_task
+        after_wait = self.store.get_room(room["id"])
+
+        self.assertEqual(after_connect["connectors"][0]["status"], "connected")
+        self.assertEqual(after_connect["statusSummary"]["onlineAgentCount"], 0)
+        self.assertIsNotNone(active_snapshot)
+        self.assertEqual(active_snapshot["connectors"][0]["status"], "mcp_streaming")
+        self.assertEqual(active_snapshot["statusSummary"]["onlineAgentCount"], 1)
+        self.assertEqual(wait_response.status, 200)
+        self.assertTrue(wait_body["result"]["structuredContent"]["timedOut"])
+        self.assertEqual(after_wait["connectors"][0]["status"], "mcp_ready")
+        self.assertEqual(after_wait["statusSummary"]["onlineAgentCount"], 0)
+
+    async def test_mcp_action_runner_replies_to_direct_mention(self):
+        _, room = await self.post_json("/api/rooms", {"title": "Runner direct mention"})
+        _, reviewer = await self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"role": "reviewer", "name": "Reviewer Agent", "adapterType": "mcp-remote"},
+            room["ownerToken"],
+        )
+        record = [item for item in discover_connectors(self.store.db_path, ("reviewer",)) if item.id == reviewer["id"]][0]
+        config = RunnerConfig(
+            server_url=str(self.client.make_url("/api/mcp")),
+            db_path=self.store.db_path,
+            state_dir=os.path.join(self.tmp.name, "runner-state"),
+            poll_timeout_ms=1000,
+        )
+
+        worker = asyncio.create_task(run_connector_worker(record, config, stop_after_actions=1, max_waits=5))
+        await asyncio.sleep(0.05)
+        _, owner_message = await self.post_json(
+            "/api/rooms/{}/messages".format(room["id"]),
+            {"body": "@reviewer 测试常驻 runner", "senderName": "review room owner"},
+            room["ownerToken"],
+        )
+        handled = await asyncio.wait_for(worker, timeout=3)
+        snapshot = self.store.get_room(room["id"])
+        replies = [
+            message
+            for message in snapshot["messages"]
+            if message["kind"] == "connector_message" and message["payload"].get("runner") == "mcp-action-runner"
+        ]
+
+        self.assertEqual(handled, 1)
+        self.assertEqual(len(replies), 1)
+        self.assertEqual(replies[0]["senderName"], "Reviewer Agent")
+        self.assertEqual(replies[0]["payload"]["replyToMessageId"], owner_message["id"])
+        self.assertEqual(replies[0]["payload"]["sourceMessageId"], owner_message["id"])
+        self.assertEqual(replies[0]["payload"]["actionKind"], "reply")
+        self.assertTrue(str(replies[0]["payload"]["handledCursor"]).isdigit())
+        self.assertIn("mcp-action-runner", replies[0]["body"])
+        self.assertIn("messageId", replies[0]["body"])
+
+    async def test_mcp_action_runner_ignores_plain_room_chat(self):
+        _, room = await self.post_json("/api/rooms", {"title": "Runner plain chat"})
+        _, reviewer = await self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"role": "reviewer", "name": "Reviewer Agent", "adapterType": "mcp-remote"},
+            room["ownerToken"],
+        )
+        _, _ = await self.post_json(
+            "/api/rooms/{}/messages".format(room["id"]),
+            {"body": "普通房间消息，不应该触发测试 runner。", "senderName": "review room owner"},
+            room["ownerToken"],
+        )
+        record = [item for item in discover_connectors(self.store.db_path, ("reviewer",)) if item.id == reviewer["id"]][0]
+        config = RunnerConfig(
+            server_url=str(self.client.make_url("/api/mcp")),
+            db_path=self.store.db_path,
+            state_dir=os.path.join(self.tmp.name, "runner-state"),
+            poll_timeout_ms=50,
+        )
+
+        handled = await run_connector_worker(record, config, max_waits=1)
+        snapshot = self.store.get_room(room["id"])
+
+        self.assertEqual(handled, 0)
+        self.assertFalse(any(message["payload"].get("runner") == "mcp-action-runner" for message in snapshot["messages"]))
+
+    async def test_mcp_action_runner_skips_historical_backlog_on_initial_deploy(self):
+        _, room = await self.post_json("/api/rooms", {"title": "Runner backlog"})
+        _, reviewer = await self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"role": "reviewer", "name": "Reviewer Agent", "adapterType": "mcp-remote"},
+            room["ownerToken"],
+        )
+        _, old_message = await self.post_json(
+            "/api/rooms/{}/messages".format(room["id"]),
+            {"body": "@reviewer 这是 runner 启动前的历史消息", "senderName": "review room owner"},
+            room["ownerToken"],
+        )
+        record = [item for item in discover_connectors(self.store.db_path, ("reviewer",)) if item.id == reviewer["id"]][0]
+        config = RunnerConfig(
+            server_url=str(self.client.make_url("/api/mcp")),
+            db_path=self.store.db_path,
+            state_dir=os.path.join(self.tmp.name, "runner-state"),
+            poll_timeout_ms=50,
+        )
+
+        handled = await run_connector_worker(record, config, skip_backlog=True, max_waits=1)
+        snapshot = self.store.get_room(room["id"])
+        runner_replies = [message for message in snapshot["messages"] if message["payload"].get("runner") == "mcp-action-runner"]
+
+        self.assertEqual(handled, 0)
+        self.assertEqual(runner_replies, [])
+        self.assertEqual(snapshot["messages"][-1]["id"], old_message["id"])
 
     async def test_rest_scoped_threads_limit_participants_and_summarize_to_owner_decision(self):
         _, room = await self.post_json("/api/rooms", {"title": "Thread REST"})

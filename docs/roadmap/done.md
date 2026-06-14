@@ -42,7 +42,7 @@ Evidence:
 
 - `npm test`
 - OpenClaw Billing Guardian: 16 Node tests passed.
-- Review Room: 74 Python unittest tests passed.
+- Review Room: 80 Python unittest tests passed.
 
 Notes:
 
@@ -171,6 +171,91 @@ Notes:
 - Local P0 includes MCP tools for snapshot, events, tasks, claims, runs,
   messages, findings, handoff proposals, completions, and owner confirmation.
 
+### MCP Remote tool-driven action loop
+
+Status: `Verified on 2026-06-14`
+
+Evidence:
+
+- [experiments/review-room/service/review_room_service.py](../../experiments/review-room/service/review_room_service.py)
+- [experiments/review-room/service/tests/test_review_room_p0.py](../../experiments/review-room/service/tests/test_review_room_p0.py)
+- [docs/roadmap/review-room-remote-mcp-debugging-2026-06-13-14.md](./review-room-remote-mcp-debugging-2026-06-13-14.md)
+- `test_standard_mcp_wait_for_action_filters_connector_actions`
+- `python -m unittest discover experiments/review-room/service/tests`: Review
+  Room 80 Python unittest tests passed.
+- Deployed smoke test on `http://124.222.24.34`: standard MCP `tools/list`
+  exposed `review_room.wait_for_action`, `review_room.connect` returned
+  `next.actionTool = review_room.wait_for_action`, `wait_for_action` returned a
+  `reply` action for `@developer`, and `review_room.post_message` succeeded.
+
+Notes:
+
+- Remote MCP Agents now use a tool-driven action loop:
+  `review_room.connect` followed by repeated `review_room.wait_for_action`
+  calls with the returned `nextCursor`.
+- SSE remains optional realtime delivery and is not described as an unattended
+  Agent runtime wakeup guarantee.
+- The deployed smoke used an isolated test room. A full real remote-Agent
+  scenario remains separate verification.
+
+### MCP Remote active-wait status honesty
+
+Status: `Verified on 2026-06-14`
+
+Evidence:
+
+- [experiments/review-room/service/review_room_service.py](../../experiments/review-room/service/review_room_service.py)
+- [experiments/review-room/service/tests/test_review_room_p0.py](../../experiments/review-room/service/tests/test_review_room_p0.py)
+- [docs/roadmap/review-room-remote-mcp-debugging-2026-06-13-14.md](./review-room-remote-mcp-debugging-2026-06-13-14.md)
+- `test_standard_mcp_wait_for_action_counts_only_active_wait_as_online`
+- `python -m unittest discover experiments/review-room/service/tests`: Review
+  Room 80 Python unittest tests passed.
+- Deployed smoke test on `http://124.222.24.34`, room
+  `room_784da3ae1f634c31`: after `connect`, connector status was `connected`
+  with `onlineAgentCount=0`; while `wait_for_action` was open, status was
+  `mcp_streaming` with `onlineAgentCount=1`; after the wait returned, status was
+  `mcp_ready` with `onlineAgentCount=0`; a direct `@developer` produced a
+  `reply` action and `review_room.post_message` created
+  `msg_d2e3429cfbbc48db`.
+
+Notes:
+
+- `connected` means the MCP handshake succeeded; it no longer means the Agent
+  runtime is actively receiving actions.
+- `mcp_ready` means recent MCP tool activity without a currently open receiver.
+- `mcp_streaming` means an SSE stream or `wait_for_action` long-poll request is
+  open and is the only MCP-ready state counted as online.
+- This fixes the misleading UI state where a finite manual loop could exit
+  while the room still reported one online Agent.
+
+### MCP Remote persistent test runner
+
+Status: `Verified on 2026-06-14`
+
+Evidence:
+
+- [experiments/review-room/service/mcp_action_runner.py](../../experiments/review-room/service/mcp_action_runner.py)
+- [experiments/review-room/service/tests/test_review_room_p0.py](../../experiments/review-room/service/tests/test_review_room_p0.py)
+- `test_mcp_action_runner_replies_to_direct_mention`
+- `test_mcp_action_runner_ignores_plain_room_chat`
+- `test_mcp_action_runner_skips_historical_backlog_on_initial_deploy`
+- `npm test`: OpenClaw Billing Guardian 16 Node tests passed; Review Room 80
+  Python unittest tests passed.
+- Deployed smoke test on `http://124.222.24.34`: systemd service
+  `lighthouse-review-room-mcp-runner.service` was active, fresh room
+  `room_4b664642de96438b` received a diagnostic Reviewer Agent reply
+  `msg_4c4e854f3e8740ca` to `@reviewer 测试常驻 runner`, and a follow-up plain
+  message did not create another runner reply.
+
+Notes:
+
+- The runner is a protocol-level P0 test Agent. It proves a persistent runtime
+  can keep calling `review_room.wait_for_action` and reply through
+  `review_room.post_message`.
+- It does not run Codex, claim tasks, start runs, access a repository, or create
+  external side effects. Production-grade remote Agent execution remains a
+  separate connector-runtime concern.
+
 ### Owner confirmation and decision records
 
 Status: `Done in local P0`
@@ -216,8 +301,6 @@ Notes:
 
 These are not complete until current evidence is refreshed:
 
-- Current lightweight cloud deployment status.
-- Remote smoke test against the deployed Review Room service.
 - Real remote Agent scenario using the current MCP Remote path.
 - Owner-facing cleanup checklist by adapter type.
 - Transcript or log pointer behavior across real adapter runs.

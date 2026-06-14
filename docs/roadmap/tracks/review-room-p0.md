@@ -47,12 +47,21 @@ P0 should prove:
 
 - Run the full local test suite and update [done.md](../done.md) with verified
   status.
-- Refresh the service README with the current MCP Remote path, SSE events, and
-  scoped thread workflow.
+- Keep the service README current with the MCP Remote action loop, status
+  semantics, SSE events, and scoped thread workflow.
 - Add a compact manual scenario script for owner -> reviewer -> developer ->
   verification -> owner decision.
 - Add a "known limitations" section for local P0, remote MCP, encoding, and
   cleanup boundaries.
+
+## Recent evidence
+
+- [review-room-remote-mcp-debugging-2026-06-13-14.md](../review-room-remote-mcp-debugging-2026-06-13-14.md)
+  summarizes the two-day remote MCP debugging trail, including the standard
+  action loop, UTF-8 guardrails, persistent test runner, active-wait status
+  semantics, deployed smoke tests, and remaining limits.
+- `python -m unittest discover experiments/review-room/service/tests` passed
+  80 Review Room tests on 2026-06-14.
 
 ## Risks
 

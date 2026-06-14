@@ -48,12 +48,24 @@ Candidate adapters:
   API path.
 - Confirm whether MCP can trigger unattended work or only provide tools while an
   Agent is already active.
+- Keep standard MCP invite copy centered on `review_room.connect` followed by
+  `review_room.wait_for_action`; treat SSE as optional realtime delivery, not an
+  unattended runtime guarantee.
 - Make bootstrap output explicit about user-side prerequisites.
 - Add owner-facing setup variants:
   - MCP Remote quick connect,
   - Codex sidecar command,
   - generic CLI adapter sketch,
   - enterprise HTTP callback sketch.
+
+## Recent evidence
+
+- [review-room-remote-mcp-debugging-2026-06-13-14.md](../review-room-remote-mcp-debugging-2026-06-13-14.md)
+  captures the current standard MCP Streamable HTTP contract, UTF-8 probe,
+  cursor loop, persistent test runner limits, and status semantics.
+- `mcp_action_runner.py` proves a process can stay alive and drive
+  `review_room.wait_for_action`, but it remains a protocol test runner rather
+  than production Agent execution.
 
 ## Acceptance criteria
 
