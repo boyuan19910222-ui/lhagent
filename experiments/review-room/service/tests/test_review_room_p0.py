@@ -584,6 +584,7 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tools["replyPolicy"]["shouldRespond"][1]["reason"], "direct mention")
         self.assertEqual(tools["streams"][0]["name"], "room.events")
         self.assertEqual(tools["streams"][0]["transport"], "sse")
+        self.assertIn("connect", [tool["name"] for tool in tools["tools"]])
         self.assertIn("get_snapshot", [tool["name"] for tool in tools["tools"]])
         self.assertIn("poll_events", [tool["name"] for tool in tools["tools"]])
         self.assertIn("set_status", [tool["name"] for tool in tools["tools"]])
@@ -633,6 +634,71 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot_after["tasks"][-1]["status"], "completed")
         self.assertEqual(snapshot_after["agentRuns"][-1]["adapterType"], "mcp-remote")
         self.assertEqual(snapshot_after["agentRuns"][-1]["status"], "completed")
+
+    async def test_mcp_connect_marks_remote_agent_connected_once(self):
+        _, room = await self.post_json("/api/rooms", {"title": "MCP Connect"})
+        _, reviewer = await self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"role": "reviewer", "name": "Reviewer Agent", "adapterType": "mcp-remote"},
+            room["ownerToken"],
+        )
+        _, guest_invite = await self.post_json(
+            "/api/rooms/{}/invites".format(room["id"]),
+            {"type": "guest"},
+            room["ownerToken"],
+        )
+        _, guest = await self.post_json(
+            "/api/rooms/{}/join".format(room["id"]),
+            {"inviteCode": guest_invite["code"], "nickname": "Guest"},
+        )
+
+        denied_owner_response, denied_owner = await self.post_json(
+            "/api/mcp/tools/connect",
+            {"roomId": room["id"]},
+            room["ownerToken"],
+        )
+        denied_guest_response, denied_guest = await self.post_json(
+            "/api/mcp/tools/connect",
+            {"roomId": room["id"]},
+            guest["guestToken"],
+        )
+        connect_response, connected = await self.post_json(
+            "/api/mcp/tools/connect",
+            {"roomId": room["id"], "clientName": "Fast MCP Agent", "clientVersion": "0.1.0"},
+            reviewer["connectorToken"],
+        )
+        first_seen = connected["connector"]["firstSeenAt"]
+        first_latency = connected["connector"]["connectLatencyMs"]
+        await asyncio.sleep(0.01)
+        repeat_response, repeated = await self.post_json(
+            "/api/mcp/tools/connect",
+            {"roomId": room["id"], "clientName": "Fast MCP Agent", "clientVersion": "0.1.1"},
+            reviewer["connectorToken"],
+        )
+        snapshot = self.store.get_room(room["id"])
+
+        self.assertEqual(denied_owner_response.status, 403)
+        self.assertEqual(denied_owner["error"], "connector token required")
+        self.assertEqual(denied_guest_response.status, 403)
+        self.assertEqual(denied_guest["error"], "connector token required")
+        self.assertEqual(connect_response.status, 201)
+        self.assertTrue(connected["connected"])
+        self.assertEqual(connected["connector"]["status"], "connected")
+        self.assertEqual(connected["connector"]["version"], "0.1.0")
+        self.assertNotIn("token", connected["connector"])
+        self.assertNotIn("connectorToken", connected["connector"])
+        self.assertIsNotNone(first_seen)
+        self.assertGreaterEqual(first_latency, 0)
+        self.assertLessEqual(first_latency, 30000)
+        self.assertEqual(connected["next"]["listen"]["transport"], "sse")
+        self.assertIn("/api/mcp/events?roomId={}".format(room["id"]), connected["next"]["listen"]["eventStreamUrl"])
+        self.assertEqual(connected["next"]["fallbackTool"], "poll_events")
+        self.assertEqual(repeat_response.status, 201)
+        self.assertEqual(repeated["connector"]["firstSeenAt"], first_seen)
+        self.assertEqual(repeated["connector"]["version"], "0.1.1")
+        self.assertEqual(snapshot["connectors"][0]["status"], "connected")
+        self.assertEqual(snapshot["connectors"][0]["firstSeenAt"], first_seen)
+        self.assertEqual(snapshot["connectors"][0]["connectLatencyMs"], first_latency)
 
     async def test_mcp_set_status_updates_remote_agent_lifecycle(self):
         _, room = await self.post_json("/api/rooms", {"title": "MCP Status"})
@@ -775,6 +841,14 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
             {"role": "reviewer", "name": "Reviewer Agent", "adapterType": "mcp-remote"},
             room["ownerToken"],
         )
+        connect_response, connected_agent = await self.post_json(
+            "/api/mcp/tools/connect",
+            {"roomId": room["id"], "clientName": "Realtime MCP Agent"},
+            reviewer["connectorToken"],
+        )
+        first_seen = connected_agent["connector"]["firstSeenAt"]
+        first_latency = connected_agent["connector"]["connectLatencyMs"]
+        await asyncio.sleep(0.01)
 
         denied_response = await self.client.get(
             "/api/mcp/events?roomId={}".format(room["id"]),
@@ -807,6 +881,7 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         invalid_cursor_response.close()
         stream_response.close()
 
+        self.assertEqual(connect_response.status, 201)
         self.assertEqual(denied_response.status, 403)
         self.assertEqual(denied_body["error"], "connector token required")
         self.assertEqual(invalid_cursor_response.status, 400)
@@ -821,6 +896,8 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pushed["data"]["payload"]["message"]["id"], owner_message["id"])
         self.assertTrue(pushed["id"].isdigit())
         self.assertEqual(snapshot["connectors"][0]["status"], "mcp_streaming")
+        self.assertEqual(snapshot["connectors"][0]["firstSeenAt"], first_seen)
+        self.assertEqual(snapshot["connectors"][0]["connectLatencyMs"], first_latency)
         self.assertEqual(snapshot["statusSummary"]["onlineAgentCount"], 1)
 
     async def test_rest_scoped_threads_limit_participants_and_summarize_to_owner_decision(self):

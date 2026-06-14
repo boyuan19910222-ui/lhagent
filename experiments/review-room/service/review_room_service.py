@@ -33,6 +33,7 @@ HOSTED_AGENT_ENV = "REVIEW_ROOM_ENABLE_HOSTED_AGENT"
 MENTION_TOKEN_RE = re.compile(r"(?<![\w.\-\u4e00-\u9fff])@([\w.\-\u4e00-\u9fff]+)", re.UNICODE)
 MENTION_NORMALIZE_RE = re.compile(r"[^\w\u4e00-\u9fff]+", re.UNICODE)
 MCP_TOOL_NAMES = (
+    "connect",
     "get_snapshot",
     "poll_events",
     "set_status",
@@ -266,6 +267,7 @@ class ReviewRoomStore:
                   status TEXT NOT NULL,
                   event_count INTEGER NOT NULL,
                   last_seen_at INTEGER,
+                  first_seen_at INTEGER,
                   adapter_type TEXT NOT NULL DEFAULT 'codex-sidecar',
                   protocol_version TEXT NOT NULL DEFAULT 'review-room.v1',
                   capabilities_json TEXT NOT NULL DEFAULT '[]',
@@ -440,6 +442,7 @@ class ReviewRoomStore:
                 "forbidden_json": "ALTER TABLE connectors ADD COLUMN forbidden_json TEXT NOT NULL DEFAULT '[]'",
                 "version": "ALTER TABLE connectors ADD COLUMN version TEXT NOT NULL DEFAULT ''",
                 "heartbeat_at": "ALTER TABLE connectors ADD COLUMN heartbeat_at INTEGER",
+                "first_seen_at": "ALTER TABLE connectors ADD COLUMN first_seen_at INTEGER",
             }
             for column, statement in connector_migrations.items():
                 if column not in connector_columns:
@@ -1872,6 +1875,7 @@ class ReviewRoomStore:
             "status": normalize_connector_status(payload.get("status") or "invited"),
             "eventCount": 0,
             "lastSeenAt": None,
+            "firstSeenAt": None,
             "adapterType": adapter_type,
             "protocolVersion": payload.get("protocolVersion") or payload.get("protocol_version") or "review-room.v1",
             "capabilities": capabilities,
@@ -1887,10 +1891,10 @@ class ReviewRoomStore:
             conn.execute(
                 """
                 INSERT INTO connectors
-                  (id, room_id, name, kind, agent_role, endpoint, token, status, event_count, last_seen_at,
+                  (id, room_id, name, kind, agent_role, endpoint, token, status, event_count, last_seen_at, first_seen_at,
                    adapter_type, protocol_version, capabilities_json, forbidden_json, version, heartbeat_at,
                    created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     connector["id"],
@@ -1903,6 +1907,7 @@ class ReviewRoomStore:
                     connector["status"],
                     connector["eventCount"],
                     connector["lastSeenAt"],
+                    connector["firstSeenAt"],
                     connector["adapterType"],
                     connector["protocolVersion"],
                     json_dumps(connector["capabilities"]),
@@ -1960,6 +1965,8 @@ class ReviewRoomStore:
                     "eventStreamUrl": event_stream_url,
                     "bearerToken": connector["token"],
                     "tools": list(MCP_TOOL_NAMES),
+                    "firstTool": "connect",
+                    "targetConnectMs": 30000,
                 },
                 "realtime": {
                     "preferredTransport": "sse",
@@ -2059,16 +2066,18 @@ class ReviewRoomStore:
             conn.execute(
                 """
                 UPDATE connectors
-                SET token = ?, status = ?, last_seen_at = ?, heartbeat_at = ?, updated_at = ?
+                SET token = ?, status = ?, last_seen_at = ?, first_seen_at = ?, heartbeat_at = ?, updated_at = ?
                 WHERE id = ?
                 """,
-                (new_token, "invited", None, None, timestamp, connector_id),
+                (new_token, "invited", None, None, None, timestamp, connector_id),
             )
             conn.execute("UPDATE rooms SET updated_at = ? WHERE id = ?", (timestamp, room_id))
         connector["token"] = new_token
         connector["connectorToken"] = new_token
         connector["status"] = "invited"
         connector["lastSeenAt"] = None
+        connector["firstSeenAt"] = None
+        connector["connectLatencyMs"] = None
         connector["heartbeatAt"] = None
         connector["updatedAt"] = timestamp
         connector["bootstrap"] = self.connector_bootstrap(connector, base_url)
@@ -2709,6 +2718,42 @@ class ReviewRoomStore:
             }
         raise PermissionError("invalid room token")
 
+    def connect_mcp_connector(self, connector_id: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        payload = payload or {}
+        timestamp = now_ms()
+        client_version = str(payload.get("clientVersion") or payload.get("client_version") or "").strip()
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT connectors.room_id, connectors.status, rooms.status AS room_status
+                FROM connectors
+                JOIN rooms ON rooms.id = connectors.room_id
+                WHERE connectors.id = ?
+                """,
+                (connector_id,),
+            ).fetchone()
+            if not row:
+                raise KeyError("connector not found")
+            if row["status"] == "revoked":
+                raise PermissionError("connector is revoked")
+            conn.execute(
+                """
+                UPDATE connectors
+                SET status = ?, event_count = event_count + 1, last_seen_at = ?,
+                    first_seen_at = COALESCE(first_seen_at, ?), heartbeat_at = ?,
+                    version = CASE WHEN ? != '' THEN ? ELSE version END,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                ("connected", timestamp, timestamp, timestamp, client_version, client_version, timestamp, connector_id),
+            )
+            room_status = connector_room_status_transition(row["room_status"], "connected")
+            if room_status:
+                conn.execute("UPDATE rooms SET status = ?, updated_at = ? WHERE id = ?", (room_status, timestamp, row["room_id"]))
+            else:
+                conn.execute("UPDATE rooms SET updated_at = ? WHERE id = ?", (timestamp, row["room_id"]))
+        return self.get_connector(connector_id)
+
     def mark_connector_seen(self, connector_id: str, status: str = "online", room_status: str = "agent_working") -> None:
         status = normalize_connector_status(status)
         timestamp = now_ms()
@@ -2736,10 +2781,11 @@ class ReviewRoomStore:
             conn.execute(
                 """
                 UPDATE connectors
-                SET status = ?, event_count = event_count + 1, last_seen_at = ?, heartbeat_at = ?, updated_at = ?
+                SET status = ?, event_count = event_count + 1, last_seen_at = ?,
+                    first_seen_at = COALESCE(first_seen_at, ?), heartbeat_at = ?, updated_at = ?
                 WHERE id = ?
                 """,
-                (effective_status, timestamp, heartbeat_at, timestamp, connector_id),
+                (effective_status, timestamp, timestamp, heartbeat_at, timestamp, connector_id),
             )
             effective_room_status = connector_room_status_transition(row["room_status"], effective_status, room_status or None)
             if effective_room_status:
@@ -2772,10 +2818,11 @@ class ReviewRoomStore:
             conn.execute(
                 """
                 UPDATE connectors
-                SET status = ?, event_count = event_count + 1, last_seen_at = ?, heartbeat_at = ?, updated_at = ?
+                SET status = ?, event_count = event_count + 1, last_seen_at = ?,
+                    first_seen_at = COALESCE(first_seen_at, ?), heartbeat_at = ?, updated_at = ?
                 WHERE id = ?
                 """,
-                (status, last_seen_at, heartbeat_at, timestamp, connector_id),
+                (status, last_seen_at, timestamp, heartbeat_at, timestamp, connector_id),
             )
             room_status = connector_room_status_transition(row["room_status"], status, payload.get("roomStatus") or payload.get("room_status") or None)
             if room_status:
@@ -3032,6 +3079,8 @@ class ReviewRoomStore:
 
     @staticmethod
     def _connector_from_row(row: sqlite3.Row) -> Dict[str, Any]:
+        first_seen_at = row["first_seen_at"]
+        created_at = row["created_at"]
         return {
             "id": row["id"],
             "roomId": row["room_id"],
@@ -3044,6 +3093,8 @@ class ReviewRoomStore:
             "status": row["status"],
             "eventCount": row["event_count"],
             "lastSeenAt": row["last_seen_at"],
+            "firstSeenAt": first_seen_at,
+            "connectLatencyMs": first_seen_at - created_at if first_seen_at is not None and created_at is not None else None,
             "adapterType": row["adapter_type"],
             "protocolVersion": row["protocol_version"],
             "capabilities": json_loads(row["capabilities_json"], []),
@@ -4386,6 +4437,11 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
                 "cursorReconnect": MCP_CURSOR_RECONNECT,
                 "tools": [
                     {
+                        "name": "connect",
+                        "description": "Perform the first MCP Agent handshake. Marks the connector as connected and returns the next listening step.",
+                        "inputSchema": {"required": ["roomId"], "optional": ["clientName", "clientVersion"]},
+                    },
+                    {
                         "name": "get_snapshot",
                         "description": "Read a Review Room snapshot using connector identity.",
                         "inputSchema": {"required": ["roomId"]},
@@ -4445,7 +4501,7 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
                     {
                         "name": "room.events",
                         "transport": "sse",
-                        "description": "Open /api/mcp/events?roomId=<roomId> with the connector bearer token to receive realtime room events. Use Last-Event-ID to resume after disconnect.",
+                        "description": "After connect, open /api/mcp/events?roomId=<roomId> with the connector bearer token to receive realtime room events. Use Last-Event-ID to resume after disconnect.",
                     }
                 ],
                 "resources": [
@@ -4460,6 +4516,51 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
                     {"name": "artifacts", "trust": "mixed-untrusted"},
                 ],
             }
+        )
+
+    async def mcp_connect(request: web.Request) -> web.Response:
+        body = await request_json(request)
+        room_id = body.get("roomId") or body.get("room_id")
+        if not room_id:
+            raise web.HTTPBadRequest(text=json_dumps({"ok": False, "error": "roomId required"}), content_type="application/json")
+        identity = require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
+        if identity["type"] != "connector":
+            raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": "connector token required"}), content_type="application/json")
+        try:
+            connector = app[STORE_KEY].connect_mcp_connector(identity["connectorId"], body)
+        except PermissionError as exc:
+            raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        room = app[STORE_KEY].get_room(room_id)
+        if not room:
+            raise web.HTTPNotFound(text=json_dumps({"ok": False, "error": "room not found"}), content_type="application/json")
+        public_connector = {key: value for key, value in connector.items() if key not in {"token", "connectorToken"}}
+        base_url = base_url_from_aiohttp_request(request).rstrip("/")
+        await app[HUB_KEY].broadcast(room_id, {"type": "connector.status_updated", "connector": public_connector})
+        await app[HUB_KEY].broadcast_snapshot(room_id)
+        return json_response(
+            {
+                "ok": True,
+                "connected": True,
+                "connector": public_connector,
+                "room": {
+                    "id": room["id"],
+                    "title": room["title"],
+                    "status": room["status"],
+                    "statusSummary": room.get("statusSummary") or {},
+                },
+                "next": {
+                    "listen": {
+                        "transport": "sse",
+                        "eventStreamUrl": "{}/api/mcp/events?roomId={}".format(base_url, room_id),
+                        "authorization": "reuse current Bearer token",
+                        "resumeHeader": "Last-Event-ID",
+                    },
+                    "fallbackTool": "poll_events",
+                    "firstSnapshotTool": "get_snapshot",
+                },
+                "targetConnectMs": 30000,
+            },
+            201,
         )
 
     async def mcp_get_snapshot(request: web.Request) -> web.Response:
@@ -4817,6 +4918,7 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
     app.router.add_post("/api/findings/{finding_id}/developer-response", developer_response)
     app.router.add_post("/api/findings/{finding_id}/confirm", confirm_finding)
     app.router.add_get("/api/mcp/tools", mcp_tools)
+    app.router.add_post("/api/mcp/tools/connect", mcp_connect)
     app.router.add_post("/api/mcp/tools/get_snapshot", mcp_get_snapshot)
     app.router.add_post("/api/mcp/tools/poll_events", mcp_poll_events)
     app.router.add_post("/api/mcp/tools/set_status", mcp_set_status)
@@ -4934,6 +5036,13 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
     const taskStatusText = { open:'待认领', assigned:'已分配', claimed:'已认领', running:'运行中', completed:'已完成', failed:'失败', cancelled:'已取消', stale:'已过期' };
     function esc(value){ return String(value ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;'); }
     function fmtTime(ms){ if(!ms) return '刚刚'; return new Date(ms).toLocaleString([], {month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit'}); }
+    function fmtDuration(ms){
+      const seconds = Math.max(0, Math.round(Number(ms || 0) / 1000));
+      if(seconds < 60) return `${seconds}s`;
+      const minutes = Math.floor(seconds / 60);
+      const rest = seconds % 60;
+      return rest ? `${minutes}m ${rest}s` : `${minutes}m`;
+    }
     function isComposingInput(event){ return Boolean(event && (event.isComposing || event.keyCode === 229)); }
     function agentStatusClass(status){
       if(['online','connected','mcp_ready','mcp_streaming'].includes(status)) return 'online';
@@ -5251,13 +5360,28 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
         const target = isOwner() && item.status !== 'revoked' ? {type:'connector', connectorId:item.id} : null;
         const lastSeen = item.lastSeenAt ? `last ${fmtTime(item.lastSeenAt)}` : 'not seen yet';
         const heartbeat = item.heartbeatAt ? `heartbeat ${fmtTime(item.heartbeatAt)}` : '';
-        const meta = [item.agentRole || 'agent', item.adapterType || item.kind || 'agent', lastSeen, heartbeat].filter(Boolean).join(' - ');
-        return memberRow(item.name, item.agentRole, status, 'agent', target, meta);
+        const connectedIn = item.firstSeenAt ? `connected in ${fmtDuration(item.connectLatencyMs || (item.firstSeenAt - item.createdAt))}` : '';
+        const meta = [item.agentRole || 'agent', item.adapterType || item.kind || 'agent', connectedIn, lastSeen, heartbeat].filter(Boolean).join(' - ');
+        return memberRow(item.name, item.agentRole, status, 'agent', target, meta, agentConnectionLabel(item, status));
       });
       return humans.concat(agents).join('') || '<div class="empty">暂无成员</div>';
     }
-    function memberRow(name, role, status, type, target, meta){
-      const label = type === 'agent' ? (agentStatusText[status] || status) : (role === 'owner' ? 'owner' : 'guest');
+    function agentConnectionLabel(item, status){
+      if(item.status === 'revoked') return agentStatusText.revoked;
+      if(item.firstSeenAt){
+        const latency = item.connectLatencyMs || (item.firstSeenAt - item.createdAt);
+        if(status === 'mcp_streaming') return `监听中 ${fmtDuration(latency)}`;
+        if(['connected','mcp_ready','online'].includes(status)) return `已接入 ${fmtDuration(latency)}`;
+        return agentStatusText[status] || status;
+      }
+      if(['invited','joining','provisioned'].includes(item.status || status)){
+        const waited = Date.now() - Number(item.createdAt || Date.now());
+        return waited > 30000 ? '超过 30s 未接入' : '等待接入';
+      }
+      return agentStatusText[status] || status;
+    }
+    function memberRow(name, role, status, type, target, meta, labelOverride=''){
+      const label = labelOverride || (type === 'agent' ? (agentStatusText[status] || status) : (role === 'owner' ? 'owner' : 'guest'));
       const cls = type === 'agent' ? agentStatusClass(status) : (status === 'online' ? 'online' : status === 'removed' ? 'error' : 'waiting');
       let action = '';
       if(target){
@@ -5553,16 +5677,13 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
       const mcp = advanced.mcp || {};
       const bootstrap = advanced.bootstrap || {};
       if(mcp.toolsUrl){
-        return `Review Room MCP Remote Agent access
-baseUrl: ${advanced.roomUrl || location.origin}
-roomId: ${advanced.roomId || ''}
-connectorId: ${advanced.connectorId || ''}
-role: ${advanced.role || ''}
-toolsUrl: ${mcp.toolsUrl || ''}
-eventStreamUrl: ${mcp.eventStreamUrl || ''}
-authorization: Bearer ${mcp.bearerToken || advanced.connectorToken || ''}
-fallbackTool: poll_events
-resumeHeader: Last-Event-ID`;
+        return `你是 Review Room 的 ${advanced.role || 'remote'} Agent。
+请用 MCP Gateway 连接：
+Tools: ${mcp.toolsUrl || ''}
+Room: ${advanced.roomId || ''}
+Authorization: Bearer ${mcp.bearerToken || advanced.connectorToken || ''}
+
+第一步先调用 connect。接入成功后监听 room.events；只有被明确 @、被分配任务，或收到 owner confirmation 时才行动。`;
       }
       return bootstrap.command || invite.inviteUrl || '';
     }
@@ -5579,7 +5700,7 @@ Use:
 - connectorId: ${advanced.connectorId || ''}
 - role: ${advanced.role || ''}
 
-First call get_snapshot with roomId=${advanced.roomId || ''}.
+First call connect with roomId=${advanced.roomId || ''}.
 Then keep listening to room.events SSE, or fallback to poll_events.
 Reply only when directly mentioned, explicitly assigned a task, or context is clearly relevant.`;
     }
@@ -5596,13 +5717,17 @@ Reply only when directly mentioned, explicitly assigned a task, or context is cl
       const access = mcp.toolsUrl ? `adapter: ${esc(bootstrap.adapterType || connector.adapterType || '')}
 tools: ${esc(mcp.toolsUrl || '')}
 events: ${esc(mcp.eventStreamUrl || '')}
-bearer: ${esc(mcp.bearerToken || result.connectorToken || connector.connectorToken || '')}` : `command: ${esc(bootstrap.command || '')}`;
+bearer: ${esc(mcp.bearerToken || result.connectorToken || connector.connectorToken || '')}
+firstTool: connect
+resumeHeader: Last-Event-ID` : `command: ${esc(bootstrap.command || '')}`;
+      const quickText = mcp.toolsUrl ? agentInviteAccessText({advanced:{...bootstrap, connectorToken:result.connectorToken || connector.connectorToken || ''}}) : (bootstrap.command || '');
       return `<div class="invite-box"><strong>新 Agent token</strong>
-        <div class="mono">connector: ${esc(connector.name || connector.id || '')}
+        <div class="mono">${esc(quickText)}</div>
+        <details><summary>高级接入信息</summary><div class="mono">connector: ${esc(connector.name || connector.id || '')}
 role: ${esc(connector.agentRole || '')}
 key: ${esc(result.connectorToken || connector.connectorToken || '')}
-${access}</div>
-        <button class="subtle" id="copyConnectorCommand" ${bootstrap.command || mcp.toolsUrl ? '' : 'disabled'}>复制接入信息</button>
+${access}</div></details>
+        <button class="subtle" id="copyConnectorCommand" ${bootstrap.command || mcp.toolsUrl ? '' : 'disabled'}>复制给 Agent</button>
       </div>`;
     }
     function renderAdvancedInvite(invite){
@@ -5612,16 +5737,19 @@ ${access}</div>
       const access = mcp.toolsUrl ? `adapter: ${esc(invite.advanced.adapterType || '')}
 tools: ${esc(mcp.toolsUrl)}
 events: ${esc(mcp.eventStreamUrl || '')}
-bearer: ${esc(mcp.bearerToken || invite.advanced.connectorToken || '')}` : `realtime: ${esc(roomUrl)}`;
-      const prompt = mcp.toolsUrl ? `<details><summary>远端 Agent 测试指令</summary><div class="mono">${esc(agentInvitePromptText(invite))}</div></details>` : '';
-      return `<div class="invite-box"><strong>${mcp.toolsUrl ? 'MCP Remote Agent 接入包' : 'Agent 接入信息'}</strong>
-        <div class="invite-link">${esc(invite.inviteUrl)}</div>
-        <div class="mono">room: ${esc(invite.advanced.roomId)}
+bearer: ${esc(mcp.bearerToken || invite.advanced.connectorToken || '')}
+firstTool: connect
+resumeHeader: Last-Event-ID` : `realtime: ${esc(roomUrl)}`;
+      const quickText = agentInviteAccessText(invite);
+      const prompt = mcp.toolsUrl ? `<details><summary>高级接入信息</summary><div class="mono">invite: ${esc(invite.inviteUrl)}
+room: ${esc(invite.advanced.roomId)}
 connector: ${esc(invite.advanced.connectorId || '')}
 role: ${esc(invite.advanced.role)}
 key: ${esc(invite.advanced.connectorToken)}
-${access}</div>
-        <div class="row"><button class="subtle" id="copyInvite">复制链接</button><button class="subtle" id="copyAgentAccess">复制 MCP 接入信息</button>${mcp.toolsUrl ? '<button class="subtle" id="copyAgentPrompt">复制 Agent 测试指令</button>' : ''}</div>
+${access}</div></details>` : '';
+      return `<div class="invite-box"><strong>${mcp.toolsUrl ? 'MCP Remote Agent 接入' : 'Agent 接入信息'}</strong>
+        <div class="mono">${esc(quickText)}</div>
+        <div class="row"><button class="subtle" id="copyAgentAccess">复制给 Agent</button><button class="subtle" id="copyInvite">复制链接</button></div>
         ${prompt}
       </div>`;
     }
@@ -5639,7 +5767,9 @@ ${access}</div>
       const copyCommand = document.getElementById('copyConnectorCommand');
       if(copyCommand) copyCommand.addEventListener('click', () => {
         const bootstrap = (state.lastCredential && state.lastCredential.bootstrap) || {};
-        copyText(bootstrap.command || JSON.stringify(bootstrap.mcp || {}, null, 2), copyCommand);
+        const connector = (state.lastCredential && state.lastCredential.connector) || {};
+        const token = state.lastCredential && (state.lastCredential.connectorToken || connector.connectorToken || '');
+        copyText(bootstrap.mcp ? agentInviteAccessText({advanced:{...bootstrap, connectorToken:token || ''}}) : (bootstrap.command || JSON.stringify(bootstrap.mcp || {}, null, 2)), copyCommand);
       });
     }
     async function createInvite(payload){

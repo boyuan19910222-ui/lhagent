@@ -169,8 +169,16 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertIn("function rotateConnectorToken", html)
         self.assertIn("function copyText", html)
         self.assertIn("function fallbackCopyText", html)
+        self.assertIn("MCP Remote Agent 接入", html)
+        self.assertIn("复制给 Agent", html)
+        self.assertIn("高级接入信息", html)
+        self.assertIn("第一步先调用 connect", html)
+        self.assertIn("等待接入", html)
+        self.assertIn("超过 30s 未接入", html)
+        self.assertIn("已接入", html)
+        self.assertIn("监听中", html)
+        self.assertIn("function agentConnectionLabel", html)
         self.assertIn("生成 Agent 接入信息", html)
-        self.assertIn("MCP Remote Agent 接入包", html)
         self.assertIn("function agentInviteAccessText", html)
         self.assertIn("function agentInvitePromptText", html)
         self.assertIn("copyAgentAccess", html)
@@ -254,6 +262,9 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertEqual(invite["advanced"]["bootstrap"]["realtime"]["eventStreamUrl"], invite["advanced"]["mcp"]["eventStreamUrl"])
         self.assertEqual(invite["advanced"]["bootstrap"]["realtime"]["authorization"], "Bearer {}".format(invite["advanced"]["connectorToken"]))
         self.assertEqual(invite["advanced"]["bootstrap"]["realtime"]["websocketUrl"], "wss://review.example.com/ws/rooms/{}?token={}".format(room["id"], invite["advanced"]["connectorToken"]))
+        self.assertIn("connect", invite["advanced"]["mcp"]["tools"])
+        self.assertEqual(invite["advanced"]["mcp"]["firstTool"], "connect")
+        self.assertEqual(invite["advanced"]["mcp"]["targetConnectMs"], 30000)
         self.assertIn("get_snapshot", invite["advanced"]["mcp"]["tools"])
         self.assertIn("poll_events", invite["advanced"]["mcp"]["tools"])
         self.assertEqual(invite["advanced"]["mcp"]["bearerToken"], invite["advanced"]["connectorToken"])
@@ -273,6 +284,9 @@ class ReviewRoomStoreTest(unittest.TestCase):
 
         self.assertEqual(opened["status"], "open")
         self.assertEqual(opened["connectors"][0]["status"], "mcp_streaming")
+        self.assertIsNotNone(opened["connectors"][0]["firstSeenAt"])
+        self.assertIsNotNone(opened["connectors"][0]["connectLatencyMs"])
+        first_seen = opened["connectors"][0]["firstSeenAt"]
 
         with self.store.connect() as conn:
             conn.execute("UPDATE rooms SET status = ? WHERE id = ?", ("needs_owner_decision", room["id"]))
@@ -280,6 +294,7 @@ class ReviewRoomStoreTest(unittest.TestCase):
         preserved = self.store.get_room(room["id"])
 
         self.assertEqual(preserved["status"], "needs_owner_decision")
+        self.assertEqual(preserved["connectors"][0]["firstSeenAt"], first_seen)
 
     def test_legacy_provisioned_connector_status_remains_active(self):
         room = self.store.create_room({"title": "topic"})
