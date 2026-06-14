@@ -87,6 +87,14 @@ Possible residue includes:
   code content.
 - Add guardrails for obvious prompt injection and external side-effect requests.
 
+## Recent evidence
+
+- [review-room-remote-mcp-debugging-2026-06-13-14.md](../review-room-remote-mcp-debugging-2026-06-13-14.md)
+  records repeated stale-token failures from local scratch loops and preserves
+  the rule that bearer tokens must not be committed to docs, scripts, or logs.
+- The MCP `encodingProbe` and `bodyUtf8Base64` path are now part of the remote
+  Agent safety boundary for shell-sensitive non-ASCII text.
+
 ## Acceptance criteria
 
 - Owner can understand what is revoked server-side.

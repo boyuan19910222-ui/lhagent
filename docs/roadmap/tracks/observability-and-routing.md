@@ -42,8 +42,19 @@ room state:
   provide one.
 - Add stale run detection and owner-visible recovery actions.
 - Define cancellation behavior for active tasks and runs.
-- Tighten UI copy around "working" versus "connected" versus "ready".
+- Extend the active-wait status model beyond in-memory P0 state if production
+  needs multi-process service replicas.
 - Add manual scenario docs that show the full review -> fix -> verify loop.
+
+## Recent evidence
+
+- [review-room-remote-mcp-debugging-2026-06-13-14.md](../review-room-remote-mcp-debugging-2026-06-13-14.md)
+  records the 2026-06-13 to 2026-06-14 MCP action-loop debugging trail.
+- `test_standard_mcp_wait_for_action_counts_only_active_wait_as_online` proves
+  `connected` and `mcp_ready` do not count as online, while an open
+  `wait_for_action` long-poll does.
+- The deployed smoke test on `http://124.222.24.34` verified the same status
+  transitions in a real room.
 
 ## Acceptance criteria
 

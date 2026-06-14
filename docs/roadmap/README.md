@@ -41,6 +41,8 @@ Human-Agent Workspace:
 - [done.md](./done.md): completed work and evidence.
 - [ideas-inbox.md](./ideas-inbox.md): useful ideas that are not yet committed
   to a milestone.
+- [review-room-remote-mcp-debugging-2026-06-13-14.md](./review-room-remote-mcp-debugging-2026-06-13-14.md):
+  remote MCP debugging trail, bugs, fixes, smoke tests, and carry-forward notes.
 
 ## Status language
 
