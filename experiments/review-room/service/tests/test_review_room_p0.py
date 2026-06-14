@@ -586,6 +586,7 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tools["streams"][0]["transport"], "sse")
         self.assertIn("get_snapshot", [tool["name"] for tool in tools["tools"]])
         self.assertIn("poll_events", [tool["name"] for tool in tools["tools"]])
+        self.assertIn("set_status", [tool["name"] for tool in tools["tools"]])
         self.assertIn("list_tasks", [tool["name"] for tool in tools["tools"]])
         self.assertIn("claim_task", [tool["name"] for tool in tools["tools"]])
         self.assertIn("start_run", [tool["name"] for tool in tools["tools"]])
@@ -632,6 +633,47 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot_after["tasks"][-1]["status"], "completed")
         self.assertEqual(snapshot_after["agentRuns"][-1]["adapterType"], "mcp-remote")
         self.assertEqual(snapshot_after["agentRuns"][-1]["status"], "completed")
+
+    async def test_mcp_set_status_updates_remote_agent_lifecycle(self):
+        _, room = await self.post_json("/api/rooms", {"title": "MCP Status"})
+        _, reviewer = await self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"role": "reviewer", "name": "Reviewer Agent", "adapterType": "mcp-remote"},
+            room["ownerToken"],
+        )
+
+        denied_response, denied = await self.post_json(
+            "/api/mcp/tools/set_status",
+            {"roomId": room["id"], "status": "thinking"},
+            room["ownerToken"],
+        )
+        invalid_response, invalid = await self.post_json(
+            "/api/mcp/tools/set_status",
+            {"roomId": room["id"], "status": "teleporting"},
+            reviewer["connectorToken"],
+        )
+        status_response, status = await self.post_json(
+            "/api/mcp/tools/set_status",
+            {"roomId": room["id"], "status": "thinking", "detail": "reviewing task context"},
+            reviewer["connectorToken"],
+        )
+        await self.post_json(
+            "/api/mcp/tools/get_snapshot",
+            {"roomId": room["id"]},
+            reviewer["connectorToken"],
+        )
+        snapshot = self.store.get_room(room["id"])
+
+        self.assertEqual(denied_response.status, 403)
+        self.assertEqual(denied["error"], "connector token required")
+        self.assertEqual(invalid_response.status, 400)
+        self.assertIn("connector status", invalid["error"])
+        self.assertEqual(status_response.status, 201)
+        self.assertEqual(status["connector"]["status"], "thinking")
+        self.assertNotIn("connectorToken", status["connector"])
+        self.assertEqual(snapshot["connectors"][0]["status"], "thinking")
+        self.assertEqual(snapshot["statusSummary"]["busyAgentCount"], 1)
+        self.assertEqual(snapshot["statusSummary"]["onlineAgentCount"], 1)
 
     async def test_mcp_poll_events_returns_room_content_by_cursor(self):
         _, room = await self.post_json("/api/rooms", {"title": "MCP Poll Events"})

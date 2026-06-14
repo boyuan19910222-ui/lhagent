@@ -159,7 +159,10 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertIn("/api/rooms/${encodeURIComponent(state.room.id)}/tasks", html)
         self.assertIn("/api/handoffs/", html)
         self.assertIn("/rotate-token", html)
-        self.assertIn("function submitMessage()", html)
+        self.assertIn("async function submitMessage()", html)
+        self.assertIn("function postMessageOverHttp", html)
+        self.assertIn("/api/rooms/${encodeURIComponent(state.room.id)}/messages", html)
+        self.assertIn("function appendMessage", html)
         self.assertIn("function createTask()", html)
         self.assertIn("function renderThreads()", html)
         self.assertIn("function decideHandoff", html)
@@ -182,10 +185,13 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertIn("if(!query.query)", html)
         self.assertIn("event.inputType.startsWith('delete')", html)
         self.assertIn("function mentionsForBody", html)
-        self.assertIn("payload:{mentions:mentionsForBody(body)}", html)
+        self.assertIn("const payload = {mentions:mentionsForBody(body)}", html)
+        self.assertIn("sendSocket({type:'message.create', body, payload})", html)
         self.assertIn("agentRuns", html)
         self.assertIn("event.key !== 'Enter'", html)
         self.assertIn("event.isComposing", html)
+        self.assertIn("compositioncancel", html)
+        self.assertIn("state.composing = false", html)
         self.assertIn("创建体验房间", html)
         self.assertIn("/api/demo/session", html)
         self.assertNotIn("/api/connectors/{connectorId}/events", html)
@@ -254,6 +260,43 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertIn("payload", invite["advanced"]["bootstrap"]["agentContract"]["eventEnvelope"]["required"])
         self.assertEqual(invite["advanced"]["bootstrap"]["agentContract"]["cursorReconnect"]["fallbackTool"], "poll_events")
         self.assertEqual(invite["advanced"]["bootstrap"]["agentContract"]["replyPolicy"]["shouldRespond"][0]["priority"], "P0")
+
+    def test_streaming_connector_opens_waiting_room_without_overriding_workflow_status(self):
+        room = self.store.create_room({"title": "topic"})
+        connector = self.store.register_connector(
+            room["id"],
+            {"role": "developer", "name": "Developer Agent", "adapterType": "mcp-remote"},
+        )
+
+        self.store.mark_connector_seen(connector["id"], "mcp_streaming", "")
+        opened = self.store.get_room(room["id"])
+
+        self.assertEqual(opened["status"], "open")
+        self.assertEqual(opened["connectors"][0]["status"], "mcp_streaming")
+
+        with self.store.connect() as conn:
+            conn.execute("UPDATE rooms SET status = ? WHERE id = ?", ("needs_owner_decision", room["id"]))
+        self.store.mark_connector_seen(connector["id"], "mcp_streaming", "")
+        preserved = self.store.get_room(room["id"])
+
+        self.assertEqual(preserved["status"], "needs_owner_decision")
+
+    def test_legacy_provisioned_connector_status_remains_active(self):
+        room = self.store.create_room({"title": "topic"})
+        connector = self.store.register_connector(
+            room["id"],
+            {"role": "developer", "name": "Developer Agent", "adapterType": "codex-sidecar", "status": "provisioned"},
+        )
+
+        self.assertEqual(connector["status"], "invited")
+
+        with self.store.connect() as conn:
+            conn.execute("UPDATE connectors SET status = ? WHERE id = ?", ("provisioned", connector["id"]))
+        loaded = self.store.get_room(room["id"])
+
+        self.assertEqual(loaded["connectors"][0]["status"], "provisioned")
+        self.assertEqual(loaded["statusSummary"]["activeAgentCount"], 1)
+        self.assertEqual(loaded["statusSummary"]["agentStatusCounts"]["provisioned"], 1)
 
     def test_message_mentions_are_resolved_from_room_roles(self):
         room = self.store.create_room({"title": "topic"})
@@ -361,6 +404,38 @@ class ReviewRoomStoreTest(unittest.TestCase):
             self.store.authenticate_room_token(room["id"], connector["connectorToken"])
         identity = self.store.authenticate_room_token(room["id"], rotated["connectorToken"])
         self.assertEqual(identity["connectorId"], connector["id"])
+
+    def test_connector_status_event_updates_lifecycle_state(self):
+        room = self.store.create_room({"title": "topic"})
+        connector = self.store.register_connector(room["id"], {"name": "Reviewer Agent", "role": "reviewer"})
+
+        updated = self.store.ingest_connector_event(
+            connector["id"],
+            connector["connectorToken"],
+            {"type": "status", "status": "thinking", "detail": "reading the assigned task"},
+        )
+        loaded = self.store.get_room(room["id"])
+
+        self.assertEqual(updated["status"], "thinking")
+        self.assertEqual(loaded["connectors"][0]["status"], "thinking")
+        self.assertEqual(loaded["connectors"][0]["eventCount"], 1)
+        self.assertIsNotNone(loaded["connectors"][0]["lastSeenAt"])
+        self.assertIsNotNone(loaded["connectors"][0]["heartbeatAt"])
+        self.assertEqual(loaded["status"], "agent_working")
+        self.assertEqual(loaded["statusSummary"]["busyAgentCount"], 1)
+        self.assertEqual(loaded["statusSummary"]["onlineAgentCount"], 1)
+        with self.assertRaisesRegex(ValueError, "connector status"):
+            self.store.ingest_connector_event(
+                connector["id"],
+                connector["connectorToken"],
+                {"type": "status", "status": "teleporting"},
+            )
+        with self.assertRaisesRegex(PermissionError, "cannot revoke itself"):
+            self.store.ingest_connector_event(
+                connector["id"],
+                connector["connectorToken"],
+                {"type": "status", "status": "revoked"},
+            )
 
     def test_hosted_agent_does_not_reply_without_explicit_experience_mode(self):
         room = self.store.create_room({"title": "开放话题"})

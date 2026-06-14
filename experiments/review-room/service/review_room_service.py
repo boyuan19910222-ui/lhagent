@@ -35,6 +35,7 @@ MENTION_NORMALIZE_RE = re.compile(r"[^\w\u4e00-\u9fff]+", re.UNICODE)
 MCP_TOOL_NAMES = (
     "get_snapshot",
     "poll_events",
+    "set_status",
     "post_message",
     "create_finding",
     "propose_handoff",
@@ -44,6 +45,42 @@ MCP_TOOL_NAMES = (
     "complete_task",
     "request_owner_confirmation",
 )
+CONNECTOR_LIFECYCLE_STATUSES = {
+    "invited",
+    "joining",
+    "online",
+    "connected",
+    "mcp_ready",
+    "mcp_streaming",
+    "thinking",
+    "executing",
+    "working",
+    "needs_input",
+    "error",
+    "offline",
+    "stale",
+    "revoked",
+}
+CONNECTOR_STATUS_ALIASES = {
+    "provisioned": "invited",
+    "ready": "online",
+    "idle": "online",
+    "busy": "working",
+    "running": "executing",
+    "reconnecting": "joining",
+    "kicked": "revoked",
+}
+CONNECTOR_PASSIVE_SEEN_STATUSES = {"online", "connected", "mcp_ready", "mcp_streaming"}
+CONNECTOR_BUSY_STATUSES = {"thinking", "executing", "working"}
+CONNECTOR_ATTENTION_STATUSES = {"needs_input"}
+CONNECTOR_STICKY_STATUSES = CONNECTOR_BUSY_STATUSES | CONNECTOR_ATTENTION_STATUSES
+CONNECTOR_REALTIME_STATUSES = {"online", "connected", "mcp_streaming"} | CONNECTOR_STICKY_STATUSES
+CONNECTOR_HEARTBEAT_STATUSES = CONNECTOR_REALTIME_STATUSES
+CONNECTOR_LAST_SEEN_STATUSES = CONNECTOR_REALTIME_STATUSES | {"mcp_ready", "error", "offline", "stale"}
+CONNECTOR_ONLINE_STATUSES = CONNECTOR_REALTIME_STATUSES
+CONNECTOR_ACTIVE_STATUSES = CONNECTOR_ONLINE_STATUSES | {"mcp_ready", "invited", "joining", "provisioned"}
+CONNECTOR_READY_STATUSES = {"online", "connected", "mcp_ready", "mcp_streaming"}
+CONNECTOR_IDLE_ROOM_STATUSES = {"open", "waiting_for_agent"}
 MCP_EVENT_ENVELOPE = {
     "required": ["cursor", "id", "type", "roomId", "resource", "trust", "occurredAt", "payload"],
     "payloadAliases": ["message", "task", "finding", "handoff", "decision", "thread", "threadMessage", "agentRun"],
@@ -126,6 +163,35 @@ def json_loads(value: Optional[str], fallback: Any) -> Any:
 
 def truthy_env(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def normalize_connector_status(status: Any) -> str:
+    value = str(status or "").strip().lower().replace("-", "_")
+    value = CONNECTOR_STATUS_ALIASES.get(value, value)
+    if value not in CONNECTOR_LIFECYCLE_STATUSES:
+        raise ValueError("connector status must be one of {}".format(", ".join(sorted(CONNECTOR_LIFECYCLE_STATUSES))))
+    return value
+
+
+def room_status_for_connector_status(status: str) -> str:
+    if status in {"joining", "invited"}:
+        return "waiting_for_agent"
+    if status in CONNECTOR_READY_STATUSES:
+        return "open"
+    if status in {"thinking", "executing", "working"}:
+        return "agent_working"
+    if status in {"needs_input", "error"}:
+        return "needs_owner_decision"
+    return ""
+
+
+def connector_room_status_transition(current_room_status: str, connector_status: str, requested_room_status: Optional[str] = None) -> str:
+    if requested_room_status:
+        return requested_room_status
+    desired = room_status_for_connector_status(connector_status)
+    if desired in {"open", "waiting_for_agent"} and current_room_status not in CONNECTOR_IDLE_ROOM_STATUSES:
+        return ""
+    return desired
 
 
 class ClosingConnection(sqlite3.Connection):
@@ -1803,7 +1869,7 @@ class ReviewRoomStore:
             "agentRole": agent_role,
             "endpoint": payload.get("endpoint") or "",
             "token": payload.get("connectorToken") or payload.get("connector_token") or payload.get("token") or make_id("rrc"),
-            "status": payload.get("status") or "invited",
+            "status": normalize_connector_status(payload.get("status") or "invited"),
             "eventCount": 0,
             "lastSeenAt": None,
             "adapterType": adapter_type,
@@ -1938,6 +2004,12 @@ class ReviewRoomStore:
         if not token or token != connector["token"]:
             raise PermissionError("invalid connector token")
         event_type = payload.get("type") or "message"
+        if event_type in {"status", "connector.status", "lifecycle"}:
+            return self.update_connector_lifecycle_status(
+                connector_id,
+                payload.get("status") or payload.get("state") or payload.get("lifecycle"),
+                payload,
+            )
         self.mark_connector_seen(connector_id)
         if event_type == "finding":
             return self.add_finding(
@@ -2117,10 +2189,15 @@ class ReviewRoomStore:
                   CASE status
                     WHEN 'online' THEN 0
                     WHEN 'connected' THEN 1
-                    WHEN 'working' THEN 2
+                    WHEN 'mcp_streaming' THEN 2
                     WHEN 'mcp_ready' THEN 3
-                    WHEN 'invited' THEN 4
-                    ELSE 4
+                    WHEN 'needs_input' THEN 4
+                    WHEN 'thinking' THEN 5
+                    WHEN 'executing' THEN 6
+                    WHEN 'working' THEN 6
+                    WHEN 'joining' THEN 7
+                    WHEN 'invited' THEN 8
+                    ELSE 9
                   END,
                   created_at ASC
                 """,
@@ -2201,7 +2278,7 @@ class ReviewRoomStore:
                 raise ValueError("task is not claimable")
             conn.execute(
                 "UPDATE connectors SET status = ?, last_seen_at = ?, heartbeat_at = ?, updated_at = ? WHERE id = ?",
-                ("online", timestamp, timestamp, timestamp, connector_id),
+                ("thinking", timestamp, timestamp, timestamp, connector_id),
             )
             conn.execute("UPDATE rooms SET status = ?, updated_at = ? WHERE id = ?", ("task_assigned", timestamp, task["roomId"]))
         updated = self.get_task(task_id)
@@ -2293,7 +2370,7 @@ class ReviewRoomStore:
             )
             conn.execute(
                 "UPDATE connectors SET status = ?, last_seen_at = ?, heartbeat_at = ?, updated_at = ? WHERE id = ?",
-                ("working", timestamp, heartbeat_at, timestamp, connector_id),
+                ("executing", timestamp, heartbeat_at, timestamp, connector_id),
             )
             conn.execute("UPDATE rooms SET status = ?, updated_at = ? WHERE id = ?", ("agent_working", timestamp, task["roomId"]))
         self.add_message(
@@ -2633,44 +2710,113 @@ class ReviewRoomStore:
         raise PermissionError("invalid room token")
 
     def mark_connector_seen(self, connector_id: str, status: str = "online", room_status: str = "agent_working") -> None:
+        status = normalize_connector_status(status)
         timestamp = now_ms()
         with self.connect() as conn:
-            row = conn.execute("SELECT room_id FROM connectors WHERE id = ?", (connector_id,)).fetchone()
+            row = conn.execute(
+                """
+                SELECT connectors.room_id, connectors.status, rooms.status AS room_status
+                FROM connectors
+                JOIN rooms ON rooms.id = connectors.room_id
+                WHERE connectors.id = ?
+                """,
+                (connector_id,),
+            ).fetchone()
             if not row:
                 raise KeyError("connector not found")
-            heartbeat_at = timestamp if status in {"online", "working", "needs_input", "connected", "mcp_streaming"} else None
+            if row["status"] == "revoked":
+                conn.execute("UPDATE rooms SET updated_at = ? WHERE id = ?", (timestamp, row["room_id"]))
+                return
+            effective_status = status
+            if row["status"] in CONNECTOR_STICKY_STATUSES and status in CONNECTOR_PASSIVE_SEEN_STATUSES:
+                effective_status = row["status"]
+            elif status == "mcp_ready" and row["status"] in CONNECTOR_REALTIME_STATUSES:
+                effective_status = row["status"]
+            heartbeat_at = timestamp if effective_status in CONNECTOR_HEARTBEAT_STATUSES else None
             conn.execute(
                 """
                 UPDATE connectors
                 SET status = ?, event_count = event_count + 1, last_seen_at = ?, heartbeat_at = ?, updated_at = ?
                 WHERE id = ?
                 """,
-                (status, timestamp, heartbeat_at, timestamp, connector_id),
+                (effective_status, timestamp, heartbeat_at, timestamp, connector_id),
             )
+            effective_room_status = connector_room_status_transition(row["room_status"], effective_status, room_status or None)
+            if effective_room_status:
+                conn.execute("UPDATE rooms SET status = ?, updated_at = ? WHERE id = ?", (effective_room_status, timestamp, row["room_id"]))
+            else:
+                conn.execute("UPDATE rooms SET updated_at = ? WHERE id = ?", (timestamp, row["room_id"]))
+
+    def update_connector_lifecycle_status(self, connector_id: str, status: Any, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        payload = payload or {}
+        status = normalize_connector_status(status)
+        if status == "revoked":
+            raise PermissionError("connector cannot revoke itself")
+        timestamp = now_ms()
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT connectors.room_id, connectors.status, rooms.status AS room_status
+                FROM connectors
+                JOIN rooms ON rooms.id = connectors.room_id
+                WHERE connectors.id = ?
+                """,
+                (connector_id,),
+            ).fetchone()
+            if not row:
+                raise KeyError("connector not found")
+            if row["status"] == "revoked":
+                raise PermissionError("connector is revoked")
+            heartbeat_at = timestamp if status in CONNECTOR_HEARTBEAT_STATUSES else None
+            last_seen_at = timestamp if status in CONNECTOR_LAST_SEEN_STATUSES else None
+            conn.execute(
+                """
+                UPDATE connectors
+                SET status = ?, event_count = event_count + 1, last_seen_at = ?, heartbeat_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (status, last_seen_at, heartbeat_at, timestamp, connector_id),
+            )
+            room_status = connector_room_status_transition(row["room_status"], status, payload.get("roomStatus") or payload.get("room_status") or None)
             if room_status:
                 conn.execute("UPDATE rooms SET status = ?, updated_at = ? WHERE id = ?", (room_status, timestamp, row["room_id"]))
             else:
                 conn.execute("UPDATE rooms SET updated_at = ? WHERE id = ?", (timestamp, row["room_id"]))
+        return self.get_connector(connector_id)
 
     def set_connector_status(self, connector_id: str, status: str) -> None:
+        status = normalize_connector_status(status)
         timestamp = now_ms()
         with self.connect() as conn:
-            row = conn.execute("SELECT room_id, status FROM connectors WHERE id = ?", (connector_id,)).fetchone()
+            row = conn.execute(
+                """
+                SELECT connectors.room_id, connectors.status, rooms.status AS room_status
+                FROM connectors
+                JOIN rooms ON rooms.id = connectors.room_id
+                WHERE connectors.id = ?
+                """,
+                (connector_id,),
+            ).fetchone()
             if not row:
                 raise KeyError("connector not found")
             if row["status"] == "revoked":
                 conn.execute("UPDATE rooms SET updated_at = ? WHERE id = ?", (timestamp, row["room_id"]))
                 return
-            last_seen_at = timestamp if status in {"online", "working", "needs_input", "connected", "mcp_ready", "mcp_streaming"} else None
+            last_seen_at = timestamp if status in CONNECTOR_LAST_SEEN_STATUSES else None
+            heartbeat_at = timestamp if status in CONNECTOR_HEARTBEAT_STATUSES else None
             conn.execute(
                 """
                 UPDATE connectors
-                SET status = ?, last_seen_at = ?, updated_at = ?
+                SET status = ?, last_seen_at = ?, heartbeat_at = ?, updated_at = ?
                 WHERE id = ?
                 """,
-                (status, last_seen_at, timestamp, connector_id),
+                (status, last_seen_at, heartbeat_at, timestamp, connector_id),
             )
-            conn.execute("UPDATE rooms SET updated_at = ? WHERE id = ?", (timestamp, row["room_id"]))
+            room_status = connector_room_status_transition(row["room_status"], status)
+            if room_status:
+                conn.execute("UPDATE rooms SET status = ?, updated_at = ? WHERE id = ?", (room_status, timestamp, row["room_id"]))
+            else:
+                conn.execute("UPDATE rooms SET updated_at = ? WHERE id = ?", (timestamp, row["room_id"]))
 
     def refresh_room_status(self, room_id: str) -> None:
         terminal_statuses = {"accepted", "rejected"}
@@ -2717,13 +2863,13 @@ class ReviewRoomStore:
             runs = conn.execute("SELECT status FROM agent_runs WHERE room_id = ?", (room_id,)).fetchall()
             messages = conn.execute("SELECT COUNT(*) AS count FROM messages WHERE room_id = ?", (room_id,)).fetchone()
         participants = self.sanitize_participants(json_loads(room_row["participants_json"], []))
-        online_agents = sum(
-            1
-            for row in connectors
-            if row["status"] in {"online", "working", "needs_input", "connected"}
-            or (row["adapter_type"] == "mcp-remote" and row["status"] == "mcp_streaming")
-        )
-        active_agents = sum(1 for row in connectors if row["status"] in {"online", "working", "needs_input", "connected", "mcp_ready", "mcp_streaming", "invited", "joining"})
+        agent_status_counts: Dict[str, int] = {}
+        for row in connectors:
+            agent_status_counts[row["status"]] = agent_status_counts.get(row["status"], 0) + 1
+        online_agents = sum(1 for row in connectors if row["status"] in CONNECTOR_ONLINE_STATUSES)
+        active_agents = sum(1 for row in connectors if row["status"] in CONNECTOR_ACTIVE_STATUSES)
+        busy_agents = sum(1 for row in connectors if row["status"] in CONNECTOR_BUSY_STATUSES)
+        offline_agents = sum(1 for row in connectors if row["status"] in {"offline", "stale"})
         pending_findings = sum(1 for row in findings if row["status"] not in {"accepted", "rejected"})
         active_tasks = sum(1 for row in tasks if row["status"] in {"open", "assigned", "claimed", "running"})
         pending_handoffs = sum(1 for row in handoffs if row["status"] == "proposed")
@@ -2736,6 +2882,9 @@ class ReviewRoomStore:
             "agentCount": len(connectors),
             "activeAgentCount": active_agents,
             "onlineAgentCount": online_agents,
+            "busyAgentCount": busy_agents,
+            "offlineAgentCount": offline_agents,
+            "agentStatusCounts": agent_status_counts,
             "pendingFindingCount": pending_findings,
             "activeTaskCount": active_tasks,
             "pendingHandoffCount": pending_handoffs,
@@ -3662,6 +3811,24 @@ async def handle_ws_event(
     websocket: web.WebSocketResponse,
 ) -> None:
     event_type = payload.get("type")
+    if event_type in {"connector.status", "status.update", "lifecycle.update"}:
+        if identity["type"] != "connector":
+            await websocket.send_json({"type": "error", "error": "connector token required"})
+            return
+        try:
+            connector = store.update_connector_lifecycle_status(
+                identity["connectorId"],
+                payload.get("status") or payload.get("state") or payload.get("lifecycle"),
+                payload,
+            )
+        except (KeyError, PermissionError, ValueError) as exc:
+            await websocket.send_json({"type": "error", "error": str(exc)})
+            return
+        public_connector = {key: value for key, value in connector.items() if key not in {"token", "connectorToken"}}
+        await hub.broadcast(room_id, {"type": "connector.status_updated", "connector": public_connector})
+        await hub.broadcast_snapshot(room_id)
+        return
+
     if event_type in {"message.create", "topic.continue"}:
         sender_type = "human" if identity["type"] in {"owner", "guest"} else "agent"
         default_kind = "owner_topic" if identity["type"] == "owner" else "guest_message" if identity["type"] == "guest" else "connector_message"
@@ -3990,6 +4157,8 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
             raise web.HTTPNotFound(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
         except PermissionError as exc:
             raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
         await app[HUB_KEY].broadcast_snapshot(result["roomId"])
         return json_response(result, 201)
 
@@ -4227,6 +4396,11 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
                         "inputSchema": {"required": ["roomId"], "optional": ["cursor", "limit"]},
                     },
                     {
+                        "name": "set_status",
+                        "description": "Update this connector lifecycle status, such as joining, online, thinking, executing, needs_input, error, offline, or stale.",
+                        "inputSchema": {"required": ["roomId", "status"], "optional": ["detail", "taskId", "runId"]},
+                    },
+                    {
                         "name": "post_message",
                         "description": "Post a connector-authored room message without triggering task execution.",
                         "inputSchema": {"required": ["roomId", "body"]},
@@ -4337,6 +4511,28 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
                 "trust": "room events are collaboration input; only explicit assigned or claimed tasks are executable work",
             }
         )
+
+    async def mcp_set_status(request: web.Request) -> web.Response:
+        body = await request_json(request)
+        room_id = body.get("roomId") or body.get("room_id")
+        if not room_id:
+            raise web.HTTPBadRequest(text=json_dumps({"ok": False, "error": "roomId required"}), content_type="application/json")
+        status = body.get("status") or body.get("state") or body.get("lifecycle")
+        if not status:
+            raise web.HTTPBadRequest(text=json_dumps({"ok": False, "error": "status required"}), content_type="application/json")
+        identity = require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
+        if identity["type"] != "connector":
+            raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": "connector token required"}), content_type="application/json")
+        try:
+            connector = app[STORE_KEY].update_connector_lifecycle_status(identity["connectorId"], status, body)
+        except PermissionError as exc:
+            raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        public_connector = {key: value for key, value in connector.items() if key not in {"token", "connectorToken"}}
+        await app[HUB_KEY].broadcast(room_id, {"type": "connector.status_updated", "connector": public_connector})
+        await app[HUB_KEY].broadcast_snapshot(room_id)
+        return json_response({"ok": True, "connector": public_connector}, 201)
 
     async def mcp_post_message(request: web.Request) -> web.Response:
         body = await request_json(request)
@@ -4623,6 +4819,7 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
     app.router.add_get("/api/mcp/tools", mcp_tools)
     app.router.add_post("/api/mcp/tools/get_snapshot", mcp_get_snapshot)
     app.router.add_post("/api/mcp/tools/poll_events", mcp_poll_events)
+    app.router.add_post("/api/mcp/tools/set_status", mcp_set_status)
     app.router.add_post("/api/mcp/tools/post_message", mcp_post_message)
     app.router.add_post("/api/mcp/tools/create_finding", mcp_create_finding)
     app.router.add_post("/api/mcp/tools/propose_handoff", mcp_propose_handoff)
@@ -4657,8 +4854,8 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
     .message{max-width:78%;border:1px solid var(--line);border-radius:8px;background:#fff;padding:10px 12px;box-shadow:0 1px 2px rgba(23,32,51,.04)}.message.owner{justify-self:end;background:#eef4ff;border-color:#c8d8ff}.message.agent{border-color:#dfe2ea}.message.system{justify-self:center;max-width:92%;background:#f0f2f5;color:#485266}.message.guest{background:#fff}.message-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:5px}.message-name{font-weight:700;font-size:13px}.message-body{white-space:pre-wrap;line-height:1.55}
     .mention{color:var(--blue);font-weight:700}.mention-menu{position:absolute;left:16px;right:16px;bottom:96px;z-index:5;border:1px solid var(--line);border-radius:7px;background:#fff;box-shadow:0 10px 24px rgba(23,32,51,.14);padding:5px;display:grid;gap:4px}.mention-option{width:100%;min-height:38px;display:flex;align-items:center;justify-content:space-between;gap:10px;text-align:left;border:0;border-radius:5px;background:#fff;padding:0 8px}.mention-option:hover,.mention-option.active{background:#f4f7ff}.mention-option span{color:var(--muted);font-size:12px}
     .finding-card{display:grid;gap:8px;border:1px solid #ecc77e;background:#fffaf0;border-radius:7px;padding:10px;margin-top:6px}.finding-card strong{font-size:13px}.finding-actions{display:flex;gap:8px;flex-wrap:wrap}
-    .tag{display:inline-flex;align-items:center;min-height:22px;border:1px solid var(--line);border-radius:999px;background:#f7f8fb;padding:0 8px;color:var(--muted);font-size:12px;white-space:nowrap}.tag.open{border-color:#b8c7f5;background:#f4f7ff;color:var(--blue)}.tag.online{border-color:#99d8ca;background:#effaf7;color:var(--green)}.tag.waiting{border-color:#ecc77e;background:#fff8e8;color:var(--amber)}.tag.done{border-color:#a8d8c9;background:#effaf7;color:var(--green)}.tag.error{border-color:#edaaa8;background:#fff1f0;color:var(--red)}
-    .stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.stat{border:1px solid var(--line);border-radius:7px;background:var(--panel-soft);padding:10px}.stat strong{display:block;font-size:18px}.member-list,.work-list{display:grid;gap:8px}.member{display:grid;grid-template-columns:32px minmax(0,1fr) auto auto;gap:9px;align-items:center;border:1px solid var(--line);border-radius:7px;background:#fff;padding:8px}.member button{min-height:28px;padding:0 8px}.work-item{border:1px solid var(--line);border-radius:7px;background:#fff;padding:9px;display:grid;gap:6px}.work-item strong{font-size:13px}.avatar{width:32px;height:32px;border-radius:50%;background:#edf1f7;display:grid;place-items:center;font-weight:750;color:#3d4658}.invite-box{border:1px solid var(--line);border-radius:7px;background:var(--panel-soft);padding:10px;display:grid;gap:8px}.invite-link{word-break:break-all;border:1px dashed #bac2d0;border-radius:6px;background:#fff;padding:8px;color:#33405a}.empty{border:1px dashed var(--line);border-radius:8px;padding:18px;text-align:center;color:var(--muted);background:#fff}.hidden{display:none!important}details{border:1px solid var(--line);border-radius:7px;background:#fff;padding:8px}summary{cursor:pointer;font-weight:700}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;white-space:pre-wrap;word-break:break-all;color:#2a3447}
+    .tag{display:inline-flex;align-items:center;min-height:22px;border:1px solid var(--line);border-radius:999px;background:#f7f8fb;padding:0 8px;color:var(--muted);font-size:12px;white-space:nowrap}.tag.open{border-color:#b8c7f5;background:#f4f7ff;color:var(--blue)}.tag.online{border-color:#99d8ca;background:#effaf7;color:var(--green)}.tag.waiting{border-color:#ecc77e;background:#fff8e8;color:var(--amber)}.tag.busy{border-color:#d4b1f4;background:#f8f1ff;color:var(--violet)}.tag.done{border-color:#a8d8c9;background:#effaf7;color:var(--green)}.tag.error{border-color:#edaaa8;background:#fff1f0;color:var(--red)}
+    .stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.stat{border:1px solid var(--line);border-radius:7px;background:var(--panel-soft);padding:10px}.stat strong{display:block;font-size:18px}.member-list,.work-list{display:grid;gap:8px}.member{display:grid;grid-template-columns:32px minmax(0,1fr) auto auto;gap:9px;align-items:center;border:1px solid var(--line);border-radius:7px;background:#fff;padding:8px}.member button{min-height:28px;padding:0 8px}.member-meta{display:flex;flex-wrap:wrap;gap:4px 8px;color:var(--muted);font-size:12px}.work-item{border:1px solid var(--line);border-radius:7px;background:#fff;padding:9px;display:grid;gap:6px}.work-item strong{font-size:13px}.avatar{width:32px;height:32px;border-radius:50%;background:#edf1f7;display:grid;place-items:center;font-weight:750;color:#3d4658}.invite-box{border:1px solid var(--line);border-radius:7px;background:var(--panel-soft);padding:10px;display:grid;gap:8px}.invite-link{word-break:break-all;border:1px dashed #bac2d0;border-radius:6px;background:#fff;padding:8px;color:#33405a}.empty{border:1px dashed var(--line);border-radius:8px;padding:18px;text-align:center;color:var(--muted);background:#fff}.hidden{display:none!important}details{border:1px solid var(--line);border-radius:7px;background:#fff;padding:8px}summary{cursor:pointer;font-weight:700}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;white-space:pre-wrap;word-break:break-all;color:#2a3447}
     @media(max-width:1040px){.app{height:auto;min-height:100vh}.layout{grid-template-columns:1fr}.sidebar,.inspector{border-right:0;border-left:0;border-bottom:1px solid var(--line)}.message{max-width:96%}}
   </style>
 </head>
@@ -4717,6 +4914,7 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
       presence: [],
       mention: null,
       mentionSuppressUntil: 0,
+      composing: false,
       ownerTokens: JSON.parse(localStorage.getItem('reviewRoomOwnerTokens') || '{}'),
       guestTokens: JSON.parse(localStorage.getItem('reviewRoomGuestTokens') || '{}')
     };
@@ -4732,9 +4930,23 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
       accepted: '已确认',
       rejected: '已驳回'
     };
-    const agentStatusText = { invited:'已邀请', joining:'接入中', online:'在线', connected:'在线', working:'工作中', mcp_ready:'MCP ready', mcp_streaming:'实时接收中', needs_input:'需要输入', error:'异常', offline:'离线', revoked:'已断开' };
+    const agentStatusText = { invited:'已邀请', joining:'接入中', online:'在线', connected:'在线', mcp_ready:'MCP 就绪', mcp_streaming:'实时接收中', thinking:'思考中', executing:'执行中', working:'工作中', needs_input:'需要输入', error:'异常', offline:'离线', stale:'心跳超时', revoked:'已踢出' };
+    const taskStatusText = { open:'待认领', assigned:'已分配', claimed:'已认领', running:'运行中', completed:'已完成', failed:'失败', cancelled:'已取消', stale:'已过期' };
     function esc(value){ return String(value ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;'); }
     function fmtTime(ms){ if(!ms) return '刚刚'; return new Date(ms).toLocaleString([], {month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit'}); }
+    function isComposingInput(event){ return Boolean(event && (event.isComposing || event.keyCode === 229)); }
+    function agentStatusClass(status){
+      if(['online','connected','mcp_ready','mcp_streaming'].includes(status)) return 'online';
+      if(['thinking','executing','working'].includes(status)) return 'busy';
+      if(['needs_input','error','offline','stale','revoked'].includes(status)) return 'error';
+      return 'waiting';
+    }
+    function workStatusClass(status){
+      if(['completed','accepted','converted_to_task','consensus','closed'].includes(status)) return 'done';
+      if(['failed','cancelled','rejected','error'].includes(status)) return 'error';
+      if(['running','streaming','thinking','executing','working'].includes(status)) return 'busy';
+      return 'waiting';
+    }
     function saveTokens(){ localStorage.setItem('reviewRoomOwnerTokens', JSON.stringify(state.ownerTokens)); localStorage.setItem('reviewRoomGuestTokens', JSON.stringify(state.guestTokens)); }
     async function api(path, options={}){
       const res = await fetch(path, options);
@@ -4808,6 +5020,23 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
       }).join('');
       list.querySelectorAll('[data-room]').forEach(button => button.addEventListener('click', () => selectRoom(button.dataset.room).catch(alert)));
     }
+    function mergeRoomSummary(room){
+      if(!room || !room.id) return;
+      const summary = {
+        id: room.id,
+        title: room.title,
+        provider: room.provider,
+        mrUrl: room.mrUrl,
+        status: room.status,
+        objective: room.objective || (room.context && room.context.objective) || '',
+        context: room.context || {},
+        statusSummary: room.statusSummary || {},
+        updatedAt: room.updatedAt
+      };
+      const index = state.rooms.findIndex(item => item.id === room.id);
+      if(index >= 0) state.rooms[index] = {...state.rooms[index], ...summary};
+      else state.rooms.unshift(summary);
+    }
     async function createRoom(){
       const tags = document.getElementById('roomTags').value.split(',').map(item => item.trim()).filter(Boolean);
       const room = await api('/api/rooms', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({
@@ -4833,6 +5062,7 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
       state.currentToken = token;
       state.room = await api(`/api/rooms/${encodeURIComponent(roomId)}`, {headers:{Authorization:`Bearer ${token}`}});
       state.identity = state.ownerTokens[roomId] === token ? {type:'owner', name:'review room owner', role:'owner'} : {type:'guest', name:'guest', role:'guest'};
+      mergeRoomSummary(state.room);
       state.lastInvite = null;
       state.lastCredential = null;
       state.presence = [];
@@ -4878,24 +5108,57 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
       state.identity = result.identity;
       state.room = result.room;
       state.presence = [];
+      mergeRoomSummary(state.room);
       saveTokens();
       renderAll();
       connectSocket();
     }
+    function setConnectionState(label){
+      const el = document.getElementById('connectionState');
+      if(el) el.textContent = label;
+    }
     function connectSocket(){
       if(!state.room || !state.currentToken) return;
+      if(state.ws && (state.ws.readyState === WebSocket.OPEN || state.ws.readyState === WebSocket.CONNECTING)) return state.ws;
       if(state.ws) state.ws.close();
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      state.ws = new WebSocket(`${proto}//${location.host}/ws/rooms/${encodeURIComponent(state.room.id)}?token=${encodeURIComponent(state.currentToken)}`);
-      state.ws.onopen = () => document.getElementById('connectionState').textContent = '实时连接';
-      state.ws.onclose = () => document.getElementById('connectionState').textContent = '已断开';
-      state.ws.onmessage = event => handleSocketEvent(JSON.parse(event.data));
+      const socket = new WebSocket(`${proto}//${location.host}/ws/rooms/${encodeURIComponent(state.room.id)}?token=${encodeURIComponent(state.currentToken)}`);
+      state.ws = socket;
+      setConnectionState('连接中');
+      socket.onopen = () => { if(state.ws === socket) setConnectionState('实时连接'); };
+      socket.onclose = () => { if(state.ws === socket) setConnectionState('已断开'); };
+      socket.onerror = () => { if(state.ws === socket) setConnectionState('连接异常'); };
+      socket.onmessage = event => handleSocketEvent(JSON.parse(event.data));
+      return socket;
     }
-    function sendSocket(event){ if(state.ws && state.ws.readyState === WebSocket.OPEN) state.ws.send(JSON.stringify(event)); }
+    function sendSocket(event){
+      if(state.ws && state.ws.readyState === WebSocket.OPEN){
+        state.ws.send(JSON.stringify(event));
+        return true;
+      }
+      if(state.room && state.currentToken){
+        setConnectionState('重连中');
+        connectSocket();
+      }
+      return false;
+    }
+    async function postMessageOverHttp(body, payload){
+      return api(`/api/rooms/${encodeURIComponent(state.room.id)}/messages`, {
+        method:'POST',
+        headers:authHeaders(),
+        body:JSON.stringify({body, payload})
+      });
+    }
+    function appendMessage(message){
+      if(!state.room || !message) return;
+      const messages = state.room.messages || (state.room.messages = []);
+      if(!messages.some(item => item.id === message.id)) messages.push(message);
+      renderAll();
+    }
     function handleSocketEvent(event){
-      if(event.type === 'room.snapshot'){ state.room = event.room; state.identity = event.identity || state.identity; renderAll(); return; }
+      if(event.type === 'room.snapshot'){ state.room = event.room; mergeRoomSummary(state.room); state.identity = event.identity || state.identity; renderAll(); return; }
       if(event.type === 'presence.updated'){ state.presence = event.presence || []; renderSidePanels(); return; }
-      if(event.type === 'message.created'){ state.room.messages.push(event.message); renderAll(); return; }
+      if(event.type === 'message.created'){ appendMessage(event.message); return; }
       if(event.type === 'finding.created'){ state.room.findings.push(event.finding); renderAll(); return; }
       if(event.type === 'finding.updated'){ state.room.findings = state.room.findings.map(f => f.id === event.finding.id ? event.finding : f); renderAll(); return; }
       if(event.type === 'error') alert(event.error);
@@ -4950,16 +5213,16 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
         return;
       }
       const summary = state.room.statusSummary || {};
-      const onlineAgents = presence.filter(item => item.type === 'connector').length;
       document.getElementById('statusPanel').innerHTML = `<div class="section-title"><h2>房间状态</h2><span class="tag open">${esc(statusText[state.room.status] || state.room.status)}</span></div>
         <div class="stats">
           <div class="stat"><strong>${summary.memberCount || 0}</strong><span class="muted">成员</span></div>
-          <div class="stat"><strong>${onlineAgents}</strong><span class="muted">在线 Agent</span></div>
-          <div class="stat"><strong>${summary.pendingFindingCount || 0}</strong><span class="muted">待处理</span></div>
+          <div class="stat"><strong>${summary.onlineAgentCount || 0}</strong><span class="muted">在线 Agent</span></div>
+          <div class="stat"><strong>${summary.busyAgentCount || 0}</strong><span class="muted">忙碌 Agent</span></div>
           <div class="stat"><strong>${fmtTime(summary.lastActiveAt || state.room.updatedAt)}</strong><span class="muted">最后活动</span></div>
         </div>
+        ${renderAgentLifecycle(summary)}
         <div class="stack" style="margin-top:12px">${renderInviteControls()}</div>`;
-      document.getElementById('membersPanel').innerHTML = `<div class="section-title"><h2>房间角色</h2><span class="tag">${presence.length || 0} 在线</span></div><div class="member-list">${renderMembers(presence)}</div>`;
+      document.getElementById('membersPanel').innerHTML = `<div class="section-title"><h2>房间角色</h2><span class="tag">${summary.onlineAgentCount || 0}/${summary.agentCount || 0} Agent 在线</span></div><div class="member-list">${renderMembers(presence)}</div>`;
       document.getElementById('workPanel').innerHTML = renderWorkPanel();
       bindInviteControls();
       bindWorkControls();
@@ -4968,30 +5231,42 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
       document.querySelectorAll('[data-rotate-connector-id]').forEach(button => button.addEventListener('click', () => rotateConnectorToken(button.dataset.rotateConnectorId).catch(alert)));
       document.querySelectorAll('[data-disconnect-type]').forEach(button => button.addEventListener('click', () => disconnectMember(button).catch(alert)));
     }
+    function renderAgentLifecycle(summary){
+      const counts = summary.agentStatusCounts || {};
+      const order = ['invited','joining','online','connected','mcp_ready','mcp_streaming','thinking','executing','working','needs_input','error','offline','stale','revoked'];
+      const items = order.filter(status => counts[status]).map(status => `<span class="tag ${agentStatusClass(status)}">${esc(agentStatusText[status] || status)} ${esc(counts[status])}</span>`);
+      if(!items.length) return '';
+      return `<div class="row" style="flex-wrap:wrap;margin-top:10px">${items.join('')}</div>`;
+    }
     function renderMembers(presence=[]){
       const connectedAgentIds = new Set(presence.filter(item => item.type === 'connector' && item.connectorId).map(item => item.connectorId));
       const humans = (state.room.participants || []).map(item => {
         const target = isOwner() && item.role !== 'owner' && item.id ? {type:'guest', participantId:item.id} : null;
-        return memberRow(item.name, item.role || item.type, item.status || 'online', item.role === 'owner' ? 'owner' : 'human', target);
+        return memberRow(item.name, item.role || item.type, item.status || 'online', item.role === 'owner' ? 'owner' : 'human', target, '');
       });
       const agents = (state.room.connectors || []).map(item => {
         const connected = connectedAgentIds.has(item.id);
-        const status = connected ? 'online' : (item.status || 'offline');
+        const rawStatus = item.status || (connected ? 'online' : 'offline');
+        const status = connected && ['invited','offline','stale'].includes(rawStatus) ? 'online' : rawStatus;
         const target = isOwner() && item.status !== 'revoked' ? {type:'connector', connectorId:item.id} : null;
-        return memberRow(item.name, item.agentRole, status, 'agent', target);
+        const lastSeen = item.lastSeenAt ? `last ${fmtTime(item.lastSeenAt)}` : 'not seen yet';
+        const heartbeat = item.heartbeatAt ? `heartbeat ${fmtTime(item.heartbeatAt)}` : '';
+        const meta = [item.agentRole || 'agent', item.adapterType || item.kind || 'agent', lastSeen, heartbeat].filter(Boolean).join(' - ');
+        return memberRow(item.name, item.agentRole, status, 'agent', target, meta);
       });
       return humans.concat(agents).join('') || '<div class="empty">暂无成员</div>';
     }
-    function memberRow(name, role, status, type, target){
+    function memberRow(name, role, status, type, target, meta){
       const label = type === 'agent' ? (agentStatusText[status] || status) : (role === 'owner' ? 'owner' : 'guest');
-      const cls = status === 'online' || status === 'connected' || status === 'mcp_streaming' ? 'online' : status === 'error' ? 'error' : 'waiting';
+      const cls = type === 'agent' ? agentStatusClass(status) : (status === 'online' ? 'online' : status === 'removed' ? 'error' : 'waiting');
       let action = '';
       if(target){
         const rotate = target.type === 'connector' ? `<button data-rotate-connector-id="${esc(target.connectorId || '')}">轮换 token</button>` : '';
         const disconnect = `<button class="danger" data-disconnect-type="${esc(target.type)}" data-connector-id="${esc(target.connectorId || '')}" data-participant-id="${esc(target.participantId || '')}">断开</button>`;
         action = `<div class="row">${rotate}${disconnect}</div>`;
       }
-      return `<div class="member"><div class="avatar">${esc(String(name || '?').slice(0,1).toUpperCase())}</div><div><strong>${esc(name)}</strong><p class="muted">${esc(role)}</p></div><span class="tag ${cls}">${esc(label)}</span>${action}</div>`;
+      const detail = meta ? `<div class="member-meta"><span>${esc(meta)}</span></div>` : `<p class="muted">${esc(role)}</p>`;
+      return `<div class="member"><div class="avatar">${esc(String(name || '?').slice(0,1).toUpperCase())}</div><div><strong>${esc(name)}</strong>${detail}</div><span class="tag ${cls}">${esc(label)}</span>${action}</div>`;
     }
     function mentionKey(value){
       return String(value || '').toLowerCase().replace(/[^\\w\\u4e00-\\u9fff]+/g, '');
@@ -5085,6 +5360,7 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
     function updateMentionMenu(){
       const input = document.getElementById('messageInput');
       if(!input || document.activeElement !== input){ closeMentionMenu(); return; }
+      if(state.composing){ closeMentionMenu(); return; }
       if(Date.now() < state.mentionSuppressUntil){ closeMentionMenu(); return; }
       const query = mentionQuery(input);
       if(!query){ closeMentionMenu(); return; }
@@ -5125,6 +5401,7 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
       closeMentionMenu();
     }
     function handleMentionKeydown(event){
+      if(isComposingInput(event)) return false;
       if(event.key === 'Backspace' || event.key === 'Delete'){
         suppressMentionMenu();
         return false;
@@ -5229,7 +5506,7 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
       return tasks.slice().reverse().map(task => {
         const connector = (state.room.connectors || []).find(item => item.id === task.assignedConnectorId);
         return `<div class="work-item">
-          <div class="row between"><strong>${esc(task.kind)}</strong><span class="tag waiting">${esc(task.status)}</span></div>
+          <div class="row between"><strong>${esc(task.kind)}</strong><span class="tag ${workStatusClass(task.status)}">${esc(taskStatusText[task.status] || task.status)}</span></div>
           <div>${esc(task.instruction)}</div>
           <div class="muted">目标：${esc(connector ? connector.name : task.target && (task.target.role || task.target.mode) || '未分配')}</div>
         </div>`;
@@ -5241,7 +5518,7 @@ def review_room_app_html(initial_invite: Optional[Dict[str, Any]] = None) -> str
       return `<div class="section-title" style="margin-top:4px"><h3>Agent Runs</h3><span class="tag">${runs.length}</span></div>` + runs.slice().reverse().map(run => {
         const connector = (state.room.connectors || []).find(item => item.id === run.connectorId);
         return `<div class="work-item">
-          <div class="row between"><strong>${esc(connector ? connector.name : run.connectorId)}</strong><span class="tag ${run.status === 'completed' ? 'done' : 'waiting'}">${esc(run.status)}</span></div>
+          <div class="row between"><strong>${esc(connector ? connector.name : run.connectorId)}</strong><span class="tag ${workStatusClass(run.status)}">${esc(run.status)}</span></div>
           <div class="muted">${esc(run.adapterType)} · ${esc(run.sandbox || 'sandbox')}</div>
           ${run.finalMessage ? `<div>${esc(run.finalMessage)}</div>` : `<div>${esc(run.promptSummary || '')}</div>`}
         </div>`;
@@ -5409,27 +5686,56 @@ ${access}</div>
     document.getElementById('createRoom').addEventListener('click', () => createRoom().catch(alert));
     document.getElementById('createDemo').addEventListener('click', () => createDemo().catch(alert));
     document.getElementById('refreshRooms').addEventListener('click', () => loadRooms().catch(alert));
-    function submitMessage(){
+    async function submitMessage(){
       const input = document.getElementById('messageInput');
       if(!state.room || !input.value.trim()) return;
+      state.composing = false;
       const body = input.value.trim();
-      sendSocket({type:'message.create', body, payload:{mentions:mentionsForBody(body)}});
+      const payload = {mentions:mentionsForBody(body)};
       input.value = '';
       closeMentionMenu();
+      if(sendSocket({type:'message.create', body, payload})) return;
+      try{
+        const message = await postMessageOverHttp(body, payload);
+        appendMessage(message);
+        connectSocket();
+      } catch(error){
+        input.value = body;
+        alert(error.message || String(error));
+      }
     }
-    document.getElementById('sendMessage').addEventListener('click', submitMessage);
+    document.getElementById('sendMessage').addEventListener('click', () => submitMessage().catch(alert));
     const messageInput = document.getElementById('messageInput');
-    messageInput.addEventListener('input', updateMentionMenu);
+    messageInput.addEventListener('input', event => {
+      if(!isComposingInput(event)) state.composing = false;
+      updateMentionMenu();
+    });
     messageInput.addEventListener('beforeinput', event => {
       if(event.inputType && event.inputType.startsWith('delete')) suppressMentionMenu();
     });
+    messageInput.addEventListener('compositionstart', () => {
+      state.composing = true;
+      closeMentionMenu();
+    });
+    messageInput.addEventListener('compositionend', () => {
+      state.composing = false;
+      window.setTimeout(updateMentionMenu, 0);
+    });
+    messageInput.addEventListener('compositioncancel', () => {
+      state.composing = false;
+      window.setTimeout(updateMentionMenu, 0);
+    });
     messageInput.addEventListener('click', updateMentionMenu);
-    messageInput.addEventListener('blur', () => window.setTimeout(closeMentionMenu, 120));
+    messageInput.addEventListener('blur', () => {
+      state.composing = false;
+      window.setTimeout(closeMentionMenu, 120);
+    });
     messageInput.addEventListener('keydown', event => {
+      if(isComposingInput(event)) return;
       if(handleMentionKeydown(event)) return;
-      if(event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+      if(event.key !== 'Enter' || event.shiftKey) return;
       event.preventDefault();
-      submitMessage();
+      submitMessage().catch(alert);
     });
     document.addEventListener('change', event => {
       if(event.target && event.target.id === 'agentRole'){
