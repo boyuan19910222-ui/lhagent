@@ -6,6 +6,7 @@ Review Room should be a Lighthouse-hosted Agent collaboration control plane, not
 
 Related productization notes:
 
+- [Roadmap](../roadmap/README.md)
 - [Review Room Execution Plan](./review-room-execution-plan.md)
 - [Review Room Connector Architecture](./review-room-connector-architecture.md)
 - [Review Room Protocol](./review-room-protocol.md)
