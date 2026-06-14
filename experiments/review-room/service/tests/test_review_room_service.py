@@ -169,10 +169,10 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertIn("function rotateConnectorToken", html)
         self.assertIn("function copyText", html)
         self.assertIn("function fallbackCopyText", html)
-        self.assertIn("MCP Remote Agent 接入", html)
+        self.assertIn("MCP Agent 接入", html)
         self.assertIn("复制给 Agent", html)
         self.assertIn("高级接入信息", html)
-        self.assertIn("第一步先调用 connect", html)
+        self.assertIn("第一步调用 review_room.connect", html)
         self.assertIn("Encoding-Probe", html)
         self.assertIn("encodingProbe", html)
         self.assertIn("等待接入", html)
@@ -185,7 +185,8 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertIn("function agentInvitePromptText", html)
         self.assertIn("copyAgentAccess", html)
         self.assertIn("copyAgentPrompt", html)
-        self.assertIn("eventStreamUrl", html)
+        self.assertIn("mcp server", html)
+        self.assertIn("legacy events", html)
         self.assertIn("Last-Event-ID", html)
         self.assertIn("mentionMenu", html)
         self.assertIn("function mentionTargets()", html)
@@ -259,18 +260,22 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertEqual(loaded["connectors"][0]["name"], "Reviewer Agent")
         self.assertEqual(loaded["connectors"][0]["adapterType"], "mcp-remote")
         self.assertEqual(invite["advanced"]["adapterType"], "mcp-remote")
-        self.assertEqual(invite["advanced"]["mcp"]["toolsUrl"], "https://review.example.com/api/mcp/tools")
-        self.assertEqual(invite["advanced"]["mcp"]["eventStreamUrl"], "https://review.example.com/api/mcp/events?roomId={}".format(room["id"]))
+        self.assertEqual(invite["advanced"]["mcp"]["serverUrl"], "https://review.example.com/api/mcp")
+        self.assertEqual(invite["advanced"]["mcp"]["toolsUrl"], "https://review.example.com/api/mcp")
+        self.assertEqual(invite["advanced"]["mcp"]["eventStreamUrl"], "https://review.example.com/api/mcp")
+        self.assertEqual(invite["advanced"]["mcp"]["legacyToolsUrl"], "https://review.example.com/api/mcp/tools")
+        self.assertEqual(invite["advanced"]["mcp"]["legacyEventStreamUrl"], "https://review.example.com/api/mcp/events?roomId={}".format(room["id"]))
         self.assertEqual(invite["advanced"]["bootstrap"]["realtime"]["eventStreamUrl"], invite["advanced"]["mcp"]["eventStreamUrl"])
         self.assertEqual(invite["advanced"]["bootstrap"]["realtime"]["authorization"], "Bearer {}".format(invite["advanced"]["connectorToken"]))
         self.assertEqual(invite["advanced"]["bootstrap"]["realtime"]["websocketUrl"], "wss://review.example.com/ws/rooms/{}?token={}".format(room["id"], invite["advanced"]["connectorToken"]))
-        self.assertIn("connect", invite["advanced"]["mcp"]["tools"])
-        self.assertEqual(invite["advanced"]["mcp"]["firstTool"], "connect")
+        self.assertIn("review_room.connect", invite["advanced"]["mcp"]["tools"])
+        self.assertIn("connect", invite["advanced"]["mcp"]["legacyTools"])
+        self.assertEqual(invite["advanced"]["mcp"]["firstTool"], "review_room.connect")
         self.assertEqual(invite["advanced"]["mcp"]["targetConnectMs"], 30000)
         self.assertEqual(invite["advanced"]["mcp"]["encodingProbeField"], "encodingProbe")
         self.assertEqual(invite["advanced"]["mcp"]["encodingProbe"], MCP_ENCODING_PROBE)
-        self.assertIn("get_snapshot", invite["advanced"]["mcp"]["tools"])
-        self.assertIn("poll_events", invite["advanced"]["mcp"]["tools"])
+        self.assertIn("review_room.get_snapshot", invite["advanced"]["mcp"]["tools"])
+        self.assertIn("review_room.poll_events", invite["advanced"]["mcp"]["tools"])
         self.assertEqual(invite["advanced"]["mcp"]["bearerToken"], invite["advanced"]["connectorToken"])
         self.assertIn("payload", invite["advanced"]["bootstrap"]["agentContract"]["eventEnvelope"]["required"])
         self.assertEqual(invite["advanced"]["bootstrap"]["agentContract"]["cursorReconnect"]["fallbackTool"], "poll_events")
@@ -306,6 +311,32 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertEqual(closed["connectors"][0]["status"], "mcp_ready")
         self.assertEqual(closed["connectors"][0]["firstSeenAt"], first_seen)
         self.assertIsNotNone(closed["connectors"][0]["connectLatencyMs"])
+
+    def test_stream_close_preserves_busy_connector_status(self):
+        room = self.store.create_room({"title": "Busy stream close"})
+        connector = self.store.register_connector(
+            room["id"],
+            {"role": "reviewer", "name": "Reviewer Agent", "adapterType": "mcp-remote"},
+        )
+        self.store.mark_connector_seen(connector["id"], "mcp_streaming", "")
+        task = self.store.create_task(
+            room["id"],
+            {
+                "kind": "review",
+                "instruction": "Keep the running state visible after SSE disconnect.",
+                "target": {"mode": "connector", "connectorId": connector["id"]},
+            },
+        )
+        self.store.start_agent_run(task["id"], connector["id"], {"promptSummary": "busy stream close"})
+
+        running = self.store.get_room(room["id"])
+        self.store.mark_connector_stream_closed(connector["id"])
+        closed = self.store.get_room(room["id"])
+
+        self.assertEqual(running["connectors"][0]["status"], "executing")
+        self.assertEqual(closed["connectors"][0]["status"], "executing")
+        self.assertEqual(closed["statusSummary"]["busyAgentCount"], 1)
+        self.assertEqual(closed["statusSummary"]["runningAgentRunCount"], 1)
 
     def test_legacy_provisioned_connector_status_remains_active(self):
         room = self.store.create_room({"title": "topic"})
