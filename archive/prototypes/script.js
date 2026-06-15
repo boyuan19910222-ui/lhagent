@@ -27,16 +27,18 @@ const dialog = document.querySelector("#versionDialog");
 const closeDialog = document.querySelector("#closeDialog");
 const dialogTriggers = document.querySelectorAll(".doc-link, #compactChip");
 
-dialogTriggers.forEach((trigger) => {
-  trigger.addEventListener("click", () => {
-    if (typeof dialog.showModal === "function") {
-      dialog.showModal();
-    } else {
-      dialog.setAttribute("open", "");
-    }
+if (dialog && closeDialog) {
+  dialogTriggers.forEach((trigger) => {
+    trigger.addEventListener("click", () => {
+      if (typeof dialog.showModal === "function") {
+        dialog.showModal();
+      } else {
+        dialog.setAttribute("open", "");
+      }
+    });
   });
-});
 
-closeDialog.addEventListener("click", () => {
-  dialog.close();
-});
+  closeDialog.addEventListener("click", () => {
+    dialog.close();
+  });
+}
