@@ -8,13 +8,13 @@ Make Agent work visible, assignable, and auditable.
 
 Core concept docs:
 
-- [Review Room Protocol](../../concepts/review-room-protocol.md)
-- [Review Room Agent Collaboration](../../concepts/review-room-agent-collaboration.md)
+- [Lighthouse Agent Board Protocol](../../concepts/review-room-protocol.md)
+- [Lighthouse Agent Board Agent Collaboration](../../concepts/review-room-agent-collaboration.md)
 
 ## Product rule
 
 Normal chat does not trigger execution. Executable work flows through explicit
-room state:
+board state:
 
 - `task.create`
 - `task.assigned`
@@ -66,10 +66,9 @@ room state:
 
 ## Risks
 
-- If work happens in background processes without room state, users will not
+- If work happens in background processes without board state, users will not
   trust it.
 - If broadcast chat triggers execution, multiple Agents may race or duplicate
   work.
 - If Agent deliberation happens outside the room, the audit trail loses the most
   important reasoning.
-

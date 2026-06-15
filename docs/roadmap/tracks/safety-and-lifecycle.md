@@ -9,7 +9,7 @@ pretending server-side revocation can clean another machine.
 
 Core concept doc:
 
-- [Review Room Security](../../concepts/review-room-security.md)
+- [Lighthouse Agent Board Security](../../concepts/review-room-security.md)
 
 ## Safety rule
 
@@ -102,4 +102,3 @@ Possible residue includes:
 - Agents receive context with trust labels.
 - Connectors enforce local assignment and capability checks.
 - Decision records exist before sync adapters publish external effects.
-

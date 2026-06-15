@@ -4,7 +4,7 @@ Status: `Planned`
 
 ## Purpose
 
-Move Review Room from local experiment into Lighthouse as a durable product
+Move Lighthouse Agent Board from local experiment into Lighthouse as a durable product
 surface.
 
 ## Target shape
@@ -46,10 +46,9 @@ inside the user's trusted environment.
 
 ## Open questions
 
-- Should Review Room state live in the main Lighthouse backend from P1, or stay
+- Should Agent Board state live in the main Lighthouse backend from P1, or stay
   in a service boundary first?
 - What is the minimum Console UI needed before remote users can evaluate the
   product?
 - Which sync adapter should ship first after MR comments?
 - How much room history should be retained by default?
-

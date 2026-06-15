@@ -62,7 +62,7 @@ class ReviewRoomP0StoreTest(unittest.TestCase):
         )
         confirmed = self.store.confirm_finding(
             finding["id"],
-            {"decision": "accepted", "senderName": "review room owner"},
+            {"decision": "accepted", "senderName": "Agent Board owner"},
         )
 
         self.assertEqual(responded["status"], "developer_responded")
@@ -138,7 +138,7 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
 
         await owner_ws.send_json({"type": "message.create", "body": "请评审这个 MR 的鉴权风险。"})
         owner_message = await self._read_event(owner_ws, "message.created")
-        self.assertEqual(owner_message["message"]["senderName"], "review room owner")
+        self.assertEqual(owner_message["message"]["senderName"], "Agent Board owner")
 
         await reviewer_ws.send_json(
             {
@@ -216,7 +216,7 @@ class CodexConnectorClientTest(unittest.TestCase):
 
         self.assertIn("/ws/rooms/", html)
         self.assertIn("new WebSocket", html)
-        self.assertIn("review room owner", html)
+        self.assertIn("Agent Board owner", html)
         self.assertIn("Reviewer Agent", html)
         self.assertIn("Developer Agent", html)
         self.assertIn("Finding / Decision", html)

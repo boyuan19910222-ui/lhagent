@@ -91,6 +91,71 @@ class ReviewRoomMcpStoreTest(unittest.TestCase):
         events = self.store.list_room_events(room["id"], after_cursor=cursor)
         self.assertEqual([event["type"] for event in events], ["message.created"])
 
+    def test_supervision_messages_enter_every_agent_inbox_without_starting_runs(self):
+        room = self.store.create_room({"title": "MR"})
+
+        self.store.add_message(
+            room["id"],
+            {
+                "senderType": "human",
+                "senderName": "owner",
+                "kind": "owner_topic",
+                "body": "请所有 Agent 注意这条监督说明，但不要开始执行。",
+            },
+        )
+        self.store.add_message(
+            room["id"],
+            {
+                "senderType": "human",
+                "senderName": "owner",
+                "kind": "owner_topic",
+                "body": "@Developer Agent 请优先看这个上下文，执行仍然等 task。",
+            },
+        )
+        loaded = self.store.get_room(room["id"])
+
+        reviewer_items = self.store.list_inbox(room["id"], "Reviewer Agent")
+        developer_items = self.store.list_inbox(room["id"], "Developer Agent")
+        developer_mention = developer_items[-1]
+        reviewer_second = reviewer_items[-1]
+
+        self.assertEqual(len(reviewer_items), 2)
+        self.assertEqual(len(developer_items), 2)
+        self.assertEqual(developer_mention["priority"], "high")
+        self.assertTrue(developer_mention["requiresReply"])
+        self.assertEqual(developer_mention["status"], "unread")
+        self.assertEqual(reviewer_second["priority"], "normal")
+        self.assertFalse(reviewer_second["requiresReply"])
+        self.assertEqual(loaded["agentRuns"], [])
+
+    def test_ack_event_updates_agent_inbox_lifecycle(self):
+        room = self.store.create_room({"title": "MR"})
+        self.store.add_message(
+            room["id"],
+            {
+                "senderType": "human",
+                "senderName": "owner",
+                "kind": "owner_topic",
+                "body": "这条消息需要进入 Agent Inbox。",
+            },
+        )
+        item = self.store.list_inbox(room["id"], "Reviewer Agent")[0]
+
+        acked = self.store.ack_event(
+            room["id"],
+            {
+                "agentName": "Reviewer Agent",
+                "inboxItemId": item["id"],
+                "status": "handled",
+            },
+        )
+
+        self.assertEqual(acked["status"], "handled")
+        self.assertEqual(
+            self.store.list_inbox(room["id"], "Reviewer Agent", include_handled=True)[0]["status"],
+            "handled",
+        )
+
     def test_tasks_can_be_assigned_claimed_and_completed(self):
         room = self.store.create_room({"title": "MR"})
         task = self.store.create_task(
@@ -99,7 +164,7 @@ class ReviewRoomMcpStoreTest(unittest.TestCase):
                 "title": "复核修复计划",
                 "body": "确认 Developer Agent 是否覆盖 finding。",
                 "assignedTo": "Reviewer Agent",
-                "createdBy": "review room owner",
+                "createdBy": "Agent Board owner",
             },
         )
 
@@ -115,6 +180,57 @@ class ReviewRoomMcpStoreTest(unittest.TestCase):
         self.assertEqual(completed["status"], "completed")
         self.assertEqual(completed["result"], "修复计划覆盖 finding。")
         self.assertEqual([item["id"] for item in self.store.list_tasks(room["id"])], [task["id"]])
+
+    def test_agent_run_decision_and_handoff_are_canonical_board_objects(self):
+        room = self.store.create_room({"title": "MR"})
+        task = self.store.create_task(
+            room["id"],
+            {"title": "修复 finding", "body": "补 owner token 校验。", "assignedTo": "Developer Agent"},
+        )
+        run = self.store.start_run(task["id"], {"agentName": "Developer Agent", "promptSummary": "Fix auth"})
+        completed = self.store.complete_task(
+            task["id"],
+            {"agentName": "Developer Agent", "finalMessage": "已修复并通过测试。"},
+        )
+        finding = self.store.add_finding(
+            room["id"],
+            {
+                "severity": "P1",
+                "claim": "鉴权可能被绕过",
+                "evidence": "缺少 owner token 校验",
+                "suggestedFix": "补校验",
+                "createdBy": "Reviewer Agent",
+            },
+        )
+        handoff = self.store.propose_handoff(
+            finding["id"],
+            {
+                "fromAgent": "Reviewer Agent",
+                "targetAgent": "Developer Agent",
+                "reason": "需要代码修复。",
+                "suggestedTask": "修复鉴权并回传测试。",
+            },
+        )
+        decision = self.store.request_owner_confirmation(
+            room["id"],
+            {
+                "requester": "Developer Agent",
+                "action": "sync MR comment",
+                "reason": "修复已完成，需要 owner 确认外部同步。",
+                "targetType": "task",
+                "targetId": task["id"],
+            },
+        )
+        loaded = self.store.get_room(room["id"])
+
+        self.assertEqual(run["status"], "running")
+        self.assertEqual(completed["task"]["status"], "completed")
+        self.assertEqual(completed["run"]["status"], "completed")
+        self.assertEqual(handoff["status"], "proposed")
+        self.assertEqual(decision["status"], "pending")
+        self.assertEqual(loaded["agentRuns"][0]["finalMessage"], "已修复并通过测试。")
+        self.assertEqual(loaded["handoffs"][0]["sourceFindingId"], finding["id"])
+        self.assertEqual(loaded["decisions"][0]["targetId"], task["id"])
 
     def test_existing_experimental_task_schema_is_migrated(self):
         self.tmp.cleanup()
@@ -218,7 +334,13 @@ class ReviewRoomMcpAioHttpTest(unittest.IsolatedAsyncioTestCase):
         resource_uris = [resource["uri"] for resource in resources["result"]["resources"]]
         prompt_names = [prompt["name"] for prompt in prompts["result"]["prompts"]]
         self.assertIn("join_room", tool_names)
-        self.assertIn("wait_room_events", tool_names)
+        self.assertIn("list_inbox", tool_names)
+        self.assertIn("ack_event", tool_names)
+        self.assertIn("create_task", tool_names)
+        self.assertIn("start_run", tool_names)
+        self.assertIn("complete_task", tool_names)
+        self.assertIn("request_owner_confirmation", tool_names)
+        self.assertIn("review_room.list_inbox", tool_names)
         self.assertIn("post_finding", tool_names)
         self.assertIn("review-room://current/snapshot", resource_uris)
         self.assertIn("review-room-onboarding", prompt_names)
@@ -236,7 +358,7 @@ class ReviewRoomMcpAioHttpTest(unittest.IsolatedAsyncioTestCase):
             room["id"],
             {
                 "senderType": "human",
-                "senderName": "review room owner",
+                "senderName": "Agent Board owner",
                 "kind": "owner_topic",
                 "body": "@Reviewer Agent 请评审这个 MR。",
             },
@@ -273,6 +395,34 @@ class ReviewRoomMcpAioHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(finding["result"]["structuredContent"]["createdBy"], "Reviewer Agent")
         self.assertIn("mention.requires_reply", [event["type"] for event in events["result"]["structuredContent"]["events"]])
 
+    async def test_mcp_agent_consumes_inbox_and_ack_without_starting_run(self):
+        room = self.store.create_room({"title": "MR"})
+        invite = self.store.create_mcp_invite(room["id"], {"agentName": "Reviewer Agent", "agentRole": "reviewer"})
+        self.store.add_message(
+            room["id"],
+            {
+                "senderType": "human",
+                "senderName": "Agent Board owner",
+                "kind": "owner_topic",
+                "body": "普通监督消息，进入 inbox 但不执行。",
+            },
+        )
+        await self.call_tool(invite["token"], "join_room", {"roomId": room["id"]}, rpc_id=1)
+
+        _, listed = await self.call_tool(invite["token"], "list_inbox", {}, rpc_id=2)
+        inbox_item = listed["result"]["structuredContent"]["items"][0]
+        _, acked = await self.call_tool(
+            invite["token"],
+            "ack_event",
+            {"inboxItemId": inbox_item["id"], "status": "read"},
+            rpc_id=3,
+        )
+        snapshot = self.store.get_room(room["id"])
+
+        self.assertEqual(inbox_item["type"], "message")
+        self.assertEqual(acked["result"]["structuredContent"]["status"], "read")
+        self.assertEqual(snapshot["agentRuns"], [])
+
     async def test_mcp_task_lifecycle_and_resources(self):
         room = self.store.create_room({"title": "MR"})
         invite = self.store.create_mcp_invite(room["id"], {"agentName": "Developer Agent", "agentRole": "developer"})
@@ -286,17 +436,18 @@ class ReviewRoomMcpAioHttpTest(unittest.IsolatedAsyncioTestCase):
 
         _, listed = await self.call_tool(invite["token"], "list_tasks", {}, rpc_id=2)
         _, claimed = await self.call_tool(invite["token"], "claim_task", {"taskId": task["id"]}, rpc_id=3)
+        _, started = await self.call_tool(invite["token"], "start_run", {"taskId": task["id"]}, rpc_id=4)
         _, completed = await self.call_tool(
             invite["token"],
-            "update_task",
-            {"taskId": task["id"], "status": "completed", "result": "已补校验并通过测试。"},
-            rpc_id=4,
+            "complete_task",
+            {"taskId": task["id"], "finalMessage": "已补校验并通过测试。"},
+            rpc_id=5,
         )
         resource_response = await self.client.post(
             "/mcp",
             json={
                 "jsonrpc": "2.0",
-                "id": 5,
+                "id": 6,
                 "method": "resources/read",
                 "params": {"uri": "review-room://current/tasks"},
             },
@@ -307,8 +458,30 @@ class ReviewRoomMcpAioHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(task_response.status, 201)
         self.assertEqual(listed["result"]["structuredContent"]["tasks"][0]["id"], task["id"])
         self.assertEqual(claimed["result"]["structuredContent"]["status"], "running")
-        self.assertEqual(completed["result"]["structuredContent"]["status"], "completed")
+        self.assertEqual(started["result"]["structuredContent"]["status"], "running")
+        self.assertEqual(completed["result"]["structuredContent"]["task"]["status"], "completed")
+        self.assertEqual(completed["result"]["structuredContent"]["run"]["status"], "completed")
         self.assertIn("已补校验", resource["result"]["contents"][0]["text"])
+
+    async def test_mcp_legacy_update_task_alias_still_completes_run(self):
+        room = self.store.create_room({"title": "MR"})
+        invite = self.store.create_mcp_invite(room["id"], {"agentName": "Developer Agent", "agentRole": "developer"})
+        task = self.store.create_task(
+            room["id"],
+            {"title": "修复 finding", "body": "补 owner token 校验。", "assignedTo": "Developer Agent"},
+        )
+        await self.call_tool(invite["token"], "join_room", {"roomId": room["id"]}, rpc_id=1)
+        await self.call_tool(invite["token"], "review_room.start_run", {"taskId": task["id"]}, rpc_id=2)
+
+        _, completed = await self.call_tool(
+            invite["token"],
+            "update_task",
+            {"taskId": task["id"], "status": "completed", "result": "兼容路径完成。"},
+            rpc_id=3,
+        )
+
+        self.assertEqual(completed["result"]["structuredContent"]["task"]["status"], "completed")
+        self.assertEqual(completed["result"]["structuredContent"]["run"]["status"], "completed")
 
     async def test_task_tools_validate_required_arguments(self):
         room = self.store.create_room({"title": "MR"})
@@ -326,11 +499,19 @@ class ReviewRoomMcpAioHttpTest(unittest.IsolatedAsyncioTestCase):
             {"taskId": task["id"]},
             rpc_id=3,
         )
+        _, missing_confirmation_action = await self.call_tool(
+            invite["token"],
+            "request_owner_confirmation",
+            {},
+            rpc_id=4,
+        )
 
         self.assertEqual(missing_claim_id["error"]["code"], -32602)
         self.assertIn("taskId is required", missing_claim_id["error"]["message"])
         self.assertEqual(missing_update_status["error"]["code"], -32602)
         self.assertIn("status is required", missing_update_status["error"]["message"])
+        self.assertEqual(missing_confirmation_action["error"]["code"], -32602)
+        self.assertIn("action is required", missing_confirmation_action["error"]["message"])
 
     async def test_mcp_join_broadcasts_room_snapshot_to_web_owner(self):
         room = self.store.create_room({"title": "MR"})

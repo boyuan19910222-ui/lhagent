@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Agent-side connector client for Lighthouse Review Room.
+"""Agent-side connector client for Lighthouse Agent Board.
 
-The Review Room service owns state and realtime transport. This client runs
+The Agent Board service owns state and realtime transport. This client runs
 beside an Agent/Codex environment, watches room messages, invokes local agent
 logic, and posts structured events back over WebSocket.
 """
@@ -165,7 +165,7 @@ def build_agent_response(role: str, topic: str, mock: bool = False, finding_id: 
             "line": 1,
             "claim": "鉴权或状态边界需要人工确认。",
             "evidence": topic or "Reviewer Agent 收到 owner 发起的代码评审话题。",
-            "suggestedFix": "补充 owner/connector token 校验，并为 WebSocket 房间事件增加回归测试。",
+            "suggestedFix": "补充 owner/connector token 校验，并为 WebSocket Board 事件增加回归测试。",
         }
     if role == "developer":
         return {
@@ -225,23 +225,23 @@ async def run_connector(args: argparse.Namespace) -> None:
                         try:
                             event = json.loads(message.data)
                         except json.JSONDecodeError:
-                            LOGGER.warning("Ignoring malformed Review Room event: %r", message.data)
+                            LOGGER.warning("Ignoring malformed Agent Board event: %r", message.data)
                             continue
                         try:
                             response = await await_response_with_keepalive(maybe_build_response(args, event), ws)
                         except Exception:
-                            LOGGER.exception("Review Room connector failed to process event")
+                            LOGGER.exception("Agent Board connector failed to process event")
                             continue
                         if response:
                             try:
                                 await ws.send_json(response)
                             except Exception:
-                                LOGGER.exception("Review Room connector failed to send response")
+                                LOGGER.exception("Agent Board connector failed to send response")
                                 break
             except asyncio.CancelledError:
                 raise
             except Exception:
-                LOGGER.exception("Review Room connector websocket disconnected")
+                LOGGER.exception("Agent Board connector websocket disconnected")
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 30.0)
 
@@ -263,7 +263,8 @@ async def maybe_build_response(args: argparse.Namespace, event: Dict[str, Any]) 
     event_type = event.get("type")
     if args.role == "reviewer" and event_type == "message.created":
         body = (event.get("message") or {}).get("body", "")
-        if not body or (event.get("message") or {}).get("senderName") != "review room owner":
+        sender_name = (event.get("message") or {}).get("senderName")
+        if not body or sender_name not in {"Agent Board owner", "review room owner"}:
             return None
         if args.mock:
             return build_agent_response("reviewer", body, mock=True)
@@ -301,7 +302,7 @@ async def maybe_build_response(args: argparse.Namespace, event: Dict[str, Any]) 
 
 def reviewer_prompt(topic: str, args: Optional[argparse.Namespace] = None) -> str:
     return (
-        "你是 Lighthouse Review Room 的 Reviewer Agent。\n"
+        "你是 Lighthouse Agent Board 的 Reviewer Agent。\n"
         "{}\n"
         "请在当前工作区做真实代码评审，只读分析 MR/分支差异，不要修改文件。\n"
         "请只输出一个 JSON object，不要 Markdown，不要额外解释。字段必须包含："
@@ -312,7 +313,7 @@ def reviewer_prompt(topic: str, args: Optional[argparse.Namespace] = None) -> st
 
 def developer_prompt(finding: Dict[str, Any], args: Optional[argparse.Namespace] = None) -> str:
     return (
-        "你是 Lighthouse Review Room 的 Developer Agent。\n"
+        "你是 Lighthouse Agent Board 的 Developer Agent。\n"
         "{}\n"
         "请在当前可写工作区针对下面 finding 进行真实修复；如无法安全修改，请说明阻塞原因。"
         "完成后输出修复摘要、验证命令和结果。\n"
@@ -336,7 +337,7 @@ def prompt_context(args: Optional[argparse.Namespace]) -> str:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Connect a local Agent/Codex process to Lighthouse Review Room")
+    parser = argparse.ArgumentParser(description="Connect a local Agent/Codex process to Lighthouse Agent Board")
     parser.add_argument("--role", choices=["reviewer", "developer"], required=True)
     parser.add_argument("--room-url", default=os.environ.get("REVIEW_ROOM_URL", "http://127.0.0.1:8707"))
     parser.add_argument("--room-id", required=True)

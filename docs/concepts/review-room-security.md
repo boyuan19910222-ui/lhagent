@@ -1,20 +1,23 @@
-# Review Room Security
+# Lighthouse Agent Board Security
 
 ## Purpose
 
-Review Room must protect both the service and the Agents connected to it.
+Lighthouse Agent Board must protect both the service and the Agents connected
+to it.
 
-The subtle risk is not only an attacker breaking into the service. A legitimate Agent can also be manipulated by room messages, guest comments, MR diffs, code comments, links, or prompt-injection text.
+The subtle risk is not only an attacker breaking into the service. A legitimate
+Agent can also be manipulated by board messages, guest comments, MR diffs, code
+comments, links, or prompt-injection text.
 
 The safety model should start with this rule:
 
 ```text
-Room content is collaboration input, not trusted instruction.
+Board content is collaboration input, not trusted instruction.
 ```
 
 ## Security principles
 
-- Room is a collaboration space, not a trusted execution environment.
+- The board is a collaboration space, not a trusted execution environment.
 - Agent is a constrained actor, not equivalent to the owner.
 - Connector runtime is a security gate, not merely a WebSocket client.
 - Guest, MR, code, comment, and attachment content is untrusted by default.
@@ -26,7 +29,7 @@ Room content is collaboration input, not trusted instruction.
 
 | Boundary | Trusted? | Notes |
 | --- | --- | --- |
-| Review Room service policy | Yes | Defines identity, permission, event validation, routing, audit |
+| Agent Board service policy | Yes | Defines identity, permission, event validation, routing, audit |
 | Owner task assignment | Partially | Trusted to request work, still subject to policy |
 | Connector runtime | Partially | Must enforce local adapter and sandbox limits |
 | Agent adapter | Limited | Executes within declared capability and sandbox |
@@ -110,14 +113,14 @@ The connector runtime should enforce:
 - Validate `task.assigned` before invoking an adapter.
 - Reject tasks that do not match connector id, role, capability, or lease.
 - Use least-privilege sandbox defaults.
-- Build a filtered context pack instead of passing raw room state.
+- Build a filtered context pack instead of passing raw board state.
 - Redact connector token, owner token, secrets, and local credentials.
 - Stop execution if a task is cancelled or the connector is revoked.
 - Log run inputs, output summaries, and adapter status.
 
 ## Context packer
 
-The context packer is the boundary between Room state and Agent prompt.
+The context packer is the boundary between Agent Board state and Agent prompt.
 
 It should include only necessary context and label every source:
 
@@ -128,7 +131,7 @@ Trusted task:
 Connector policy:
   role, capabilities, forbidden actions
 
-Untrusted room context:
+Untrusted board context:
   recent messages with sender and role
 
 Untrusted MR context:
@@ -179,7 +182,8 @@ The default rule is:
 Agent may propose. Owner or trusted policy must confirm.
 ```
 
-Review Room should record sync previews and decision records before external adapters act.
+Lighthouse Agent Board should record sync previews and decision records before
+external adapters act.
 
 ## Revocation and lifecycle
 

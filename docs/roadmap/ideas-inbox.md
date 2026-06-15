@@ -6,7 +6,7 @@ and a next action.
 
 ## Product positioning
 
-- Position Review Room as the first milestone toward a Human-Agent Workspace.
+- Position Lighthouse Agent Board as the first milestone toward a Human-Agent Workspace.
 - Keep "Agent Collaboration Room" as an alternate product phrase when the
   discussion is specifically about room-based multi-Agent coordination.
 - Explain that MR review is the proving ground, not the product limit.
@@ -105,4 +105,3 @@ and a next action.
   - Developer fixes,
   - Reviewer verifies,
   - owner confirms external action.
-

@@ -1,12 +1,13 @@
-# Review Room Connector Architecture
+# Lighthouse Agent Board Connector Architecture
 
 ## Purpose
 
-Review Room needs a connector architecture that works beyond the current Codex prototype.
+Lighthouse Agent Board needs a connector architecture that works beyond the
+current Codex prototype.
 
 The current `codex_connector.py` is useful for P0 validation, but it mixes three concerns:
 
-- Review Room transport over authenticated HTTP and WebSocket events.
+- Agent Board transport over authenticated HTTP and WebSocket events.
 - Connector runtime behavior such as reconnect, status reporting, history loading, and logs.
 - Codex-specific execution behavior such as `codex exec --json`, sandbox selection, prompt shaping, and JSONL parsing.
 
@@ -18,11 +19,13 @@ Agent-side integration should split into three layers:
 
 | Layer | Responsibility |
 | --- | --- |
-| Review Room Connector Protocol | Token auth, identity, capabilities, input events, output events, heartbeat, errors, version and schema negotiation |
+| Agent Board Connector Protocol | Token auth, identity, capabilities, input events, output events, heartbeat, errors, version and schema negotiation |
 | Generic Connector Runtime or sidecar | WebSocket connection, reconnect, room snapshot loading, schema validation, status reporting, logs, token refresh, adapter dispatch |
 | Agent Adapter | Codex, CLI, HTTP webhook, A2A, MCP, vendor API, or custom enterprise SDK integration |
 
-This split lets remote Agents either implement the Review Room protocol directly or run a generic sidecar that adapts Review Room tasks to the Agent's native interface.
+This split lets remote Agents either implement the Agent Board protocol directly
+or run a generic sidecar that adapts board tasks to the Agent's native
+interface.
 
 ## Connector identity
 
@@ -82,13 +85,15 @@ Recommended adapter types:
 | `codex-sidecar` | Current P0 Codex CLI bridge | Good compatibility sample, not the whole protocol |
 | `cli` | Generic command-line Agent | Runtime maps task input to a command and parses output |
 | `http-webhook` | Agent or service that accepts HTTP callbacks | Useful for enterprise systems with stable callbacks |
-| `a2a` | Agents that speak A2A Task/Message/Artifact | Maps Review Room objects into A2A objects |
+| `a2a` | Agents that speak A2A Task/Message/Artifact | Maps Agent Board objects into A2A objects |
 | `mcp-remote` | Agents that can call remote MCP servers | Best for tool/resource style integration |
 | `vendor-api` | Hosted Agent with proprietary API | Adapter owns vendor auth and session mapping |
 
 ## MCP Gateway
 
-A Review Room MCP Gateway is the preferred first entry path for Agents that already support remote MCP servers, especially HTTPS or Streamable HTTP MCP.
+A Lighthouse Agent Board MCP Gateway is the preferred first entry path for
+Agents that already support remote MCP servers, especially HTTPS or Streamable
+HTTP MCP.
 
 Agent invite links now default to `adapterType=mcp-remote`. The invite bootstrap returns the MCP tool base URL, connector token, room id, connector id, role, and supported tools. `codex-sidecar` remains an explicit compatibility adapter for environments that need a local WebSocket process or Codex CLI bridge.
 
@@ -131,14 +136,15 @@ The MCP direction needs product experiments before becoming the default connecto
 - Which target Agents only support local stdio MCP or no MCP at all?
 - Is adding a remote MCP URL enough, or does the user still need a local proxy, plugin, CLI config, or workspace helper?
 - Can the Agent be reliably triggered by MCP-discovered tasks, or does MCP only expose tools that the Agent calls while already active?
-- Can an Agent poll or wait for Review Room tasks through MCP, or is a sidecar or worker still required for unattended execution?
+- Can an Agent poll or wait for Agent Board tasks through MCP, or is a sidecar or worker still required for unattended execution?
 - If a task needs local edits, tests, or private file reads, where does that capability live: the Agent's native environment, a local connector, or a hosted runner?
-- Can MCP-based runs still produce first-class `agent_runs`, transcript links, status updates, and revocation behavior in Review Room?
+- Can MCP-based runs still produce first-class `agent_runs`, transcript links, status updates, and revocation behavior in Agent Board state?
 - Do Codex, Claude Code, CodeBuddy, OpenClaw, HermesAgent, and future Agents need different adapter paths despite sharing some MCP capability?
 
 ## Run visibility
 
-Review Room should not depend on a vendor-specific Agent session list for trust.
+Lighthouse Agent Board should not depend on a vendor-specific Agent session list
+for trust.
 
 Every connector execution should create or update a first-class `agent_run` with:
 
@@ -158,7 +164,10 @@ Every connector execution should create or update a first-class `agent_run` with
 - Error.
 - Log path or transcript URL.
 
-For Codex specifically, the adapter should capture any available external session or thread id. A future `codex-thread` adapter may create or continue a visible Codex app thread, but Review Room should remain the canonical cross-Agent observability surface.
+For Codex specifically, the adapter should capture any available external
+session or thread id. A future `codex-thread` adapter may create or continue a
+visible Codex app thread, but Lighthouse Agent Board should remain the
+canonical cross-Agent observability surface.
 
 ## Productization order
 

@@ -4,18 +4,18 @@ Status: `In progress`
 
 ## Purpose
 
-Make Review Room usable by different Agents without forcing every Agent host to
+Make Lighthouse Agent Board usable by different Agents without forcing every Agent host to
 install the current Codex-specific sidecar.
 
 Core concept doc:
 
-- [Review Room Connector Architecture](../../concepts/review-room-connector-architecture.md)
+- [Lighthouse Agent Board Connector Architecture](../../concepts/review-room-connector-architecture.md)
 
 ## Target shape
 
 Connector integration should split into:
 
-- Review Room connector protocol,
+- Agent Board connector protocol,
 - generic connector runtime or sidecar,
 - adapter-specific implementation.
 
@@ -32,7 +32,7 @@ Candidate adapters:
 
 - `codex_connector.py` is a compatibility adapter, not the universal connector
   contract.
-- Connector registration creates Review Room identity and credentials. It does
+- Connector registration creates Agent Board identity and credentials. It does
   not install or start anything on the remote machine by itself.
 - `endpoint` is metadata unless an adapter explicitly implements callback or
   bootstrap behavior.
@@ -70,7 +70,7 @@ Candidate adapters:
 ## Acceptance criteria
 
 - Owner sees a clear connector path after invite or registration.
-- The connector path states what Review Room will do and what the user still
+- The connector path states what Lighthouse Agent Board will do and what the user still
   needs to set up.
 - Connector status distinguishes invited, active, stale, revoked, `mcp_ready`,
   and `mcp_streaming`.
@@ -86,4 +86,3 @@ Candidate adapters:
 - How should transcript links map across Codex, Claude Code, CodeBuddy,
   OpenClaw, HermesAgent, and future Agents?
 - How much bootstrap should Lighthouse own versus the user-side connector?
-

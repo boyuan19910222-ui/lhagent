@@ -1,5 +1,5 @@
 [Unit]
-Description=Lighthouse Review Room MCP Action Runner
+Description=Lighthouse Agent Board MCP Action Runner
 After=network.target lighthouse-review-room.service
 Wants=lighthouse-review-room.service
 

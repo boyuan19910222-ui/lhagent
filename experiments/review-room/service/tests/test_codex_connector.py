@@ -106,14 +106,14 @@ class CodexConnectorRunnerTest(unittest.TestCase):
 
     def test_format_room_history_keeps_recent_compact_messages(self):
         history = [
-            {"sender": "review room owner", "kind": "owner_topic", "body": "第一条"},
+            {"sender": "Agent Board owner", "kind": "owner_topic", "body": "第一条"},
             {"sender": "Developer Agent", "kind": "connector_message", "body": "第二条"},
-            {"sender": "review room owner", "kind": "owner_topic", "body": "第三条"},
+            {"sender": "Agent Board owner", "kind": "owner_topic", "body": "第三条"},
         ]
 
         self.assertEqual(
             format_room_history(history, limit=2),
-            "- Developer Agent [connector_message]: 第二条\n- review room owner [owner_topic]: 第三条",
+            "- Developer Agent [connector_message]: 第二条\n- Agent Board owner [owner_topic]: 第三条",
         )
 
     def test_parse_codex_last_message_extracts_assistant_text_from_jsonl(self):
@@ -181,7 +181,7 @@ class CodexConnectorAsyncResponseTest(unittest.IsolatedAsyncioTestCase):
         event = {
             "type": "message.created",
             "message": {
-                "senderName": "review room owner",
+                "senderName": "Agent Board owner",
                 "body": "先看看这个仓库里说的什么",
             },
         }
@@ -220,7 +220,7 @@ class CodexConnectorAsyncResponseTest(unittest.IsolatedAsyncioTestCase):
             head_ref="",
             task="open topic room",
             room_history=[
-                {"sender": "review room owner", "kind": "owner_topic", "body": "上一条：请先确认你能看到房间。"},
+                {"sender": "Agent Board owner", "kind": "owner_topic", "body": "上一条：请先确认你能看到 Board。"},
                 {"sender": "Reviewer Agent", "kind": "connector_message", "body": "我能看到。"},
             ],
             history_limit=12,
@@ -228,7 +228,7 @@ class CodexConnectorAsyncResponseTest(unittest.IsolatedAsyncioTestCase):
         event = {
             "type": "message.created",
             "message": {
-                "senderName": "review room owner",
+                "senderName": "Agent Board owner",
                 "body": "你真的是 Agent 吗？",
             },
         }
@@ -238,8 +238,8 @@ class CodexConnectorAsyncResponseTest(unittest.IsolatedAsyncioTestCase):
 
         run_codex.assert_called_once()
         prompt = run_codex.call_args.args[1]
-        self.assertIn("最近房间消息", prompt)
-        self.assertIn("上一条：请先确认你能看到房间。", prompt)
+        self.assertIn("最近Board 消息", prompt)
+        self.assertIn("上一条：请先确认你能看到 Board。", prompt)
         self.assertEqual(response["type"], "message.create")
         self.assertEqual(response["body"], "我是通过 Codex connector 接入的真实回复。")
 
@@ -267,17 +267,17 @@ class CodexConnectorAsyncResponseTest(unittest.IsolatedAsyncioTestCase):
         event = {
             "type": "message.created",
             "message": {
-                "senderName": "review room owner",
+                "senderName": "Agent Board owner",
                 "body": "请你作为本地 Codex 接入并回复。",
             },
         }
 
-        with patch("codex_connector.run_codex_command", return_value="本地 Codex 已接入，我会在这个房间里处理任务。") as run_codex:
+        with patch("codex_connector.run_codex_command", return_value="本地 Codex 已接入，我会在这个 Board 里处理任务。") as run_codex:
             response = await maybe_build_response(args, event)
 
         run_codex.assert_called_once()
         self.assertEqual(response["type"], "message.create")
-        self.assertEqual(response["body"], "本地 Codex 已接入，我会在这个房间里处理任务。")
+        self.assertEqual(response["body"], "本地 Codex 已接入，我会在这个 Board 里处理任务。")
 
     async def test_keepalive_pings_websocket_while_response_is_pending(self):
         class FakeWebSocket:

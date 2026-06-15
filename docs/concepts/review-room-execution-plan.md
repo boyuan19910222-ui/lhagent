@@ -1,8 +1,9 @@
-# Review Room Execution Plan
+# Lighthouse Agent Board Execution Plan
 
 ## Goal
 
-Deliver a simple, visible Review Room integration path that validates the product ideas from the architecture notes:
+Deliver a simple, visible Lighthouse Agent Board integration path that validates
+the product ideas from the architecture notes:
 
 - Connector registration is explicit about adapter type, protocol version, capabilities, and forbidden actions.
 - Human chat does not automatically trigger every Agent.
@@ -10,7 +11,7 @@ Deliver a simple, visible Review Room integration path that validates the produc
 - Every Agent execution is visible through `agent_runs`.
 - Existing Codex connector remains the first adapter.
 - MCP Gateway is explored as an adapter path, not as the only connector architecture.
-- The running slice is deployed to the lightweight cloud Review Room service for hands-on verification.
+- The running slice is deployed to the lightweight cloud Agent Board service for hands-on verification.
 
 ## Delivery slices
 
@@ -90,7 +91,7 @@ Verification:
 
 User-visible result:
 
-- The public Review Room service on the lightweight cloud host runs the updated code.
+- The public Agent Board service on the lightweight cloud host runs the updated code.
 - Health check passes.
 - A remote smoke test creates a room, registers a connector, creates a task, starts a run, completes the task, and reads the final snapshot.
 
@@ -110,7 +111,7 @@ User-visible result:
 
 Implementation:
 
-- Add a right-side work panel to the built-in Review Room HTML.
+- Add a right-side work panel to the built-in Agent Board HTML.
 - Reuse `POST /api/rooms/{room_id}/tasks` for task assignment from the page.
 - Render task and run snapshots from `tasks` and `agentRuns`.
 
@@ -145,7 +146,7 @@ Verification:
 User-visible result:
 
 - Reviewer Agent can propose that a finding should be handed off to another role or capability.
-- Owner can accept or reject the handoff from Review Room state.
+- Owner can accept or reject the handoff from Agent Board state.
 - Accepting a handoff converts it into a structured `fix` task and assigns it to an eligible Developer Agent.
 - Handoffs are visible in the Room snapshot and right-side work panel.
 
@@ -166,9 +167,9 @@ Verification:
 
 User-visible result:
 
-- When a Developer Agent completes a `fix` task created from a handoff, Review Room creates a follow-up `verify` task.
+- When a Developer Agent completes a `fix` task created from a handoff, Agent Board creates a follow-up `verify` task.
 - The verification task keeps source links to the fix task, finding, and handoff.
-- Review Room assigns the verification task back to the original Reviewer Agent when that connector is still eligible.
+- Agent Board assigns the verification task back to the original Reviewer Agent when that connector is still eligible.
 - The Reviewer Agent receives a normal `task.assigned` event; verification remains explicit task execution, not hidden chat-triggered work.
 
 Implementation:
@@ -235,8 +236,8 @@ Verification:
 User-visible result:
 
 - MCP-style connectors can ask the room owner to approve or reject a proposed action without executing it.
-- Review Room records the request as a first-class decision object in room state.
-- The owner can accept or reject the decision from Review Room state, leaving an auditable message trail before any external sync adapter acts.
+- Agent Board records the request as a first-class decision object in board state.
+- The owner can accept or reject the decision from Agent Board state, leaving an auditable message trail before any external sync adapter acts.
 
 Implementation:
 
@@ -275,7 +276,7 @@ Verification:
 
 User-visible result:
 
-- A connected MCP-style Agent can receive room messages and room state changes in realtime without a WebSocket sidecar.
+- A connected MCP-style Agent can receive board messages and board state changes in realtime without a WebSocket sidecar.
 - The Agent can decide whether to reply after reading events; ordinary chat remains collaboration input, not automatic execution.
 - The Agent can resume from `Last-Event-ID` or store `nextCursor` and continue from the last observed event after reconnect.
 
@@ -307,7 +308,7 @@ User-visible result:
 
 Implementation:
 
-- Add `threads` and `thread_messages` records to the Review Room snapshot.
+- Add `threads` and `thread_messages` records to the Agent Board snapshot.
 - Add REST endpoints for thread creation, thread messages, and thread summaries.
 - Expose threads in the work panel so deliberation is visible alongside tasks, handoffs, decisions, and runs.
 

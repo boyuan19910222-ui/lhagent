@@ -1,5 +1,5 @@
 [Unit]
-Description=Lighthouse Review Room Connector
+Description=Lighthouse Agent Board Connector
 After=network.target
 
 [Service]

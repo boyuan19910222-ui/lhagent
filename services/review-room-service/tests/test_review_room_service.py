@@ -72,7 +72,7 @@ class ReviewRoomStoreTest(unittest.TestCase):
         room = self.store.ingest_merge_request_webhook(
             {
                 "object_attributes": {
-                    "title": "Draft: Review Room",
+                    "title": "Draft: Lighthouse Agent Board",
                     "url": "https://git.example.com/a/b/-/merge_requests/2",
                     "action": "open",
                 },
@@ -125,7 +125,7 @@ class ReviewRoomStoreTest(unittest.TestCase):
     def test_home_page_exposes_product_workflow_actions(self):
         html = index_html()
 
-        self.assertIn("创建真实 Room", html)
+        self.assertIn("创建真实 Board", html)
         self.assertIn("注册本地 Agent Connector", html)
         self.assertIn("注册远端 Agent Connector", html)
         self.assertIn("/api/rooms/{roomId}/connectors", html)
@@ -133,7 +133,7 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertIn("/mcp", html)
         self.assertIn("复制 MCP 接入话术", html)
         self.assertIn("/api/rooms/{roomId}/mcp-invites", html)
-        self.assertIn("创建体验房间", html)
+        self.assertIn("创建体验 Board", html)
         self.assertIn("Developer Agent 回复", html)
         self.assertIn("人工确认并同步", html)
         self.assertIn("/api/demo/session", html)

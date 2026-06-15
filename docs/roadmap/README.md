@@ -12,23 +12,28 @@ should read that file before changing roadmap or product-direction documents.
 
 ## Current focus
 
-The active focus is Review Room as the first milestone toward a broader
-Human-Agent Workspace:
+The active focus is Lighthouse Agent Board as the first milestone toward a
+broader Human-Agent Workspace. The canonical P0 service is
+`services/review-room-service`; older `review-room` paths remain compatibility
+or legacy-reference names, but product and UI language should use Agent Board:
 
 - MR review is the entry workflow, not the product boundary.
 - The durable value is an auditable, assignable, observable, approval-gated
   collaboration control plane for humans and Agents.
-- The P0 experiment should stay concrete enough to test with real remote
-  Agents, while leaving room for other future room types such as legal review,
-  incident response, release review, or product decision rooms.
+- Workbench messages are preserved for owner/supervisor coordination and feed
+  Agent Inbox, but executable work still flows through tasks, claims, and
+  `agent_runs`.
+- The P0 experiment should stay concrete enough to test with real activated
+  Agents, while leaving room for other future board types such as legal review,
+  incident response, release review, or product decision boards.
 
 ## Files
 
 - [product-thesis.md](./product-thesis.md): north star, scope, and product
   boundaries.
 - [milestones.md](./milestones.md): phased goals and acceptance criteria.
-- [tracks/review-room-p0.md](./tracks/review-room-p0.md): current Review Room
-  experiment track.
+- [tracks/review-room-p0.md](./tracks/review-room-p0.md): current Lighthouse
+  Agent Board experiment track.
 - [tracks/connector-and-mcp.md](./tracks/connector-and-mcp.md): connector
   runtime, adapter, MCP, and bootstrap track.
 - [tracks/observability-and-routing.md](./tracks/observability-and-routing.md):

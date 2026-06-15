@@ -1,35 +1,40 @@
-# Lighthouse Review Room
+# Lighthouse Agent Board
 
 ## Core conclusion
 
-Review Room should be a Lighthouse-hosted Agent collaboration control plane, not only a chat room and not only a small service inside one user instance.
+Lighthouse Agent Board should be a Lighthouse-hosted Agent collaboration
+control plane: a shared board for context, tasks, findings, decisions, and audit
+events. It is not a chat room and not only a small service inside one user
+instance. The current implementation still uses `review-room` paths and
+protocol names for compatibility.
 
 Related productization notes:
 
 - [Roadmap](../roadmap/README.md)
-- [Review Room Execution Plan](./review-room-execution-plan.md)
-- [Review Room Connector Architecture](./review-room-connector-architecture.md)
-- [Review Room Protocol](./review-room-protocol.md)
-- [Review Room Security](./review-room-security.md)
-- [Review Room Agent Collaboration](./review-room-agent-collaboration.md)
+- [Lighthouse Agent Board Execution Plan](./review-room-execution-plan.md)
+- [Lighthouse Agent Board Connector Architecture](./review-room-connector-architecture.md)
+- [Lighthouse Agent Board Protocol](./review-room-protocol.md)
+- [Lighthouse Agent Board Security](./review-room-security.md)
+- [Lighthouse Agent Board Agent Collaboration](./review-room-agent-collaboration.md)
 
 Recommended split:
 
 | Layer | Deployment | Responsibility |
 | --- | --- | --- |
-| Review Room Control Plane | Lighthouse platform | Room, message, finding, artifact, identity, permission, audit, console UI, MR comment synchronization |
-| Review Room Connector | User Lighthouse instance or local CLI | Private Git/IM access, local Agent bridge, remote Reviewer Agent adapter, A2A/MCP conversion |
+| Agent Board Control Plane | Lighthouse platform | Board, message, finding, artifact, identity, permission, audit, console UI, MR comment synchronization |
+| Agent Board Connector | User Lighthouse instance or local CLI | Private Git/IM access, local Agent bridge, remote Reviewer Agent adapter, A2A/MCP conversion |
 
 This keeps private source code, enterprise Git tokens, IM tokens, and local Agent execution inside the user's trusted environment while still giving Lighthouse a durable collaboration state source.
 
 ## Product model
 
-Review Room turns code review into a structured Agent collaboration room:
+Lighthouse Agent Board turns code review into a structured Agent collaboration
+board:
 
 - MR is the context entry.
-- Room is the collaboration state source.
+- Board is the collaboration state source.
 - Finding is the structured review output.
-- Developer Agent responses are tracked in the Room.
+- Developer Agent responses are tracked on the board.
 - Human confirmation is the external sync boundary.
 - Connector syncs confirmed results back to MR comments, IM, or later pipeline status.
 
@@ -41,7 +46,7 @@ Remote Reviewer Agents are better suited for read-only, review, verification, an
 
 - Read the current MR or branch diff and produce structured findings.
 - Review a Developer Agent fix plan and call out missing tests or unresolved risk.
-- Evaluate the Review Room console interaction model.
+- Evaluate the Lighthouse Agent Board console interaction model.
 - Audit connector security boundaries such as token scope, webhook secret handling, public exposure, and MR comment permissions.
 - Re-check completed fixes and return pass/fail plus remaining findings.
 
@@ -49,20 +54,23 @@ Local Developer Agents are better suited for source edits, tests, running servic
 
 ## Local product slice
 
-This repository includes a local product slice at:
+This repository includes the canonical local product slice at:
 
 ```text
-experiments/review-room/service
+services/review-room-service
 ```
+
+The older `experiments/review-room/service` tree is now a legacy P0 protocol
+reference and should not receive new product features.
 
 The service uses SQLite for state, `aiohttp` for the realtime HTTP/WebSocket surface, and `codex_connector.py` as the Agent-side bridge to `codex exec --json`. It models:
 
-- Review Room storage.
-- Room messages.
+- Agent Board storage.
+- Board messages.
 - Structured findings.
 - Local and remote Agent connectors.
 - Token-authenticated connector events.
-- Room-scoped owner and connector WebSocket identities.
+- Board-scoped owner and connector WebSocket identities.
 - Guest invites, join tokens, and owner-controlled member disconnect.
 - Developer Agent responses.
 - Human confirmation and MR sync preview.
@@ -132,7 +140,7 @@ P0.5: Connector and execution hardening
 - Add `task.create` and direct `task.assigned` so normal room messages do not trigger Agent execution.
 - Add `task.claim` so open role/capability work cannot run until an eligible connector explicitly claims it.
 - Add owner-triggered connector token rotation so leaked or stale connector credentials can be invalidated without deleting the connector record.
-- Add `handoff.propose` and owner accept/reject so Reviewer Agent recommendations become Developer Agent tasks only through visible Review Room state.
+- Add `handoff.propose` and owner accept/reject so Reviewer Agent recommendations become Developer Agent tasks only through visible Agent Board state.
 - Add automatic `verify` task generation after completed handoff-backed `fix` tasks, preserving links to the source finding and handoff.
 - Add MCP `start_run` and `complete_task` tools so MCP-style connectors can produce first-class `agent_runs`.
 - Add decision records and MCP `request_owner_confirmation` so external actions stay behind owner approval.
@@ -144,7 +152,7 @@ P0.5: Connector and execution hardening
 
 P1: Lighthouse control plane
 
-- Move Room state into Lighthouse backend.
+- Move Agent Board state into Lighthouse backend.
 - Show real Room list, Room detail, Finding state, and connector status in Lighthouse Console.
 - Keep the user-side Connector responsible for private network and Agent adapter access.
 

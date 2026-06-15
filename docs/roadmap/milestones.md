@@ -12,8 +12,8 @@ Goal:
 
 Acceptance:
 
-- Roadmap folder exists and links to the existing Review Room concept docs.
-- Existing completed Review Room work is summarized with evidence links.
+- Roadmap folder exists and links to the existing Agent Board concept docs.
+- Existing completed Agent Board work is summarized with evidence links.
 - Future discussion has a clear place to land before it becomes implementation.
 
 Next actions:
@@ -22,13 +22,14 @@ Next actions:
 - Add missing local discussion points into `ideas-inbox.md`.
 - Promote the first 3 to 5 next actions into M1.
 
-## M1: Local Review Room P0 is reliable
+## M1: Local Lighthouse Agent Board P0 is reliable
 
 Status: `In progress`
 
 Goal:
 
-- Make the local Review Room experiment a reliable control-plane proof.
+- Make the local Lighthouse Agent Board experiment a reliable control-plane
+  proof.
 - Preserve the current P0 scope while tightening tests, docs, and UX paths.
 
 Acceptance:
@@ -48,7 +49,7 @@ Current evidence:
 
 Key tracks:
 
-- [Review Room P0](./tracks/review-room-p0.md)
+- [Lighthouse Agent Board P0](./tracks/review-room-p0.md)
 - [Observability and routing](./tracks/observability-and-routing.md)
 - [Safety and lifecycle](./tracks/safety-and-lifecycle.md)
 
@@ -58,13 +59,13 @@ Status: `Planned`
 
 Goal:
 
-- Validate Review Room with real remote Agent behavior, not scripted demo
-  messages.
+- Validate Lighthouse Agent Board with real activated Agent behavior, not
+  scripted demo messages.
 
 Acceptance:
 
 - A remote Agent can connect through the intended adapter path.
-- The Agent can read room context with trust labels.
+- The Agent can read board context with trust labels.
 - The Agent responds only to explicit task or allowed tool context.
 - `agent_runs`, status, task completion, and transcript or log pointers are
   visible to the owner.
@@ -84,8 +85,8 @@ Status: `Planned`
 
 Goal:
 
-- Split the connector protocol, connector runtime, and Agent adapters so Review
-  Room is not locked to the current Codex sidecar.
+- Split the connector protocol, connector runtime, and Agent adapters so
+  Lighthouse Agent Board is not locked to the current Codex sidecar.
 
 Acceptance:
 
@@ -95,7 +96,7 @@ Acceptance:
 - `mcp-remote` is validated against at least one real Agent path.
 - The adapter matrix documents which Agents need MCP, sidecar, CLI, HTTP,
   vendor API, or A2A integration.
-- Bootstrap UX explains what Review Room can start remotely and what still
+- Bootstrap UX explains what Lighthouse Agent Board can start remotely and what still
   requires user-side setup.
 
 Key track:
@@ -112,8 +113,8 @@ Goal:
 
 Acceptance:
 
-- Lighthouse backend owns durable room state.
-- Lighthouse Console exposes room list, room detail, task panel, run panel,
+- Lighthouse backend owns durable board state.
+- Lighthouse Console exposes board list, board detail, task panel, run panel,
   finding panel, decisions, and connector status.
 - User-side connector boundary protects private repo, IM, and Agent execution
   access.

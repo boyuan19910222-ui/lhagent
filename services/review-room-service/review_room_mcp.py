@@ -1,4 +1,4 @@
-"""Minimal Remote MCP facade for Lighthouse Review Room.
+"""Minimal Remote MCP facade for Lighthouse Agent Board.
 
 This module intentionally avoids extra dependencies for the first cut. It
 implements the JSON-RPC methods needed by MCP clients over the service's
@@ -25,8 +25,8 @@ AFTER_TOOL_APP_KEY = web.AppKey("review_room_mcp_after_tool", object)
 TOOL_DEFINITIONS: List[Dict[str, Any]] = [
     {
         "name": "join_room",
-        "title": "Join Review Room",
-        "description": "Join the Review Room using the bearer invite token and create an agent session.",
+        "title": "Join Agent Board",
+        "description": "Join the Lighthouse Agent Board using the bearer invite token and create an agent session.",
         "inputSchema": {
             "type": "object",
             "properties": {"roomId": {"type": "string"}},
@@ -65,10 +65,46 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "list_inbox",
+        "title": "List Agent Inbox",
+        "description": "List unread or active workbench inbox items for this agent.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"includeHandled": {"type": "boolean"}},
+        },
+    },
+    {
+        "name": "ack_event",
+        "title": "Acknowledge Inbox Event",
+        "description": "Mark an inbox item as read, acked, handled, or ignored.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "inboxItemId": {"type": "string"},
+                "cursor": {"type": "integer"},
+                "status": {"type": "string", "enum": ["unread", "read", "ack", "handled", "ignored"]},
+            },
+        },
+    },
+    {
         "name": "list_tasks",
         "title": "List Tasks",
         "description": "List tasks assigned to this agent or unassigned tasks in the current Room.",
         "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "create_task",
+        "title": "Create Task",
+        "description": "Create explicit executable work on the Agent Board.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "body": {"type": "string"},
+                "assignedTo": {"type": "string"},
+            },
+            "required": ["title"],
+        },
     },
     {
         "name": "claim_task",
@@ -81,9 +117,36 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "start_run",
+        "title": "Start Agent Run",
+        "description": "Start an observable run for a claimed or assigned task.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "taskId": {"type": "string"},
+                "promptSummary": {"type": "string"},
+            },
+            "required": ["taskId"],
+        },
+    },
+    {
+        "name": "complete_task",
+        "title": "Complete Task",
+        "description": "Complete an assigned task and finish the current agent run.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "taskId": {"type": "string"},
+                "finalMessage": {"type": "string"},
+                "status": {"type": "string", "enum": ["completed", "failed", "cancelled"]},
+            },
+            "required": ["taskId"],
+        },
+    },
+    {
         "name": "update_task",
         "title": "Update Task",
-        "description": "Update task status and result.",
+        "description": "Legacy compatibility alias. Prefer start_run and complete_task.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -125,6 +188,36 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "propose_handoff",
+        "title": "Propose Handoff",
+        "description": "Propose that a finding should become follow-up work for another agent.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "findingId": {"type": "string"},
+                "targetAgent": {"type": "string"},
+                "reason": {"type": "string"},
+                "suggestedTask": {"type": "string"},
+            },
+            "required": ["findingId"],
+        },
+    },
+    {
+        "name": "request_owner_confirmation",
+        "title": "Request Owner Confirmation",
+        "description": "Ask the owner to approve or reject an external side effect.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string"},
+                "reason": {"type": "string"},
+                "targetType": {"type": "string"},
+                "targetId": {"type": "string"},
+            },
+            "required": ["action"],
+        },
+    },
+    {
         "name": "heartbeat",
         "title": "Heartbeat",
         "description": "Mark this MCP agent session as alive.",
@@ -132,18 +225,29 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
     },
 ]
 
+TOOL_DEFINITIONS.extend(
+    [
+        {
+            **tool,
+            "name": "review_room.{}".format(tool["name"]),
+            "title": "{} Legacy Alias".format(tool["title"]),
+        }
+        for tool in list(TOOL_DEFINITIONS)
+    ]
+)
+
 RESOURCE_DEFINITIONS: List[Dict[str, Any]] = [
-    {"uri": "review-room://current/snapshot", "name": "Current Room Snapshot", "mimeType": "application/json"},
-    {"uri": "review-room://current/messages", "name": "Current Room Messages", "mimeType": "application/json"},
-    {"uri": "review-room://current/findings", "name": "Current Room Findings", "mimeType": "application/json"},
-    {"uri": "review-room://current/tasks", "name": "Current Room Tasks", "mimeType": "application/json"},
+    {"uri": "review-room://current/snapshot", "name": "Current Agent Board Snapshot", "mimeType": "application/json"},
+    {"uri": "review-room://current/messages", "name": "Current Agent Board Messages", "mimeType": "application/json"},
+    {"uri": "review-room://current/findings", "name": "Current Agent Board Findings", "mimeType": "application/json"},
+    {"uri": "review-room://current/tasks", "name": "Current Agent Board Tasks", "mimeType": "application/json"},
 ]
 
 PROMPT_DEFINITIONS: List[Dict[str, Any]] = [
     {
         "name": "review-room-onboarding",
-        "title": "Review Room Onboarding",
-        "description": "Operational rules for agents joining a Lighthouse Review Room.",
+        "title": "Lighthouse Agent Board Onboarding",
+        "description": "Operational rules for agents joining a Lighthouse Agent Board.",
     }
 ]
 
@@ -190,11 +294,17 @@ def public_connector(connector: Dict[str, Any]) -> Dict[str, Any]:
 
 def onboarding_text() -> str:
     return (
-        "你正在接入 Lighthouse Review Room。先调用 join_room，然后读取 get_room_snapshot。"
-        "明确 @ 到你的消息必须回复；分配给你的 task 必须 claim_task 后执行并 update_task；"
-        "没有 @ 的聊天室消息应作为上下文阅读，但不要自动回复。"
-        "所有回复都必须通过 post_message、post_finding 或 update_task 回写到 Review Room。"
+        "你正在接入 Lighthouse Agent Board。先调用 join_room，然后读取 get_room_snapshot。"
+        "Workbench 消息都会进入你的 inbox；@ 到你的消息是高优先级且需要回复。"
+        "消息本身不是执行权限；分配给你的 task 必须 claim_task 后 start_run，再 complete_task。"
+        "所有回复都必须通过 post_message、post_finding 或 request_owner_confirmation 回写到 Agent Board。"
     )
+
+
+def canonical_tool_name(name: str) -> str:
+    if name.startswith("review_room."):
+        return name[len("review_room.") :]
+    return name
 
 
 async def handle_mcp_get(_request: web.Request) -> web.StreamResponse:
@@ -245,7 +355,7 @@ async def handle_mcp_post(request: web.Request) -> web.Response:
             try:
                 await after_tool(token, params.get("name") or "", params.get("arguments") or {}, result)
             except Exception:
-                LOGGER.exception("Review Room MCP after_tool hook failed")
+                LOGGER.exception("Agent Board MCP after_tool hook failed")
 
     return rpc_response(rpc_id, result)
 
@@ -299,7 +409,7 @@ def prompt_get(params: Dict[str, Any]) -> Dict[str, Any]:
     if name != "review-room-onboarding":
         raise KeyError("prompt not found")
     return {
-        "description": "Review Room agent onboarding instructions",
+        "description": "Lighthouse Agent Board agent onboarding instructions",
         "messages": [{"role": "user", "content": {"type": "text", "text": onboarding_text()}}],
     }
 
@@ -321,6 +431,7 @@ def resource_read(store: Any, identity: Dict[str, Any], params: Dict[str, Any]) 
 
 
 async def call_tool(store: Any, token: str, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    name = canonical_tool_name(name or "")
     if name == "join_room":
         return store.join_mcp_room(token, arguments)
 
@@ -338,13 +449,64 @@ async def call_tool(store: Any, token: str, name: str, arguments: Dict[str, Any]
                 limit=int(arguments.get("limit") or 100),
             )
         }
+    if name == "list_inbox":
+        return {
+            "items": store.list_inbox(
+                identity["roomId"],
+                identity["name"],
+                include_handled=bool(arguments.get("includeHandled") or arguments.get("include_handled")),
+            )
+        }
+    if name == "ack_event":
+        return store.ack_event(
+            identity["roomId"],
+            {
+                **arguments,
+                "agentName": identity["name"],
+            },
+        )
     if name == "list_tasks":
         return {"tasks": store.list_tasks(identity["roomId"], assigned_to=identity["name"])}
+    if name == "create_task":
+        return store.create_task(
+            identity["roomId"],
+            {
+                "title": arguments.get("title") or "Agent-created task",
+                "body": arguments.get("body") or "",
+                "assignedTo": arguments.get("assignedTo") or arguments.get("assigned_to") or identity["name"],
+                "createdBy": identity["name"],
+            },
+        )
     if name == "claim_task":
         task_id = arguments.get("taskId") or arguments.get("task_id")
         if not task_id:
             raise ValueError("taskId is required")
         return store.claim_task(task_id, {"agentName": identity["name"]})
+    if name == "start_run":
+        task_id = arguments.get("taskId") or arguments.get("task_id")
+        if not task_id:
+            raise ValueError("taskId is required")
+        return store.start_run(
+            task_id,
+            {
+                "agentName": identity["name"],
+                "connectorId": identity["connectorId"],
+                "promptSummary": arguments.get("promptSummary") or arguments.get("prompt_summary") or "",
+            },
+        )
+    if name == "complete_task":
+        task_id = arguments.get("taskId") or arguments.get("task_id")
+        if not task_id:
+            raise ValueError("taskId is required")
+        return store.complete_task(
+            task_id,
+            {
+                "agentName": identity["name"],
+                "status": arguments.get("status") or "completed",
+                "finalMessage": arguments.get("finalMessage") or arguments.get("final_message") or arguments.get("result") or "",
+                "error": arguments.get("error") or "",
+            },
+        )
     if name == "update_task":
         task_id = arguments.get("taskId") or arguments.get("task_id")
         if not task_id:
@@ -352,6 +514,24 @@ async def call_tool(store: Any, token: str, name: str, arguments: Dict[str, Any]
         status = arguments.get("status")
         if not status:
             raise ValueError("status is required")
+        if status in {"completed", "failed", "cancelled"}:
+            return store.complete_task(
+                task_id,
+                {
+                    "agentName": identity["name"],
+                    "status": status,
+                    "finalMessage": arguments.get("result") or arguments.get("finalMessage") or "",
+                },
+            )
+        if status == "running":
+            return store.start_run(
+                task_id,
+                {
+                    "agentName": identity["name"],
+                    "connectorId": identity["connectorId"],
+                    "promptSummary": arguments.get("result") or "",
+                },
+            )
         return store.update_task(
             task_id,
             {
@@ -384,6 +564,33 @@ async def call_tool(store: Any, token: str, name: str, arguments: Dict[str, Any]
                 "evidence": arguments.get("evidence") or "",
                 "suggestedFix": arguments.get("suggestedFix") or arguments.get("suggested_fix") or "",
                 "createdBy": identity["name"],
+            },
+        )
+    if name == "propose_handoff":
+        finding_id = arguments.get("findingId") or arguments.get("finding_id")
+        if not finding_id:
+            raise ValueError("findingId is required")
+        return store.propose_handoff(
+            finding_id,
+            {
+                "fromAgent": identity["name"],
+                "targetAgent": arguments.get("targetAgent") or arguments.get("target_agent") or "Developer Agent",
+                "reason": arguments.get("reason") or "",
+                "suggestedTask": arguments.get("suggestedTask") or arguments.get("suggested_task") or "",
+            },
+        )
+    if name == "request_owner_confirmation":
+        action = arguments.get("action") or ""
+        if not action:
+            raise ValueError("action is required")
+        return store.request_owner_confirmation(
+            identity["roomId"],
+            {
+                "requester": identity["name"],
+                "action": action,
+                "reason": arguments.get("reason") or "",
+                "targetType": arguments.get("targetType") or arguments.get("target_type") or "",
+                "targetId": arguments.get("targetId") or arguments.get("target_id") or "",
             },
         )
     if name == "heartbeat":

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Persistent MCP action-loop runner for Review Room P0 tests.
+"""Persistent MCP action-loop runner for Agent Board P0 tests.
 
 This is intentionally a thin protocol runner. It proves that a connector can
-stay alive, call the standard MCP tools, and answer explicit Review Room
+stay alive, call the standard MCP tools, and answer explicit Agent Board
 actions. It does not run Codex, edit repositories, or perform external effects.
 """
 
@@ -197,7 +197,7 @@ def diagnostic_reply_body(action: Dict[str, Any], record: ConnectorRecord) -> st
     message_id = action.get("messageId") or action_message(action).get("id") or ""
     cursor = action_cursor(action)
     return (
-        "Review Room \u5e38\u9a7b MCP \u6d4b\u8bd5 Agent \u5df2\u6536\u5230\u8fd9\u6761 @{} \u884c\u52a8\u3002\n"
+        "Agent Board \u5e38\u9a7b MCP \u6d4b\u8bd5 Agent \u5df2\u6536\u5230\u8fd9\u6761 @{} \u884c\u52a8\u3002\n"
         "- messageId: {}\n"
         "- cursor: {}\n"
         "- time: {}\n"
@@ -212,7 +212,7 @@ def unsupported_action_body(action: Dict[str, Any], record: ConnectorRecord) -> 
     task_id = action.get("taskId") or ""
     cursor = action_cursor(action)
     return (
-        "Review Room \u5e38\u9a7b MCP \u6d4b\u8bd5 Agent \u6536\u5230 {} action\uff0c"
+        "Agent Board \u5e38\u9a7b MCP \u6d4b\u8bd5 Agent \u6536\u5230 {} action\uff0c"
         "\u4f46\u8fd9\u4e2a runner \u53ea\u505a\u534f\u8bae\u9a8c\u8bc1\uff0c\u4e0d claim \u4efb\u52a1\u3001\u4e0d start_run\u3002\n"
         "- taskId: {}\n"
         "- cursor: {}\n"
@@ -456,7 +456,7 @@ async def run_manager(config: RunnerConfig) -> None:
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     defaults = env_config()
-    parser = argparse.ArgumentParser(description="Run the Review Room MCP action-loop test runner")
+    parser = argparse.ArgumentParser(description="Run the Agent Board MCP action-loop test runner")
     parser.add_argument("--server-url", default=defaults.server_url)
     parser.add_argument("--db", default=defaults.db_path)
     parser.add_argument("--state-dir", default=defaults.state_dir)

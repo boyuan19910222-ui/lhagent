@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Lighthouse Review Room connector service.
+"""Lighthouse Agent Board connector service.
 
-The service models the instance-side Review Room backend: rooms, realtime
+The service models the instance-side Agent Board backend: rooms, realtime
 messages, review findings, connector identities, and owner confirmations.
 """
 
@@ -156,6 +156,92 @@ class ReviewRoomStore:
                   FOREIGN KEY(room_id) REFERENCES rooms(id)
                 );
 
+                CREATE TABLE IF NOT EXISTS inbox_items (
+                  id TEXT PRIMARY KEY,
+                  room_id TEXT NOT NULL,
+                  agent_name TEXT NOT NULL,
+                  agent_role TEXT NOT NULL,
+                  source_event_cursor INTEGER NOT NULL,
+                  type TEXT NOT NULL,
+                  source_type TEXT NOT NULL,
+                  source_id TEXT NOT NULL,
+                  priority TEXT NOT NULL,
+                  requires_reply INTEGER NOT NULL,
+                  status TEXT NOT NULL,
+                  reason TEXT NOT NULL,
+                  payload_json TEXT NOT NULL,
+                  created_at INTEGER NOT NULL,
+                  updated_at INTEGER NOT NULL,
+                  FOREIGN KEY(room_id) REFERENCES rooms(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS agent_runs (
+                  id TEXT PRIMARY KEY,
+                  room_id TEXT NOT NULL,
+                  task_id TEXT NOT NULL,
+                  connector_id TEXT NOT NULL,
+                  agent_name TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  prompt_summary TEXT NOT NULL,
+                  final_message TEXT NOT NULL,
+                  error TEXT NOT NULL,
+                  started_at INTEGER NOT NULL,
+                  finished_at INTEGER,
+                  created_at INTEGER NOT NULL,
+                  updated_at INTEGER NOT NULL,
+                  FOREIGN KEY(room_id) REFERENCES rooms(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS decisions (
+                  id TEXT PRIMARY KEY,
+                  room_id TEXT NOT NULL,
+                  kind TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  requester TEXT NOT NULL,
+                  action TEXT NOT NULL,
+                  reason TEXT NOT NULL,
+                  target_type TEXT NOT NULL,
+                  target_id TEXT NOT NULL,
+                  created_at INTEGER NOT NULL,
+                  updated_at INTEGER NOT NULL,
+                  FOREIGN KEY(room_id) REFERENCES rooms(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS handoffs (
+                  id TEXT PRIMARY KEY,
+                  room_id TEXT NOT NULL,
+                  source_finding_id TEXT NOT NULL,
+                  from_agent TEXT NOT NULL,
+                  target_agent TEXT NOT NULL,
+                  reason TEXT NOT NULL,
+                  suggested_task TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  created_at INTEGER NOT NULL,
+                  updated_at INTEGER NOT NULL,
+                  FOREIGN KEY(room_id) REFERENCES rooms(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS threads (
+                  id TEXT PRIMARY KEY,
+                  room_id TEXT NOT NULL,
+                  kind TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  title TEXT NOT NULL,
+                  summary_json TEXT NOT NULL,
+                  created_at INTEGER NOT NULL,
+                  updated_at INTEGER NOT NULL,
+                  FOREIGN KEY(room_id) REFERENCES rooms(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS thread_messages (
+                  id TEXT PRIMARY KEY,
+                  thread_id TEXT NOT NULL,
+                  sender_name TEXT NOT NULL,
+                  body TEXT NOT NULL,
+                  created_at INTEGER NOT NULL,
+                  FOREIGN KEY(thread_id) REFERENCES threads(id)
+                );
+
                 CREATE TABLE IF NOT EXISTS mcp_invites (
                   id TEXT PRIMARY KEY,
                   room_id TEXT NOT NULL,
@@ -208,13 +294,13 @@ class ReviewRoomStore:
     def create_room(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         timestamp = now_ms()
         participants = payload.get("participants") or [
-            {"type": "human", "name": "review room owner", "role": "owner"},
+            {"type": "human", "name": "Agent Board owner", "role": "owner"},
             {"type": "agent", "name": "Reviewer Agent", "role": "reviewer"},
             {"type": "agent", "name": "Developer Agent", "role": "developer"},
         ]
         room = {
             "id": make_id("room"),
-            "title": payload.get("title") or "未命名 Review Room",
+            "title": payload.get("title") or "未命名 Agent Board",
             "provider": payload.get("provider") or "manual",
             "mrUrl": payload.get("mrUrl") or payload.get("mr_url") or "",
             "ownerToken": payload.get("ownerToken") or payload.get("owner_token") or make_id("rro"),
@@ -248,9 +334,9 @@ class ReviewRoomStore:
             room["id"],
             {
                 "senderType": "system",
-                "senderName": "Lighthouse Review Room",
+                "senderName": "Lighthouse Agent Board",
                 "kind": "room_created",
-                "body": "Review Room 已创建",
+                "body": "Agent Board 已创建",
                 "payload": {"provider": room["provider"], "mrUrl": room["mrUrl"]},
             },
         )
@@ -282,6 +368,26 @@ class ReviewRoomStore:
                 "SELECT * FROM tasks WHERE room_id = ? ORDER BY created_at ASC",
                 (room_id,),
             ).fetchall()
+            inbox_rows = conn.execute(
+                "SELECT * FROM inbox_items WHERE room_id = ? ORDER BY created_at ASC",
+                (room_id,),
+            ).fetchall()
+            run_rows = conn.execute(
+                "SELECT * FROM agent_runs WHERE room_id = ? ORDER BY created_at ASC",
+                (room_id,),
+            ).fetchall()
+            decision_rows = conn.execute(
+                "SELECT * FROM decisions WHERE room_id = ? ORDER BY created_at ASC",
+                (room_id,),
+            ).fetchall()
+            handoff_rows = conn.execute(
+                "SELECT * FROM handoffs WHERE room_id = ? ORDER BY created_at ASC",
+                (room_id,),
+            ).fetchall()
+            thread_rows = conn.execute(
+                "SELECT * FROM threads WHERE room_id = ? ORDER BY created_at ASC",
+                (room_id,),
+            ).fetchall()
             event_rows = conn.execute(
                 "SELECT * FROM events WHERE room_id = ? ORDER BY cursor ASC",
                 (room_id,),
@@ -291,6 +397,11 @@ class ReviewRoomStore:
         room["findings"] = [self._finding_from_row(row) for row in finding_rows]
         room["connectors"] = [self._connector_from_row(row) for row in connector_rows]
         room["tasks"] = [self._task_from_row(row) for row in task_rows]
+        room["inboxItems"] = [self._inbox_item_from_row(row) for row in inbox_rows]
+        room["agentRuns"] = [self._agent_run_from_row(row) for row in run_rows]
+        room["decisions"] = [self._decision_from_row(row) for row in decision_rows]
+        room["handoffs"] = [self._handoff_from_row(row) for row in handoff_rows]
+        room["threads"] = [self._thread_from_row(row) for row in thread_rows]
         room["events"] = [self._event_from_row(row) for row in event_rows]
         return room
 
@@ -300,7 +411,7 @@ class ReviewRoomStore:
         event_type: str,
         payload: Dict[str, Any],
         actor_type: str = "system",
-        actor_name: str = "Review Room",
+        actor_name: str = "Agent Board",
     ) -> Dict[str, Any]:
         self.require_room(room_id)
         timestamp = now_ms()
@@ -350,6 +461,145 @@ class ReviewRoomStore:
                 actor_type=message["senderType"],
                 actor_name=message["senderName"],
             )
+
+    def board_agents(self, room_id: str) -> List[Dict[str, str]]:
+        room = self.get_room(room_id)
+        if not room:
+            return []
+        agents: List[Dict[str, str]] = []
+        seen = set()
+        for participant in room.get("participants", []):
+            if participant.get("type") != "agent" or not participant.get("name"):
+                continue
+            key = participant["name"].lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            agents.append({"name": participant["name"], "role": participant.get("role") or ""})
+        for connector in room.get("connectors", []):
+            key = connector["name"].lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            agents.append({"name": connector["name"], "role": connector.get("agentRole") or ""})
+        return agents
+
+    def record_message_inbox_items(
+        self,
+        room_id: str,
+        message: Dict[str, Any],
+        source_event: Dict[str, Any],
+    ) -> None:
+        if message.get("senderType") == "system":
+            return
+        mentions = {agent["name"] for agent in self.resolve_message_mentions(room_id, message)}
+        timestamp = now_ms()
+        rows = []
+        for agent in self.board_agents(room_id):
+            if message.get("senderType") == "agent" and message.get("senderName") == agent["name"]:
+                continue
+            mentioned = agent["name"] in mentions
+            rows.append(
+                (
+                    make_id("inbox"),
+                    room_id,
+                    agent["name"],
+                    agent.get("role", ""),
+                    int(source_event["cursor"]),
+                    "message",
+                    "message",
+                    message["id"],
+                    "high" if mentioned else "normal",
+                    1 if mentioned else 0,
+                    "unread",
+                    "mention" if mentioned else "supervision_message",
+                    json_dumps({"message": message}),
+                    timestamp,
+                    timestamp,
+                )
+            )
+        if not rows:
+            return
+        with self.connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO inbox_items
+                  (id, room_id, agent_name, agent_role, source_event_cursor, type, source_type,
+                   source_id, priority, requires_reply, status, reason, payload_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+
+    def list_inbox(self, room_id: str, agent_name: str, include_handled: bool = False) -> List[Dict[str, Any]]:
+        self.require_room(room_id)
+        with self.connect() as conn:
+            if include_handled:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM inbox_items
+                    WHERE room_id = ? AND agent_name = ?
+                    ORDER BY source_event_cursor ASC, created_at ASC
+                    """,
+                    (room_id, agent_name),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM inbox_items
+                    WHERE room_id = ? AND agent_name = ? AND status NOT IN ('handled', 'ignored')
+                    ORDER BY source_event_cursor ASC, created_at ASC
+                    """,
+                    (room_id, agent_name),
+                ).fetchall()
+        return [self._inbox_item_from_row(row) for row in rows]
+
+    def ack_event(self, room_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        self.require_room(room_id)
+        agent_name = payload.get("agentName") or payload.get("agent_name")
+        item_id = payload.get("inboxItemId") or payload.get("inbox_item_id")
+        cursor = payload.get("cursor")
+        status = payload.get("status") or "read"
+        if not agent_name:
+            raise ValueError("agentName is required")
+        if status not in {"unread", "read", "ack", "handled", "ignored"}:
+            raise ValueError("invalid inbox status")
+        if not item_id and cursor is None:
+            raise ValueError("inboxItemId or cursor is required")
+        timestamp = now_ms()
+        with self.connect() as conn:
+            if item_id:
+                row = conn.execute(
+                    """
+                    SELECT * FROM inbox_items
+                    WHERE id = ? AND room_id = ? AND agent_name = ?
+                    """,
+                    (item_id, room_id, agent_name),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT * FROM inbox_items
+                    WHERE source_event_cursor = ? AND room_id = ? AND agent_name = ?
+                    """,
+                    (int(cursor), room_id, agent_name),
+                ).fetchone()
+            if not row:
+                raise KeyError("inbox item not found")
+            conn.execute(
+                "UPDATE inbox_items SET status = ?, updated_at = ? WHERE id = ?",
+                (status, timestamp, row["id"]),
+            )
+            updated = conn.execute("SELECT * FROM inbox_items WHERE id = ?", (row["id"],)).fetchone()
+        item = self._inbox_item_from_row(updated)
+        self.record_event(
+            room_id,
+            "inbox.acknowledged",
+            {"inboxItem": item},
+            actor_type="agent",
+            actor_name=agent_name,
+        )
+        return item
 
     def resolve_message_mentions(self, room_id: str, message: Dict[str, Any]) -> List[Dict[str, str]]:
         room = self.get_room(room_id)
@@ -422,7 +672,7 @@ class ReviewRoomStore:
             "assignedTo": payload.get("assignedTo") or payload.get("assigned_to") or "",
             "claimedBy": payload.get("claimedBy") or payload.get("claimed_by") or "",
             "result": payload.get("result") or "",
-            "createdBy": payload.get("createdBy") or payload.get("created_by") or "review room owner",
+            "createdBy": payload.get("createdBy") or payload.get("created_by") or "Agent Board owner",
             "createdAt": timestamp,
             "updatedAt": timestamp,
         }
@@ -540,9 +790,236 @@ class ReviewRoomStore:
             "task.updated",
             {"task": updated},
             actor_type="agent" if claimed_by else "system",
-            actor_name=claimed_by or "Review Room",
+            actor_name=claimed_by or "Agent Board",
         )
         return updated
+
+    def start_run(self, task_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        task = self.get_task(task_id)
+        agent_name = payload.get("agentName") or payload.get("agent_name") or payload.get("claimedBy") or task["claimedBy"] or task["assignedTo"]
+        if task["assignedTo"] and agent_name and task["assignedTo"] != agent_name:
+            raise PermissionError("task assigned to {}".format(task["assignedTo"]))
+        timestamp = now_ms()
+        if task["status"] != "running" or task["claimedBy"] != agent_name:
+            self.update_task(task_id, {"status": "running", "claimedBy": agent_name, "agentName": agent_name})
+        with self.connect() as conn:
+            existing = conn.execute(
+                """
+                SELECT * FROM agent_runs
+                WHERE task_id = ? AND agent_name = ? AND status = 'running'
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (task_id, agent_name),
+            ).fetchone()
+            if existing:
+                return self._agent_run_from_row(existing)
+            run = {
+                "id": make_id("run"),
+                "roomId": task["roomId"],
+                "taskId": task_id,
+                "connectorId": payload.get("connectorId") or payload.get("connector_id") or "",
+                "agentName": agent_name,
+                "status": "running",
+                "promptSummary": payload.get("promptSummary") or payload.get("prompt_summary") or task["title"],
+                "finalMessage": "",
+                "error": "",
+                "startedAt": timestamp,
+                "finishedAt": None,
+                "createdAt": timestamp,
+                "updatedAt": timestamp,
+            }
+            conn.execute(
+                """
+                INSERT INTO agent_runs
+                  (id, room_id, task_id, connector_id, agent_name, status, prompt_summary,
+                   final_message, error, started_at, finished_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run["id"],
+                    run["roomId"],
+                    run["taskId"],
+                    run["connectorId"],
+                    run["agentName"],
+                    run["status"],
+                    run["promptSummary"],
+                    run["finalMessage"],
+                    run["error"],
+                    run["startedAt"],
+                    run["finishedAt"],
+                    run["createdAt"],
+                    run["updatedAt"],
+                ),
+            )
+        self.record_event(
+            task["roomId"],
+            "agent_run.started",
+            {"agentRun": run},
+            actor_type="agent",
+            actor_name=agent_name,
+        )
+        return run
+
+    def complete_task(self, task_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        task = self.get_task(task_id)
+        agent_name = payload.get("agentName") or payload.get("agent_name") or task["claimedBy"] or task["assignedTo"]
+        status = payload.get("status") or "completed"
+        if status not in {"completed", "failed", "cancelled"}:
+            raise ValueError("task completion status must be completed, failed, or cancelled")
+        final_message = payload.get("finalMessage") or payload.get("final_message") or payload.get("result") or ""
+        if not self._latest_running_run(task_id, agent_name):
+            self.start_run(task_id, {"agentName": agent_name, "promptSummary": payload.get("promptSummary") or task["title"]})
+        updated_task = self.update_task(
+            task_id,
+            {
+                "status": status,
+                "claimedBy": agent_name,
+                "agentName": agent_name,
+                "result": final_message,
+            },
+        )
+        timestamp = now_ms()
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM agent_runs
+                WHERE task_id = ? AND agent_name = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (task_id, agent_name),
+            ).fetchone()
+            if not row:
+                raise KeyError("agent run not found")
+            conn.execute(
+                """
+                UPDATE agent_runs
+                SET status = ?, final_message = ?, error = ?, finished_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    status,
+                    final_message,
+                    payload.get("error") or "",
+                    timestamp,
+                    timestamp,
+                    row["id"],
+                ),
+            )
+            updated_run = conn.execute("SELECT * FROM agent_runs WHERE id = ?", (row["id"],)).fetchone()
+        run = self._agent_run_from_row(updated_run)
+        self.record_event(
+            task["roomId"],
+            "agent_run.completed" if status == "completed" else "agent_run.{}".format(status),
+            {"agentRun": run, "task": updated_task},
+            actor_type="agent",
+            actor_name=agent_name,
+        )
+        return {"task": updated_task, "run": run, "roomId": task["roomId"]}
+
+    def _latest_running_run(self, task_id: str, agent_name: str) -> Optional[Dict[str, Any]]:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM agent_runs
+                WHERE task_id = ? AND agent_name = ? AND status = 'running'
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (task_id, agent_name),
+            ).fetchone()
+        return self._agent_run_from_row(row) if row else None
+
+    def request_owner_confirmation(self, room_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        self.require_room(room_id)
+        timestamp = now_ms()
+        decision = {
+            "id": make_id("decision"),
+            "roomId": room_id,
+            "kind": payload.get("kind") or "owner_confirmation",
+            "status": payload.get("status") or "pending",
+            "requester": payload.get("requester") or payload.get("agentName") or payload.get("agent_name") or "Agent",
+            "action": payload.get("action") or "",
+            "reason": payload.get("reason") or "",
+            "targetType": payload.get("targetType") or payload.get("target_type") or "",
+            "targetId": payload.get("targetId") or payload.get("target_id") or "",
+            "createdAt": timestamp,
+            "updatedAt": timestamp,
+        }
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO decisions
+                  (id, room_id, kind, status, requester, action, reason, target_type, target_id, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    decision["id"],
+                    room_id,
+                    decision["kind"],
+                    decision["status"],
+                    decision["requester"],
+                    decision["action"],
+                    decision["reason"],
+                    decision["targetType"],
+                    decision["targetId"],
+                    timestamp,
+                    timestamp,
+                ),
+            )
+        self.record_event(
+            room_id,
+            "decision.requested",
+            {"decision": decision},
+            actor_type="agent",
+            actor_name=decision["requester"],
+        )
+        return decision
+
+    def propose_handoff(self, finding_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        finding = self.get_finding(finding_id)
+        timestamp = now_ms()
+        handoff = {
+            "id": make_id("handoff"),
+            "roomId": finding["roomId"],
+            "sourceFindingId": finding_id,
+            "fromAgent": payload.get("fromAgent") or payload.get("from_agent") or payload.get("agentName") or finding["createdBy"],
+            "targetAgent": payload.get("targetAgent") or payload.get("target_agent") or payload.get("target") or "Developer Agent",
+            "reason": payload.get("reason") or "",
+            "suggestedTask": payload.get("suggestedTask") or payload.get("suggested_task") or "",
+            "status": payload.get("status") or "proposed",
+            "createdAt": timestamp,
+            "updatedAt": timestamp,
+        }
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO handoffs
+                  (id, room_id, source_finding_id, from_agent, target_agent, reason, suggested_task, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    handoff["id"],
+                    handoff["roomId"],
+                    handoff["sourceFindingId"],
+                    handoff["fromAgent"],
+                    handoff["targetAgent"],
+                    handoff["reason"],
+                    handoff["suggestedTask"],
+                    handoff["status"],
+                    timestamp,
+                    timestamp,
+                ),
+            )
+        self.record_event(
+            handoff["roomId"],
+            "handoff.proposed",
+            {"handoff": handoff},
+            actor_type="agent",
+            actor_name=handoff["fromAgent"],
+        )
+        return handoff
 
     def create_mcp_invite(self, room_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         self.require_room(room_id)
@@ -678,13 +1155,14 @@ class ReviewRoomStore:
                 ),
             )
             conn.execute("UPDATE rooms SET updated_at = ? WHERE id = ?", (timestamp, room_id))
-        self.record_event(
+        message_event = self.record_event(
             room_id,
             "message.created",
             {"message": message},
             actor_type=message["senderType"],
             actor_name=message["senderName"],
         )
+        self.record_message_inbox_items(room_id, message, message_event)
         self.record_message_mentions(room_id, message)
         return message
 
@@ -772,14 +1250,14 @@ class ReviewRoomStore:
             "finding.updated",
             {"finding": finding},
             actor_type=payload.get("actorType") or "system",
-            actor_name=payload.get("actorName") or "Review Room",
+            actor_name=payload.get("actorName") or "Agent Board",
         )
         return finding
 
     def create_demo_session(self) -> Dict[str, Any]:
         room = self.create_room(
             {
-                "title": "MR: Review Room 权限边界体验",
+                "title": "MR: Agent Board 权限边界体验",
                 "provider": "demo",
                 "mrUrl": "https://git.example.com/lighthouse/review-room-demo/-/merge_requests/18",
                 "context": {
@@ -802,7 +1280,7 @@ class ReviewRoomStore:
                 "senderType": "system",
                 "senderName": "GitLab Webhook Adapter",
                 "kind": "mr_webhook",
-                "body": "收到 demo MR 更新，已创建 Review Room 并载入变更上下文。",
+                "body": "收到 demo MR 更新，已创建 Agent Board 并载入变更上下文。",
                 "payload": {"repository": "lighthouse/review-room-demo", "action": "open"},
             },
         )
@@ -960,7 +1438,7 @@ class ReviewRoomStore:
     def ingest_merge_request_webhook(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         attrs = payload.get("object_attributes") or payload.get("pull_request") or {}
         provider = "gitlab" if "object_attributes" in payload else "github"
-        title = attrs.get("title") or payload.get("title") or "MR Review Room"
+        title = attrs.get("title") or payload.get("title") or "MR Agent Board"
         url = attrs.get("url") or attrs.get("html_url") or payload.get("url") or ""
         room = self.create_room(
             {
@@ -986,7 +1464,7 @@ class ReviewRoomStore:
                 "senderType": "system",
                 "senderName": "Webhook Adapter",
                 "kind": "mr_webhook",
-                "body": "收到 {} 事件，已进入 Review Room".format(provider),
+                "body": "收到 {} 事件，已进入 Agent Board".format(provider),
                 "payload": {"raw": payload},
             },
         )
@@ -1017,7 +1495,7 @@ class ReviewRoomStore:
                 return {
                     "type": "owner",
                     "roomId": room_id,
-                    "name": "review room owner",
+                    "name": "Agent Board owner",
                     "role": "owner",
                     "token": token,
                 }
@@ -1180,6 +1658,89 @@ class ReviewRoomStore:
             "claimedBy": row["claimed_by"],
             "result": row["result"],
             "createdBy": row["created_by"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+
+    @staticmethod
+    def _inbox_item_from_row(row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "id": row["id"],
+            "roomId": row["room_id"],
+            "agentName": row["agent_name"],
+            "agentRole": row["agent_role"],
+            "cursor": row["source_event_cursor"],
+            "type": row["type"],
+            "sourceType": row["source_type"],
+            "sourceId": row["source_id"],
+            "priority": row["priority"],
+            "requiresReply": bool(row["requires_reply"]),
+            "status": row["status"],
+            "reason": row["reason"],
+            "payload": json_loads(row["payload_json"], {}),
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+
+    @staticmethod
+    def _agent_run_from_row(row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "id": row["id"],
+            "roomId": row["room_id"],
+            "taskId": row["task_id"],
+            "connectorId": row["connector_id"],
+            "agentName": row["agent_name"],
+            "status": row["status"],
+            "promptSummary": row["prompt_summary"],
+            "finalMessage": row["final_message"],
+            "error": row["error"],
+            "startedAt": row["started_at"],
+            "finishedAt": row["finished_at"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+
+    @staticmethod
+    def _decision_from_row(row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "id": row["id"],
+            "roomId": row["room_id"],
+            "kind": row["kind"],
+            "status": row["status"],
+            "requester": row["requester"],
+            "action": row["action"],
+            "reason": row["reason"],
+            "targetType": row["target_type"],
+            "targetId": row["target_id"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+
+    @staticmethod
+    def _handoff_from_row(row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "id": row["id"],
+            "roomId": row["room_id"],
+            "sourceFindingId": row["source_finding_id"],
+            "fromAgent": row["from_agent"],
+            "targetAgent": row["target_agent"],
+            "reason": row["reason"],
+            "suggestedTask": row["suggested_task"],
+            "status": row["status"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+
+    @staticmethod
+    def _thread_from_row(row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "id": row["id"],
+            "roomId": row["room_id"],
+            "kind": row["kind"],
+            "status": row["status"],
+            "title": row["title"],
+            "summary": json_loads(row["summary_json"], {}),
+            "messages": [],
             "createdAt": row["created_at"],
             "updatedAt": row["updated_at"],
         }
@@ -1512,7 +2073,7 @@ async def handle_ws_event(
                 "senderName": identity["name"],
                 "decision": payload.get("decision") or ("rejected" if event_type == "finding.reject" else "accepted"),
                 "body": payload.get("body") or "",
-                "syncTarget": payload.get("syncTarget") or "Review Room decision",
+                "syncTarget": payload.get("syncTarget") or "Agent Board decision",
             },
         )
         await hub.broadcast(room_id, {"type": "finding.updated", "finding": finding})
@@ -1589,7 +2150,7 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
         identity = require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
         ensure_owner(identity)
         body = await request_json(request)
-        body.setdefault("createdBy", identity.get("name") or "review room owner")
+        body.setdefault("createdBy", identity.get("name") or "Agent Board owner")
         task = app[STORE_KEY].create_task(room_id, body)
         await app[HUB_KEY].broadcast(room_id, {"type": "task.created", "task": task})
         return json_response(task, 201)
@@ -1695,7 +2256,7 @@ def index_html() -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Lighthouse Review Room</title>
+  <title>Lighthouse Agent Board</title>
   <style>
     :root{--bg:#f5f7fb;--panel:#fff;--line:#d9e1ec;--text:#202938;--muted:#647084;--blue:#1663e9;--green:#08745f;--red:#c7362f;--amber:#a05f00}
     *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
@@ -1715,22 +2276,22 @@ def index_html() -> str:
   <header>
     <div class="shell topbar">
       <div>
-        <h1>Lighthouse Review Room</h1>
-        <p>Review Room 原生暴露 Remote MCP；WebSocket Connector 继续作为本地/兼容接入路径。</p>
+        <h1>Lighthouse Agent Board</h1>
+        <p>给 Agent 共享上下文、任务、Finding 和 Decision 的可审计黑板；Remote MCP 是主接入路径，WebSocket Connector 保留为本地/兼容验证路径。</p>
       </div>
       <div class="actions">
-        <button id="refreshRooms">刷新房间</button>
-        <button class="primary" id="createRoom">创建真实 Room</button>
-        <button id="createDemo">创建体验房间</button>
+        <button id="refreshRooms">刷新 Board</button>
+        <button class="primary" id="createRoom">创建真实 Board</button>
+        <button id="createDemo">创建体验 Board</button>
       </div>
     </div>
   </header>
   <main class="shell">
     <section class="panel">
       <div class="panel-body">
-        <h2>代码评审房间</h2>
+        <h2>代码评审 Agent Board</h2>
         <div class="form-grid">
-          <div class="field"><label>Room 标题</label><input id="roomTitle" value="MR: WebSocket Review Room"></div>
+          <div class="field"><label>Board 标题</label><input id="roomTitle" value="MR: Lighthouse Agent Board"></div>
           <div class="field"><label>仓库</label><input id="roomRepo" value="lighthouse/review-room"></div>
           <div class="field"><label>MR 地址</label><input id="roomMr" value="https://git.example.com/lighthouse/review-room/-/merge_requests/1"></div>
         </div>
@@ -1739,15 +2300,15 @@ def index_html() -> str:
     </section>
     <div class="grid" style="margin-top:16px">
       <aside class="panel">
-        <div class="panel-head"><h2>Review Rooms</h2><span class="tag" id="roomCount">0</span></div>
+        <div class="panel-head"><h2>Agent Boards</h2><span class="tag" id="roomCount">0</span></div>
         <div class="panel-body"><div class="room-list" id="roomList"></div></div>
       </aside>
       <section class="panel">
         <div class="panel-head">
-          <div><h2 id="detailTitle">选择或创建房间</h2><p id="detailMeta">owner token 会保存在本机浏览器 localStorage。</p></div>
+          <div><h2 id="detailTitle">选择或创建 Board</h2><p id="detailMeta">owner token 会保存在本机浏览器 localStorage。</p></div>
           <span class="tag" id="socketState">未连接</span>
         </div>
-        <div class="panel-body" id="detailBody"><div class="empty">还没有可展示的 Room。</div></div>
+        <div class="panel-body" id="detailBody"><div class="empty">还没有可展示的 Board。</div></div>
       </section>
     </div>
   </main>
@@ -1805,7 +2366,7 @@ def index_html() -> str:
     }
     function renderRooms(){
       const list = document.getElementById('roomList');
-      if(!state.rooms.length){ list.innerHTML = '<div class="empty">暂无房间</div>'; return; }
+      if(!state.rooms.length){ list.innerHTML = '<div class="empty">暂无 Board</div>'; return; }
       list.innerHTML = state.rooms.map(room => `
         <button class="room-item ${state.room && state.room.id === room.id ? 'active' : ''}" data-room="${esc(room.id)}">
           <strong>${esc(room.title)}</strong>
@@ -1815,7 +2376,7 @@ def index_html() -> str:
     }
     async function createRoom(){
       const room = await api('/api/rooms', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({
-        title: document.getElementById('roomTitle').value || 'MR: Review Room',
+        title: document.getElementById('roomTitle').value || 'MR: Lighthouse Agent Board',
         provider: 'lighthouse',
         mrUrl: document.getElementById('roomMr').value,
         context: { repository: document.getElementById('roomRepo').value, goal: 'WebSocket 多 Agent 代码评审协作' }
@@ -1843,7 +2404,7 @@ def index_html() -> str:
     function renderMissingToken(roomId){
       state.room = null;
       document.getElementById('detailTitle').textContent = roomId;
-      document.getElementById('detailBody').innerHTML = '<div class="empty">本机没有这个房间的 owner token，无法进入。</div>';
+      document.getElementById('detailBody').innerHTML = '<div class="empty">本机没有这个 Board 的 owner token，无法进入。</div>';
     }
     async function registerConnector(role){
       if(!state.room) return;
@@ -1942,13 +2503,14 @@ def index_html() -> str:
       const mcpUrl = `${location.origin}/mcp`;
       const text = [
         `请添加 Remote MCP Server:`,
-        `name: lighthouse-review-room`,
+        `name: lighthouse-agent-board`,
         `url: ${mcpUrl}`,
         `auth: Bearer ${invite.token}`,
         ``,
         `添加后请调用 join_room，roomId=${state.room.id}。`,
-        `明确 @${agentName} 的消息必须回复；分配给你的 task 必须执行；未 @ 的聊天室消息只作为上下文。`,
-        `所有回复请通过 post_message、post_finding 或 update_task 回写 Review Room。`
+        `所有 Workbench 消息都会进入你的 Inbox；明确 @${agentName} 的消息是高优先级并需要回复。`,
+        `消息不是执行权限；分配给你的 task 必须 claim_task、start_run，然后 complete_task。`,
+        `普通回复用 post_message，评审结论用 post_finding，外部动作先 request_owner_confirmation。`
       ].join('\\n');
       const copied = await copyText(text);
       await selectRoom(state.room.id);
@@ -1996,7 +2558,7 @@ def index_html() -> str:
       const pendingTasks = tasks.filter(task => ['assigned','running'].includes(task.status)).length;
       document.getElementById('detailBody').innerHTML = `
         <div class="role-row">
-          <div class="role"><h3>review room owner</h3><p>Web 端监督者 · owner token</p><span class="tag online">online</span></div>
+          <div class="role"><h3>Agent Board owner</h3><p>Web 端监督者 · owner token</p><span class="tag online">online</span></div>
           <div class="role"><h3>Reviewer Agent</h3><p>${esc(roleStatus('reviewer'))}</p><div class="actions"><button data-mcp-role="reviewer">复制 MCP 接入话术</button><button data-role="reviewer">注册远端 Agent Connector</button></div></div>
           <div class="role"><h3>Developer Agent</h3><p>${esc(roleStatus('developer'))}</p><div class="actions"><button data-mcp-role="developer">复制 MCP 接入话术</button><button data-role="developer">注册本地 Agent Connector</button></div></div>
         </div>
@@ -2007,7 +2569,7 @@ def index_html() -> str:
         </div>
         <div class="chat-layout" style="margin-top:16px">
           <div>
-            <h2>聊天室</h2>
+            <h2>Context Stream</h2>
             <div class="timeline">${messages.length ? messages.map(renderMessage).join('') : '<div class="empty">暂无消息</div>'}</div>
             <div class="field" style="margin-top:12px"><label>owner 发起话题</label><textarea id="topicInput">请评审这个 MR 的鉴权风险，并给出可执行修复建议。</textarea></div>
             <div class="actions" style="margin-top:8px"><button type="button" data-mention="Reviewer Agent">@Reviewer</button><button type="button" data-mention="Developer Agent">@Developer</button><button class="primary" id="sendTopic">发送话题</button></div>
@@ -2053,7 +2615,7 @@ def build_handler(store: ReviewRoomStore):
 def run_server(host: str, port: int, db_path: str) -> None:
     store = ReviewRoomStore(db_path)
     print(
-        "Lighthouse Review Room listening on http://{}:{} db={} websocket=/ws/rooms/<room_id>".format(
+        "Lighthouse Agent Board listening on http://{}:{} db={} websocket=/ws/rooms/<room_id>".format(
             host,
             port,
             db_path,
@@ -2064,7 +2626,7 @@ def run_server(host: str, port: int, db_path: str) -> None:
 
 
 def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Lighthouse Review Room connector service")
+    parser = argparse.ArgumentParser(description="Lighthouse Agent Board connector service")
     parser.add_argument("--host", default=os.environ.get("REVIEW_ROOM_HOST", DEFAULT_HOST))
     parser.add_argument("--port", type=int, default=int(os.environ.get("REVIEW_ROOM_PORT", DEFAULT_PORT)))
     parser.add_argument("--db", default=os.environ.get("REVIEW_ROOM_DB", DEFAULT_DB_PATH))

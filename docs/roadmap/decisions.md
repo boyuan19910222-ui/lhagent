@@ -3,21 +3,23 @@
 This file records accepted working decisions. It is not a changelog. Add to it
 when a product or architecture call should guide future work.
 
-## D-001: Review Room is a milestone, not the boundary
+## D-001: Lighthouse Agent Board is a milestone, not the boundary
 
 Status: `Accepted`
 
-Review Room is the first milestone toward a Human-Agent Workspace. MR review is
-the entry workflow because it has clear roles, artifacts, tasks, verification,
-and approval. Architecture decisions should avoid overfitting to MR review when
-the same room primitives can support broader collaboration workflows.
+Lighthouse Agent Board is the first milestone toward a Human-Agent Workspace.
+MR review is the entry workflow because it has clear roles, artifacts, tasks,
+verification, and approval. Architecture decisions should avoid overfitting to
+MR review when the same board primitives can support broader collaboration
+workflows. The current implementation may still use `review-room` paths and
+`Room` schema names for compatibility.
 
 ## D-002: Room state is the collaboration source of truth
 
 Status: `Accepted`
 
 Messages, tasks, findings, handoffs, decisions, threads, and Agent runs should
-stay in Review Room state so the owner can audit and control collaboration.
+stay in Agent Board state so the owner can audit and control collaboration.
 Private Agent-to-Agent side channels should not become the product control
 plane.
 
@@ -33,8 +35,8 @@ broadcast chat from causing duplicate or unintended Agent work.
 
 Status: `Accepted`
 
-Review Room should not rely on any one vendor's session list for trust. Every
-execution-capable connector should report visible run state through
+Lighthouse Agent Board should not rely on any one vendor's session list for
+trust. Every execution-capable connector should report visible run state through
 `agent_runs`, with adapter-specific transcript or log pointers when available.
 
 ## D-005: Codex sidecar is an adapter, not the connector architecture
@@ -58,7 +60,7 @@ observability behavior is proven.
 
 Status: `Accepted`
 
-Registering or inviting a connector creates Review Room identity, credentials,
+Registering or inviting a connector creates Agent Board identity, credentials,
 and bootstrap metadata. It does not by itself install dependencies, start a
 daemon, prepare a repo checkout, or control the remote Agent machine.
 
@@ -66,7 +68,7 @@ daemon, prepare a repo checkout, or control the remote Agent machine.
 
 Status: `Accepted`
 
-Token rotation, disconnect, kick, and revocation can invalidate Review Room
+Token rotation, disconnect, kick, and revocation can invalidate Agent Board
 access. They should not be described as cleaning local files, logs, shell
 history, transcripts, config, or workspace residue on the Agent machine unless
 the adapter explicitly supports that cleanup.
@@ -86,3 +88,23 @@ Status: `Accepted`
 Agents may propose external actions. Sync adapters may publish only after an
 owner decision or a trusted policy boundary approves the action.
 
+## D-011: `services/review-room-service` is the canonical Agent Board P0
+
+Status: `Accepted`
+
+Future Lighthouse Agent Board P0 work should land in
+`services/review-room-service`. The older `experiments/review-room/service`
+implementation remains a legacy protocol reference and evidence archive for
+task/run/handoff/decision behavior, but it should not receive new product
+features. Root validation should use the canonical service tests.
+
+## D-012: Messages feed Inbox, not execution
+
+Status: `Accepted`
+
+Workbench messages remain a first-class supervision and coordination channel.
+They enter the Context Stream and every participating Agent's Inbox so an
+activated Agent can recover oversight context. `@Agent` mentions raise priority
+and mark the item as requiring a reply, but message delivery never creates
+execution authority; executable work still requires task claim and visible
+`agent_run` state.

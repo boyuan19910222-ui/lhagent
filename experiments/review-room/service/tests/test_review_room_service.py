@@ -43,7 +43,7 @@ class ReviewRoomStoreTest(unittest.TestCase):
     def test_create_topic_room_without_repository_or_mr(self):
         room = self.store.create_room(
             {
-                "title": "开放话题房间",
+                "title": "开放Agent Board",
                 "objective": "围绕一个设计问题协作。",
                 "tags": ["review", "agent"],
                 "contextAttachments": [{"type": "link", "url": "https://example.com/spec"}],
@@ -92,7 +92,7 @@ class ReviewRoomStoreTest(unittest.TestCase):
         room = self.store.ingest_merge_request_webhook(
             {
                 "object_attributes": {
-                    "title": "Draft: Review Room",
+                    "title": "Draft: Agent Board",
                     "url": "https://git.example.com/a/b/-/merge_requests/2",
                     "action": "open",
                 },
@@ -145,11 +145,11 @@ class ReviewRoomStoreTest(unittest.TestCase):
     def test_home_page_exposes_product_workflow_actions(self):
         html = index_html()
 
-        self.assertIn("创建话题房间", html)
+        self.assertIn("创建 Agent Board", html)
         self.assertIn("分享给外部成员", html)
         self.assertIn("邀请 Agent", html)
-        self.assertIn("房间状态", html)
-        self.assertIn("房间角色", html)
+        self.assertIn("Board 状态", html)
+        self.assertIn("Board 角色", html)
         self.assertIn("任务与运行", html)
         self.assertIn("分配结构化任务", html)
         self.assertIn("轮换 token", html)
@@ -204,7 +204,7 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertIn("event.isComposing", html)
         self.assertIn("compositioncancel", html)
         self.assertIn("state.composing = false", html)
-        self.assertIn("创建体验房间", html)
+        self.assertIn("创建体验 Board", html)
         self.assertIn("/api/demo/session", html)
         self.assertNotIn("/api/connectors/{connectorId}/events", html)
 
@@ -367,7 +367,7 @@ class ReviewRoomStoreTest(unittest.TestCase):
             room["id"],
             {
                 "senderType": "human",
-                "senderName": "review room owner",
+                "senderName": "Agent Board owner",
                 "kind": "owner_topic",
                 "body": "@Reviewer-Agent 请看风险，@developer 跟进修复，@owner 稍后确认。",
             },
@@ -435,7 +435,7 @@ class ReviewRoomStoreTest(unittest.TestCase):
             room["id"],
             {
                 "senderType": "human",
-                "senderName": "review room owner",
+                "senderName": "Agent Board owner",
                 "kind": "owner_topic",
                 "body": "revoked connector should stay disconnected",
             },
@@ -508,7 +508,7 @@ class ReviewRoomStoreTest(unittest.TestCase):
             room["id"],
             {
                 "senderType": "human",
-                "senderName": "review room owner",
+                "senderName": "Agent Board owner",
                 "kind": "owner_topic",
                 "body": "我作为 owner 怎么和你对话？",
             },
@@ -529,7 +529,7 @@ class ReviewRoomStoreTest(unittest.TestCase):
             room["id"],
             {
                 "senderType": "human",
-                "senderName": "review room owner",
+                "senderName": "Agent Board owner",
                 "kind": "owner_topic",
                 "body": "我作为 owner 怎么和你对话？",
             },
@@ -799,7 +799,7 @@ class ReviewRoomStoreTest(unittest.TestCase):
             },
             reviewer_identity,
         )
-        result = self.store.decide_handoff(handoff["id"], {"decision": "accepted"}, "review room owner")
+        result = self.store.decide_handoff(handoff["id"], {"decision": "accepted"}, "Agent Board owner")
         loaded = self.store.get_room(room["id"])
 
         self.assertEqual(handoff["status"], "proposed")
@@ -825,7 +825,7 @@ class ReviewRoomStoreTest(unittest.TestCase):
             {"reason": "Needs a fix.", "suggestedTask": "Patch the auth path and report tests."},
             reviewer_identity,
         )
-        accepted = self.store.decide_handoff(handoff["id"], {"decision": "accepted"}, "review room owner")
+        accepted = self.store.decide_handoff(handoff["id"], {"decision": "accepted"}, "Agent Board owner")
 
         completion = self.store.complete_task_result(
             accepted["task"]["id"],

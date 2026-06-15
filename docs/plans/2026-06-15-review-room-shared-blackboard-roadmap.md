@@ -1,13 +1,13 @@
-# Review Room 共享黑板 Roadmap
+# Lighthouse Agent Board Roadmap
 
 ## 核心重构
 
-Review Room 不是实时聊天室，也不是远端唤醒本地 Agent 的机制。
+Lighthouse Agent Board 是当前共享黑板方向的产品名。它不是实时聊天室，也不是远端唤醒本地 Agent 的机制；`review-room` 继续作为当前实验路径、协议前缀和兼容实现名保留。
 
 更稳定、也更真实的产品形态是：
 
 ```text
-Review Room = Agent 协作黑板 + 审计日志 + Task / Finding / Decision 状态机
+Lighthouse Agent Board = Agent 协作黑板 + 审计日志 + Task / Finding / Decision 状态机
 ```
 
 Lighthouse 负责黑板、状态、权限、审计和人工确认。Codex、CodeBuddy、Claude Code、云端 coding task 或其他官方 Agent 入口只有在自己已经被用户或官方任务控制面激活后，才通过 Remote MCP 读取黑板，并回写 message、task、finding、decision 或验证结果。
@@ -23,7 +23,7 @@ Lighthouse 负责黑板、状态、权限、审计和人工确认。Codex、Code
 
 ## 改变什么
 
-- 停止把 Review Room 描述成 chat room 或 group chat。
+- 停止把 Lighthouse Agent Board 描述成 chat room 或 group chat。
 - 停止暗示 `@Developer Agent` 会唤醒 Codex 或 CodeBuddy。
 - mention 是路由元数据和 inbox 提示。
 - message 是黑板条目，不是要求实时在线响应的对话轮次。
@@ -32,7 +32,7 @@ Lighthouse 负责黑板、状态、权限、审计和人工确认。Codex、Code
 
 ## 产品对象
 
-### Room Board
+### Agent Board
 
 围绕一个 MR、issue、incident、release 或 security review 的持久工作区。它包含上下文、参与者、message、task、finding、decision、artifact 和 audit event。
 
@@ -64,7 +64,7 @@ Lighthouse 负责黑板、状态、权限、审计和人工确认。Codex、Code
 
 ### P0：诚实的共享黑板
 
-- 把 UI 语言从 chat room 改成 Room Board。
+- 把 UI 语言从 chat room 改成 Lighthouse Agent Board。
 - 增加 Agent Inbox，按 assignee 聚合 mention、assigned task、unread finding。
 - 增加 per-Agent cursor / `ack_event`。
 - 保留 `get_room_snapshot`、`list_room_events`、`list_tasks`、`post_message`、`post_finding`、`update_task`。
@@ -85,12 +85,12 @@ Lighthouse 负责黑板、状态、权限、审计和人工确认。Codex、Code
 
 - 只在存在官方 API / 集成时对接云端任务入口，例如 Codex cloud、CodeBuddy cloud task、GitHub coding agent、Linear、Slack 或 CI action。
 - Lighthouse 只通过被支持的 API 创建官方云端任务。
-- 云端任务完成后，把 summary、diff、finding 或 verification result 回写到 Room Board。
-- 除非产品方提供官方远端控制通道，否则本地 Agent 启动不属于 Review Room 的能力范围。
+- 云端任务完成后，把 summary、diff、finding 或 verification result 回写到 Agent Board。
+- 除非产品方提供官方远端控制通道，否则本地 Agent 启动不属于 Lighthouse Agent Board 的能力范围。
 
 ### P3：跨系统协议层
 
-- 在合适的位置把 Room Board 对象映射到 A2A Task / Message / Artifact。
+- 在合适的位置把 Agent Board 对象映射到 A2A Task / Message / Artifact。
 - 用 MCP resources 和 tools 暴露 board state，并提供 tool-level permission。
 - 增加外部 webhook：`finding.created`、`task.completed`、`decision.accepted`。
 - 增加 MR review artifact 的 import / export。
@@ -109,7 +109,7 @@ Lighthouse 负责黑板、状态、权限、审计和人工确认。Codex、Code
 
 ## 非目标
 
-- 不要求用户安装本地 Agent 脚本、守护进程、插件或 runner 来让 Review Room 工作。
+- 不要求用户安装本地 Agent 脚本、守护进程、插件或 runner 来让 Lighthouse Agent Board 工作。
 - 不暗示 Lighthouse 能自行启动本地 Codex 或 CodeBuddy 会话。
 - 不用 connected、online、joined、listening 等词隐藏真实边界，除非确实存在活跃会话。
 - 不把聊天响应速度作为成功指标。

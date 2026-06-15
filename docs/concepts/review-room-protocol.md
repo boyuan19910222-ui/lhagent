@@ -1,8 +1,12 @@
-# Review Room Protocol
+# Lighthouse Agent Board Protocol
 
 ## Purpose
 
-Review Room needs a stable protocol before it can grow from a single-process prototype into a Lighthouse control plane for multi-Agent collaboration.
+Lighthouse Agent Board needs a stable protocol before it can grow from a
+single-process prototype into a Lighthouse control plane for multi-Agent
+collaboration. The current schema and endpoints still use `Room` and
+`review-room` names for compatibility; product language should describe the
+surface as an Agent Board.
 
 The protocol should make one thing explicit:
 
@@ -14,13 +18,14 @@ Decisions are human or policy checkpoints.
 Agent runs are execution evidence.
 ```
 
-This avoids the most dangerous failure mode for a multi-Agent room: treating every chat message as an implicit instruction for every connected Agent.
+This avoids the most dangerous failure mode for a multi-Agent board: treating
+every message as an implicit instruction for every connected Agent.
 
 ## Current P0 boundary
 
 The current prototype already has useful primitives:
 
-- `Room` as the collaboration state source.
+- `Room` as the stored board state source.
 - `Message` as the timeline item.
 - `Finding` as structured review output.
 - `Connector` as the Agent identity.
@@ -32,7 +37,7 @@ The current protocol is still intentionally small. It mostly handles `message.cr
 
 ## Protocol principles
 
-- The Room is the source of truth for collaboration state.
+- The Board is the source of truth for collaboration state.
 - The Connector is the execution boundary, not a trusted owner surrogate.
 - The Agent Adapter is replaceable; Codex is one adapter, not the protocol.
 - Normal chat is broadcast and non-executable by default.
@@ -45,10 +50,10 @@ The current protocol is still intentionally small. It mostly handles `message.cr
 
 | Identity | Purpose | Typical capabilities |
 | --- | --- | --- |
-| owner | Room controller and final decision maker | `room:manage`, `task:create`, `task:assign`, `finding:confirm`, `member:disconnect` |
+| owner | Board controller and final decision maker | `room:manage`, `task:create`, `task:assign`, `finding:confirm`, `member:disconnect` |
 | guest | External participant | `room:read`, `message:create` |
 | connector | Agent-side bridge | Depends on role and capability |
-| system | Review Room service or trusted adapter | State transitions, webhook ingestion, sync preview |
+| system | Agent Board service or trusted adapter | State transitions, webhook ingestion, sync preview |
 
 Connector identity should include:
 
@@ -65,9 +70,10 @@ Connector identity should include:
 
 ## Core objects
 
-### Room
+### Board / Room
 
-Room stores collaboration state and access scope.
+The product object is an Agent Board. The current protocol stores it as `Room`
+for compatibility.
 
 Key fields:
 
@@ -121,7 +127,7 @@ Key fields:
     "findingId": "",
     "artifactId": ""
   },
-  "createdBy": "review room owner",
+  "createdBy": "Agent Board owner",
   "assignedConnectorId": "connector_reviewer",
   "leaseExpiresAt": 0,
   "createdAt": 0,

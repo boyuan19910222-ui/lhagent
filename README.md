@@ -16,7 +16,7 @@ Roadmap: [Lighthouse Roadmap](./docs/roadmap/README.md)
 | Experiment | Status | Entry | Focus |
 | --- | --- | --- | --- |
 | OpenClaw Billing Guardian | validated | [experiments/openclaw-billing-guardian](./experiments/openclaw-billing-guardian) | Translate provider billing/runtime errors into beginner-readable Chinese recovery guidance. |
-| Review Room | prototype | [experiments/review-room](./experiments/review-room) | Model MR review as a Lighthouse-hosted Agent collaboration Room with connectors and structured findings. |
+| Lighthouse Agent Board | productizing prototype | [services/review-room-service](./services/review-room-service) | Model MR review as an Agent workbench where messages feed Agent Inbox, executable work flows through tasks/runs, and findings/decisions stay auditable. |
 
 ## Repository Rules
 
@@ -41,10 +41,10 @@ npm run test:openclaw-billing-guardian
 npm run test:review-room
 ```
 
-Run the Review Room local service:
+Run the Lighthouse Agent Board local service:
 
 ```bash
-python3 experiments/review-room/service/review_room_service.py --host 127.0.0.1 --port 8707
+python3 services/review-room-service/review_room_service.py --host 127.0.0.1 --port 8707
 ```
 
 Then open:
@@ -58,9 +58,11 @@ http://127.0.0.1:8707
 ```text
 docs/
   concepts/                         # Product and architecture notes
+services/
+  review-room-service/              # Canonical Lighthouse Agent Board P0 service
 experiments/
   openclaw-billing-guardian/        # OpenClaw provider-error readability experiment
-  review-room/                      # Review Room control-plane and connector prototype
+  review-room/                      # Legacy Review Room P0 protocol reference
 shared/                             # Reserved for proven cross-experiment reuse
 EXPERIMENTS.md                      # Experiment index and lifecycle table
 README.md                           # Repository orientation

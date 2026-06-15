@@ -5,7 +5,8 @@ This file is the registry for experiments in this repository. Each experiment sh
 | Experiment | Status | Type | Entry | Concept Doc | Notes |
 | --- | --- | --- | --- | --- | --- |
 | OpenClaw Billing Guardian | validated | runtime patch / UX guardrail | [experiments/openclaw-billing-guardian](./experiments/openclaw-billing-guardian) | [docs/concepts/openclaw-error-guardian.md](./docs/concepts/openclaw-error-guardian.md) | Converts structured provider billing errors into beginner-readable Chinese guidance. |
-| Review Room | prototype | Agent collaboration / control plane | [experiments/review-room](./experiments/review-room) | [docs/concepts/review-room.md](./docs/concepts/review-room.md) | Models MR review as Room, Connector, Finding, Developer Agent response, and human confirmation. |
+| Lighthouse Agent Board | productizing | Agent workbench / control plane | [services/review-room-service](./services/review-room-service) | [docs/concepts/review-room.md](./docs/concepts/review-room.md) | Canonical P0 service. Messages feed Agent Inbox; execution flows through Task, Claim, Run, Finding, Handoff, and Decision state. |
+| Review Room legacy P0 | archived reference | protocol reference | [experiments/review-room](./experiments/review-room) | [docs/concepts/review-room.md](./docs/concepts/review-room.md) | Legacy implementation kept for historical task/run/handoff/decision evidence. Do not add new product work here. |
 
 ## Adding an Experiment
 

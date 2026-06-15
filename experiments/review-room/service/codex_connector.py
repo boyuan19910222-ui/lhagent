@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Agent-side connector client for Lighthouse Review Room.
+"""Agent-side connector client for Lighthouse Agent Board.
 
-The Review Room service owns state and realtime transport. This client runs
+The Agent Board service owns state and realtime transport. This client runs
 beside an Agent/Codex environment, watches room messages, invokes local agent
 logic, and posts structured events back over WebSocket.
 """
@@ -201,7 +201,7 @@ def build_agent_response(role: str, topic: str, mock: bool = False, finding_id: 
             "line": 1,
             "claim": "鉴权或状态边界需要人工确认。",
             "evidence": topic or "Reviewer Agent 收到 owner 发起的代码评审话题。",
-            "suggestedFix": "补充 owner/connector token 校验，并为 WebSocket 房间事件增加回归测试。",
+            "suggestedFix": "补充 owner/connector token 校验，并为 WebSocket Board事件增加回归测试。",
         }
     if role == "developer":
         return {
@@ -414,7 +414,7 @@ async def maybe_build_response(args: argparse.Namespace, event: Dict[str, Any]) 
     if event_type == "message.created":
         message = event.get("message") or {}
         body = message.get("body", "")
-        if not body or message.get("senderName") != "review room owner":
+        if not body or message.get("senderName") != "Agent Board owner":
             return None
         response_mode = getattr(args, "response_mode", "finding")
         if args.mock:
@@ -533,7 +533,7 @@ def should_send_working_notice(args: argparse.Namespace, event: Dict[str, Any]) 
     if event.get("type") != "message.created":
         return False
     message = event.get("message") or {}
-    return bool(message.get("body")) and message.get("senderName") == "review room owner"
+    return bool(message.get("body")) and message.get("senderName") == "Agent Board owner"
 
 
 def agent_display_name(role: str) -> str:
@@ -542,7 +542,7 @@ def agent_display_name(role: str) -> str:
 
 def reviewer_prompt(topic: str, args: Optional[argparse.Namespace] = None) -> str:
     return (
-        "你是 Lighthouse Review Room 的 Reviewer Agent。\n"
+        "你是 Lighthouse Agent Board 的 Reviewer Agent。\n"
         "{}\n"
         "请在当前工作区做真实代码评审，只读分析 MR/分支差异，不要修改文件。\n"
         "请只输出一个 JSON object，不要 Markdown，不要额外解释。字段必须包含："
@@ -555,18 +555,18 @@ def chat_prompt(topic: str, args: Optional[argparse.Namespace] = None) -> str:
     role = getattr(args, "role", "reviewer") if args else "reviewer"
     role_name = "Developer Agent" if role == "developer" else "Reviewer Agent"
     return (
-        "你是 Lighthouse Review Room 中通过本机 Codex 真实接入的 {}。\n"
+        "你是 Lighthouse Agent Board 中通过本机 Codex 真实接入的 {}。\n"
         "{}\n"
         "请用中文直接回复 owner 的消息。不要伪装成系统，不要说自己只是模板。"
         "如果信息不足，先提出一个清晰的问题；如果可以推进，给出简洁的判断和下一步。"
-        "回复应适合聊天室，尽量短，不要展开无关实现细节。\n"
+        "回复应适合共享黑板，尽量短，不要展开无关实现细节。\n"
         "owner 消息：\n{}".format(role_name, prompt_context(args), topic)
     )
 
 
 def developer_prompt(finding: Dict[str, Any], args: Optional[argparse.Namespace] = None) -> str:
     return (
-        "你是 Lighthouse Review Room 的 Developer Agent。\n"
+        "你是 Lighthouse Agent Board 的 Developer Agent。\n"
         "{}\n"
         "请在当前可写工作区针对下面 finding 进行真实修复；如无法安全修改，请说明阻塞原因。"
         "完成后输出修复摘要、验证命令和结果。\n"
@@ -578,16 +578,16 @@ def task_prompt(task: Dict[str, Any], args: Optional[argparse.Namespace] = None)
     role = getattr(args, "role", "reviewer") if args else "reviewer"
     if role == "reviewer":
         return (
-            "你是 Lighthouse Review Room 的 Reviewer Agent。\n"
+            "你是 Lighthouse Agent Board 的 Reviewer Agent。\n"
             "{}\n"
-            "下面是 Review Room 分配给你的结构化任务。只读分析，不要修改文件。"
+            "下面是 Agent Board 分配给你的结构化任务。只读分析，不要修改文件。"
             "请只输出一个 JSON object，字段包含 severity, filePath, line, claim, evidence, suggestedFix。\n"
             "{}".format(prompt_context(args), json.dumps(task, ensure_ascii=False))
         )
     return (
-        "你是 Lighthouse Review Room 的 Developer Agent。\n"
+        "你是 Lighthouse Agent Board 的 Developer Agent。\n"
         "{}\n"
-        "下面是 Review Room 分配给你的结构化任务。按本地工作区权限执行，完成后输出简洁的修复摘要和验证结果。\n"
+        "下面是 Agent Board 分配给你的结构化任务。按本地工作区权限执行，完成后输出简洁的修复摘要和验证结果。\n"
         "{}".format(prompt_context(args), json.dumps(task, ensure_ascii=False))
     )
 
@@ -609,7 +609,7 @@ def prompt_context(args: Optional[argparse.Namespace]) -> str:
         parts.append("上下文：\n{}".format("\n".join(rendered)))
     history = format_room_history(getattr(args, "room_history", []), getattr(args, "history_limit", 12))
     if history:
-        parts.append("最近房间消息：\n{}".format(history))
+        parts.append("最近Board 消息：\n{}".format(history))
     return "\n".join(parts)
 
 
@@ -624,7 +624,7 @@ def format_room_history(history: list[Dict[str, str]], limit: int = 12) -> str:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Connect a local Agent/Codex process to Lighthouse Review Room")
+    parser = argparse.ArgumentParser(description="Connect a local Agent/Codex process to Lighthouse Agent Board")
     parser.add_argument("--role", choices=["reviewer", "developer"], required=True)
     parser.add_argument("--room-url", default=os.environ.get("REVIEW_ROOM_URL", "http://127.0.0.1:8707"))
     parser.add_argument("--room-id", required=True)

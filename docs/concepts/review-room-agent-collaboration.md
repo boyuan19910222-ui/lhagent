@@ -1,13 +1,14 @@
-# Review Room Agent Collaboration
+# Lighthouse Agent Board Agent Collaboration
 
 ## Purpose
 
-Review Room should support more than one Agent without turning the room into an uncontrolled group chat.
+Lighthouse Agent Board should support more than one Agent without turning the
+board into an uncontrolled group chat.
 
 The product goal is not "Agents can talk to each other privately." The goal is:
 
 ```text
-Agents collaborate through visible, structured, auditable Room state.
+Agents collaborate through visible, structured, auditable board state.
 ```
 
 This lets a Reviewer Agent find a problem, a Developer Agent fix it, the Reviewer Agent verify the fix, and the owner confirm external sync.
@@ -30,16 +31,17 @@ Owner creates review task
   -> Reviewer Agent creates finding
   -> Reviewer Agent proposes handoff to Developer Agent
   -> Owner or policy accepts handoff
-  -> Review Room creates fix task
+  -> Agent Board creates fix task
   -> Developer Agent runs
   -> Developer Agent reports fix and artifacts
-  -> Review Room creates verify task
+  -> Agent Board creates verify task
   -> Reviewer Agent verifies
   -> Owner confirms decision
   -> Sync adapter publishes confirmed result
 ```
 
-The important boundary is that Agent-1 may recommend the next step, but Review Room decides whether that recommendation becomes executable work.
+The important boundary is that Agent-1 may recommend the next step, but Agent
+Board state decides whether that recommendation becomes executable work.
 
 ## Handoff model
 
@@ -92,7 +94,8 @@ Once accepted, handoff becomes a task:
 }
 ```
 
-If only one eligible Agent exists, Review Room may assign it directly. If multiple eligible Agents exist, use owner selection or `task.claim`.
+If only one eligible Agent exists, Lighthouse Agent Board may assign it
+directly. If multiple eligible Agents exist, use owner selection or `task.claim`.
 
 ## Controlled deliberation
 
@@ -130,7 +133,10 @@ Deliberation output should be structured:
 }
 ```
 
-The P0 experiment now stores scoped deliberation threads, thread messages, turn limits, and structured summaries in Review Room state. A `needs_owner_decision` summary updates room status for the owner, but task creation or external sync remains a separate explicit decision.
+The P0 experiment now stores scoped deliberation threads, thread messages, turn
+limits, and structured summaries in Agent Board state. A
+`needs_owner_decision` summary updates board status for the owner, but task
+creation or external sync remains a separate explicit decision.
 
 ## When Agents should not deliberate
 
@@ -144,7 +150,7 @@ Do not start Agent-to-Agent deliberation when:
 
 In those cases, create a task for the owner or a policy decision instead.
 
-## Roles in an MR review room
+## Roles in an MR Agent Board
 
 Recommended role split:
 

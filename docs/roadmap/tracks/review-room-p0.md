@@ -1,28 +1,36 @@
-# Track: Review Room P0
+# Track: Lighthouse Agent Board P0
 
 Status: `In progress`
 
 ## Purpose
 
-Keep the Review Room experiment small, runnable, and honest while it proves the
-Human-Agent Workspace primitives.
+Keep the Lighthouse Agent Board experiment small, runnable, and honest while it
+proves the Human-Agent Workspace primitives. The repository path and protocol
+identifiers still use `review-room`; product and UI copy should use Agent Board.
 
-The P0 service lives in:
+The canonical P0 service lives in:
 
-- [experiments/review-room/service](../../../experiments/review-room/service)
+- [services/review-room-service](../../../services/review-room-service)
+
+The older [experiments/review-room/service](../../../experiments/review-room/service)
+tree remains a legacy protocol reference and should not receive new product
+features.
 
 Core concept docs:
 
-- [Review Room](../../concepts/review-room.md)
-- [Review Room Execution Plan](../../concepts/review-room-execution-plan.md)
-- [Review Room Protocol](../../concepts/review-room-protocol.md)
+- [Lighthouse Agent Board](../../concepts/review-room.md)
+- [Lighthouse Agent Board Execution Plan](../../concepts/review-room-execution-plan.md)
+- [Lighthouse Agent Board Protocol](../../concepts/review-room-protocol.md)
 
 ## Current scope
 
 P0 should prove:
 
-- room creation from demo, topic, or MR webhook context,
+- board creation from demo, topic, or MR webhook context,
 - owner and guest access,
+- Workbench messages that feed every participating Agent's Inbox without
+  triggering execution,
+- per-Agent Inbox ack states,
 - connector registration and token auth,
 - explicit task assignment,
 - visible Agent run lifecycle,
@@ -37,11 +45,11 @@ P0 should prove:
 ## What counts as success
 
 - The owner can run the service locally.
-- The owner can create a room and invite a real Agent.
+- The owner can create a board and invite a real activated Agent.
 - The Agent can discover context and tasks without private side channels.
 - The Agent does not execute from normal chat alone.
-- The room shows tasks, findings, handoffs, decisions, threads, and `agentRuns`.
-- The room can explain what is still local-only, experimental, or unverified.
+- The board shows tasks, findings, handoffs, decisions, threads, and `agentRuns`.
+- The board can explain what is still local-only, experimental, or unverified.
 
 ## Current next actions
 
@@ -53,6 +61,7 @@ P0 should prove:
   verification -> owner decision.
 - Add a "known limitations" section for local P0, remote MCP, encoding, and
   cleanup boundaries.
+- Keep root `npm run test:review-room` pointed at the canonical service tests.
 
 ## Recent evidence
 
@@ -61,7 +70,7 @@ P0 should prove:
   action loop, UTF-8 guardrails, persistent test runner, active-wait status
   semantics, deployed smoke tests, and remaining limits.
 - `python -m unittest discover experiments/review-room/service/tests` passed
-  80 Review Room tests on 2026-06-14.
+  80 legacy Agent Board tests on 2026-06-14.
 
 ## Risks
 

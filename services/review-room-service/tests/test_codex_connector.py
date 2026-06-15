@@ -138,7 +138,7 @@ class CodexConnectorAsyncResponseTest(unittest.IsolatedAsyncioTestCase):
         event = {
             "type": "message.created",
             "message": {
-                "senderName": "review room owner",
+                "senderName": "Agent Board owner",
                 "body": "先看看这个仓库里说的什么",
             },
         }

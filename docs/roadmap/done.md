@@ -32,23 +32,44 @@ Notes:
 - `Agent.md` is a compatibility pointer for tools or humans looking for the
   singular filename.
 
-## Review Room local P0
+## Lighthouse Agent Board local P0
 
 ### Full local repository test suite
 
-Status: `Verified on 2026-06-14`
+Status: `Verified on 2026-06-15`
 
 Evidence:
 
 - `npm test`
 - OpenClaw Billing Guardian: 16 Node tests passed.
-- Review Room: 80 Python unittest tests passed.
+- Lighthouse Agent Board canonical service: 46 Python unittest tests passed.
 
 Notes:
 
 - The command exited successfully in the current working tree.
-- Review Room tests emitted a few asyncio slow-task diagnostics, but no test
+- Agent Board tests emitted a `ResourceWarning` about an unclosed sqlite
+  connection in one WebSocket test, but no test
   failures.
+
+### Canonical Agent Board route convergence
+
+Status: `Done in local P0`
+
+Evidence:
+
+- [services/review-room-service/review_room_service.py](../../services/review-room-service/review_room_service.py)
+- [services/review-room-service/review_room_mcp.py](../../services/review-room-service/review_room_mcp.py)
+- [services/review-room-service/tests/test_review_room_mcp.py](../../services/review-room-service/tests/test_review_room_mcp.py)
+- `./.venv/bin/python -m unittest discover -s services/review-room-service/tests -v`: 46 tests passed.
+- `npm test`: OpenClaw Billing Guardian 16 Node tests passed; Agent Board
+  canonical service 46 Python unittest tests passed.
+
+Notes:
+
+- Canonical P0 work now lands in `services/review-room-service`.
+- `experiments/review-room/service` remains a legacy P0 protocol reference.
+- Workbench messages feed Agent Inbox and Context Stream; execution still
+  requires Task, Claim, Run, and completion state.
 
 ### Local service and core room model
 
@@ -239,7 +260,7 @@ Evidence:
 - `test_mcp_action_runner_replies_to_direct_mention`
 - `test_mcp_action_runner_ignores_plain_room_chat`
 - `test_mcp_action_runner_skips_historical_backlog_on_initial_deploy`
-- `npm test`: OpenClaw Billing Guardian 16 Node tests passed; Review Room 80
+- `npm test`: OpenClaw Billing Guardian 16 Node tests passed; Agent Board 80
   Python unittest tests passed.
 - Deployed smoke test on `http://124.222.24.34`: systemd service
   `lighthouse-review-room-mcp-runner.service` was active, fresh room

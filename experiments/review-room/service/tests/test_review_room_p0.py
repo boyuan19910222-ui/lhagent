@@ -73,7 +73,7 @@ class ReviewRoomP0StoreTest(unittest.TestCase):
         )
         confirmed = self.store.confirm_finding(
             finding["id"],
-            {"decision": "accepted", "senderName": "review room owner"},
+            {"decision": "accepted", "senderName": "Agent Board owner"},
         )
 
         self.assertEqual(responded["status"], "developer_responded")
@@ -159,7 +159,7 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
 
         await owner_ws.send_json({"type": "message.create", "body": "@owner 记录一下，@reviewer 请评审这个 MR 的鉴权风险。"})
         owner_message = await self._read_event(owner_ws, "message.created")
-        self.assertEqual(owner_message["message"]["senderName"], "review room owner")
+        self.assertEqual(owner_message["message"]["senderName"], "Agent Board owner")
         self.assertEqual(len(owner_message["message"]["payload"]["mentions"]), 1)
         self.assertEqual(owner_message["message"]["payload"]["mentions"][0]["connectorId"], reviewer["id"])
         self.assertEqual(owner_message["message"]["payload"]["mentions"][0]["role"], "reviewer")
@@ -800,7 +800,7 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         )
         _, owner_message = await self.post_json(
             "/api/rooms/{}/messages".format(room["id"]),
-            {"body": "Owner message for remote Agent.", "senderName": "review room owner"},
+            {"body": "Owner message for remote Agent.", "senderName": "Agent Board owner"},
             room["ownerToken"],
         )
         _, task = await self.post_json(
@@ -839,7 +839,7 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         ]
         _, followup_message = await self.post_json(
             "/api/rooms/{}/messages".format(room["id"]),
-            {"body": "Follow-up only after cursor.", "senderName": "review room owner"},
+            {"body": "Follow-up only after cursor.", "senderName": "Agent Board owner"},
             room["ownerToken"],
         )
         followup_response, followup = await self.post_json(
@@ -915,7 +915,7 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         connected = await self._read_sse_event(stream_response, "review_room.connected")
         _, owner_message = await self.post_json(
             "/api/rooms/{}/messages".format(room["id"]),
-            {"body": "Realtime push for remote Agent.", "senderName": "review room owner"},
+            {"body": "Realtime push for remote Agent.", "senderName": "Agent Board owner"},
             room["ownerToken"],
         )
         pushed = await self._read_sse_event(
@@ -1012,7 +1012,7 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         streaming_snapshot = self.store.get_room(room["id"])
         _, owner_message = await self.post_json(
             "/api/rooms/{}/messages".format(room["id"]),
-            {"body": "@reviewer 请确认你收到消息", "senderName": "review room owner"},
+            {"body": "@reviewer 请确认你收到消息", "senderName": "Agent Board owner"},
             room["ownerToken"],
         )
         pushed = await self._read_sse_event(
@@ -1162,12 +1162,12 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
 
         _, _ = await self.post_json(
             "/api/rooms/{}/messages".format(room["id"]),
-            {"body": "General update for the room.", "senderName": "review room owner"},
+            {"body": "General update for the room.", "senderName": "Agent Board owner"},
             room["ownerToken"],
         )
         _, _ = await self.post_json(
             "/api/rooms/{}/messages".format(room["id"]),
-            {"body": "@reviewer please check this.", "senderName": "review room owner"},
+            {"body": "@reviewer please check this.", "senderName": "Agent Board owner"},
             room["ownerToken"],
         )
         _, self_message = await call_tool(
@@ -1184,7 +1184,7 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
 
         _, owner_message = await self.post_json(
             "/api/rooms/{}/messages".format(room["id"]),
-            {"body": "@developer can you hear this?", "senderName": "review room owner"},
+            {"body": "@developer can you hear this?", "senderName": "Agent Board owner"},
             room["ownerToken"],
         )
         mention_response, mention = await call_tool(
@@ -1363,7 +1363,7 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.05)
         _, owner_message = await self.post_json(
             "/api/rooms/{}/messages".format(room["id"]),
-            {"body": "@reviewer 测试常驻 runner", "senderName": "review room owner"},
+            {"body": "@reviewer 测试常驻 runner", "senderName": "Agent Board owner"},
             room["ownerToken"],
         )
         handled = await asyncio.wait_for(worker, timeout=3)
@@ -1393,7 +1393,7 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         )
         _, _ = await self.post_json(
             "/api/rooms/{}/messages".format(room["id"]),
-            {"body": "普通房间消息，不应该触发测试 runner。", "senderName": "review room owner"},
+            {"body": "普通 Board 消息，不应该触发测试 runner。", "senderName": "Agent Board owner"},
             room["ownerToken"],
         )
         record = [item for item in discover_connectors(self.store.db_path, ("reviewer",)) if item.id == reviewer["id"]][0]
@@ -1419,7 +1419,7 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         )
         _, old_message = await self.post_json(
             "/api/rooms/{}/messages".format(room["id"]),
-            {"body": "@reviewer 这是 runner 启动前的历史消息", "senderName": "review room owner"},
+            {"body": "@reviewer 这是 runner 启动前的历史消息", "senderName": "Agent Board owner"},
             room["ownerToken"],
         )
         record = [item for item in discover_connectors(self.store.db_path, ("reviewer",)) if item.id == reviewer["id"]][0]
@@ -1660,7 +1660,7 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
                 "roomId": room["id"],
                 "question": "Should this external sync be published?",
                 "proposal": "Publish the approved review result.",
-                "risk": "This would leave Review Room and affect an external MR.",
+                "risk": "This would leave Agent Board and affect an external MR.",
                 "syncTarget": "GitHub MR comment",
                 "source": {"findingId": "finding_smoke"},
             },
@@ -1710,7 +1710,7 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(connector_decide["error"], "owner token required")
         self.assertEqual(accept_response.status, 201)
         self.assertEqual(accepted["status"], "accepted")
-        self.assertEqual(accepted["decidedBy"], "review room owner")
+        self.assertEqual(accepted["decidedBy"], "Agent Board owner")
         self.assertEqual(repeat_response.status, 400)
         self.assertEqual(repeat["error"], "decision is not pending")
         self.assertEqual(final_snapshot_response.status, 200)
@@ -1786,7 +1786,7 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         messages_by_kind = {message["kind"]: message for message in loaded["messages"]}
         self.assertEqual(messages_by_kind["review_finding"]["senderName"], "Reviewer Agent")
         self.assertEqual(messages_by_kind["developer_response"]["senderName"], "Developer Agent")
-        self.assertEqual(messages_by_kind["human_confirmation"]["senderName"], "review room owner")
+        self.assertEqual(messages_by_kind["human_confirmation"]["senderName"], "Agent Board owner")
 
     async def test_owner_message_receives_hosted_agent_reply_only_in_experience_mode(self):
         _, room = await self.post_json("/api/rooms", {"title": "开放话题", "objective": "验证 owner 和 Agent 对话"})
@@ -1805,7 +1805,7 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
             agent_reply = await self._read_event(owner_ws, "message.created")
             snapshot = await self._read_event(owner_ws, "room.snapshot")
 
-        self.assertEqual(owner_message["message"]["senderName"], "review room owner")
+        self.assertEqual(owner_message["message"]["senderName"], "Agent Board owner")
         self.assertEqual(agent_reply["message"]["senderName"], "Reviewer Agent")
         self.assertEqual(agent_reply["message"]["kind"], "connector_message")
         self.assertTrue(agent_reply["message"]["payload"]["hostedAgent"])
@@ -1880,11 +1880,11 @@ class CodexConnectorClientTest(unittest.TestCase):
 
         self.assertIn("/ws/rooms/", html)
         self.assertIn("new WebSocket", html)
-        self.assertIn("review room owner", html)
+        self.assertIn("Agent Board owner", html)
         self.assertIn("Reviewer Agent", html)
         self.assertIn("Developer Agent", html)
-        self.assertIn("创建话题房间", html)
-        self.assertIn("房间角色", html)
+        self.assertIn("创建 Agent Board", html)
+        self.assertIn("Board 角色", html)
         self.assertIn("任务与运行", html)
         self.assertIn("分配任务", html)
         self.assertIn("Threads", html)
