@@ -11,10 +11,15 @@ modeButtons.forEach((button) => {
     button.classList.add("selected");
 
     Object.values(modeDisplays).forEach((display) => {
-      display.hidden = true;
+      if (display) {
+        display.hidden = true;
+      }
     });
 
-    modeDisplays[button.dataset.mode].hidden = false;
+    const targetDisplay = modeDisplays[button.dataset.mode];
+    if (targetDisplay) {
+      targetDisplay.hidden = false;
+    }
   });
 });
 
