@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import sys
 import unittest
 from argparse import Namespace
@@ -15,6 +16,7 @@ from codex_connector import (  # noqa: E402
     build_reviewer_finding_event,
     maybe_build_response,
     parse_codex_last_message,
+    run_codex_command,
 )
 
 
@@ -84,6 +86,14 @@ class CodexConnectorRunnerTest(unittest.TestCase):
         )
 
         self.assertEqual(parse_codex_last_message(stdout), "最终 finding JSON")
+
+    @patch("codex_connector.subprocess.run")
+    def test_run_codex_command_returns_timeout_message(self, run):
+        run.side_effect = subprocess.TimeoutExpired(cmd="codex", timeout=1)
+
+        message = run_codex_command("codex", "review prompt", timeout=1, role="reviewer")
+
+        self.assertEqual(message, "Codex command timed out after 1 seconds")
 
     def test_build_reviewer_finding_event_uses_structured_agent_output(self):
         event = build_reviewer_finding_event(

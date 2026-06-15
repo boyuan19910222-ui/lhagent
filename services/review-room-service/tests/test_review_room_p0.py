@@ -182,20 +182,30 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
             await self._read_event(ws, "room.snapshot")
 
     async def _read_event(self, ws, expected_type):
-        for _ in range(20):
-            message = await ws.receive(timeout=2)
+        try:
+            return await asyncio.wait_for(self._read_event_loop(ws, expected_type), timeout=2)
+        except asyncio.TimeoutError:
+            self.fail("did not receive {}".format(expected_type))
+
+    async def _read_finding_status(self, ws, expected_status):
+        async def wait_for_status():
+            while True:
+                event = await self._read_event_loop(ws, "finding.updated")
+                if event["finding"]["status"] == expected_status:
+                    return event
+
+        try:
+            return await asyncio.wait_for(wait_for_status(), timeout=2)
+        except asyncio.TimeoutError:
+            self.fail("did not receive finding status {}".format(expected_status))
+
+    async def _read_event_loop(self, ws, expected_type):
+        while True:
+            message = await ws.receive()
             self.assertEqual(message.type, WSMsgType.TEXT)
             data = json.loads(message.data)
             if data.get("type") == expected_type:
                 return data
-        self.fail("did not receive {}".format(expected_type))
-
-    async def _read_finding_status(self, ws, expected_status):
-        for _ in range(20):
-            event = await self._read_event(ws, "finding.updated")
-            if event["finding"]["status"] == expected_status:
-                return event
-        self.fail("did not receive finding status {}".format(expected_status))
 
 
 class CodexConnectorClientTest(unittest.TestCase):

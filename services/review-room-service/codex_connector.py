@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 import shlex
 import subprocess
@@ -25,6 +26,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only in minimal help
 
 
 SANDBOX_CHOICES = ("read-only", "workspace-write", "danger-full-access")
+LOGGER = logging.getLogger(__name__)
 
 
 def parse_room_url(base_url: str, room_id: str, token: str) -> str:
@@ -186,13 +188,16 @@ def run_codex_command(
     sandbox: str = "",
     model: str = "",
 ) -> str:
-    completed = subprocess.run(
-        build_codex_exec_args(command, prompt, role=role, workspace=workspace, sandbox=sandbox, model=model),
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    try:
+        completed = subprocess.run(
+            build_codex_exec_args(command, prompt, role=role, workspace=workspace, sandbox=sandbox, model=model),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return "Codex command timed out after {} seconds".format(timeout)
     if completed.returncode != 0:
         return "Codex command failed: {}".format((completed.stderr or completed.stdout).strip())
     return parse_codex_last_message(completed.stdout)
@@ -202,21 +207,43 @@ async def run_connector(args: argparse.Namespace) -> None:
     if ClientSession is None or WSMsgType is None:
         raise RuntimeError("aiohttp is required to run the connector; install services/review-room-service/requirements.txt")
     ws_url = parse_room_url(args.room_url, args.room_id, args.token)
+    backoff = 1.0
     async with ClientSession() as session:
-        async with session.ws_connect(ws_url) as ws:
-            await ws.send_json(
-                {
-                    "type": "message.create",
-                    "body": "{} connector online.".format(args.role),
-                }
-            )
-            async for message in ws:
-                if message.type != WSMsgType.TEXT:
-                    continue
-                event = json.loads(message.data)
-                response = await await_response_with_keepalive(maybe_build_response(args, event), ws)
-                if response:
-                    await ws.send_json(response)
+        while True:
+            try:
+                async with session.ws_connect(ws_url) as ws:
+                    backoff = 1.0
+                    await ws.send_json(
+                        {
+                            "type": "message.create",
+                            "body": "{} connector online.".format(args.role),
+                        }
+                    )
+                    async for message in ws:
+                        if message.type != WSMsgType.TEXT:
+                            continue
+                        try:
+                            event = json.loads(message.data)
+                        except json.JSONDecodeError:
+                            LOGGER.warning("Ignoring malformed Review Room event: %r", message.data)
+                            continue
+                        try:
+                            response = await await_response_with_keepalive(maybe_build_response(args, event), ws)
+                        except Exception:
+                            LOGGER.exception("Review Room connector failed to process event")
+                            continue
+                        if response:
+                            try:
+                                await ws.send_json(response)
+                            except Exception:
+                                LOGGER.exception("Review Room connector failed to send response")
+                                break
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOGGER.exception("Review Room connector websocket disconnected")
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 30.0)
 
 
 async def await_response_with_keepalive(response_coro: Any, websocket: Any, interval: float = 10.0) -> Optional[Dict[str, Any]]:

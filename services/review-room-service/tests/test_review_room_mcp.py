@@ -310,6 +310,28 @@ class ReviewRoomMcpAioHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(completed["result"]["structuredContent"]["status"], "completed")
         self.assertIn("已补校验", resource["result"]["contents"][0]["text"])
 
+    async def test_task_tools_validate_required_arguments(self):
+        room = self.store.create_room({"title": "MR"})
+        invite = self.store.create_mcp_invite(room["id"], {"agentName": "Developer Agent", "agentRole": "developer"})
+        task = self.store.create_task(
+            room["id"],
+            {"title": "修复 finding", "body": "补 owner token 校验。", "assignedTo": "Developer Agent"},
+        )
+        await self.call_tool(invite["token"], "join_room", {"roomId": room["id"]}, rpc_id=1)
+
+        _, missing_claim_id = await self.call_tool(invite["token"], "claim_task", {}, rpc_id=2)
+        _, missing_update_status = await self.call_tool(
+            invite["token"],
+            "update_task",
+            {"taskId": task["id"]},
+            rpc_id=3,
+        )
+
+        self.assertEqual(missing_claim_id["error"]["code"], -32602)
+        self.assertIn("taskId is required", missing_claim_id["error"]["message"])
+        self.assertEqual(missing_update_status["error"]["code"], -32602)
+        self.assertIn("status is required", missing_update_status["error"]["message"])
+
     async def test_mcp_join_broadcasts_room_snapshot_to_web_owner(self):
         room = self.store.create_room({"title": "MR"})
         invite = self.store.create_mcp_invite(room["id"], {"agentName": "Developer Agent", "agentRole": "developer"})

@@ -248,7 +248,7 @@ Developer Agent：
 
 ### WebSocket Connector 真实 Agent 接入测试
 
-真实接入测试时不要加 `--mock`。这只是协议验证路径：Review Room 负责 Room 状态、WebSocket 和 connector token；Agent 进程在各自工作区调用真实 `codex exec --json`。正式产品不应要求用户在 Agent 本地额外部署 runner、daemon 或插件。
+真实接入测试时不要加 `--mock`。这只是协议验证路径：Review Room 负责 Room 状态、WebSocket 和 connector token；Agent 进程在各自工作区调用真实 Agent CLI。正式产品不应要求用户在 Agent 本地额外部署 runner、daemon 或插件。
 
 建议准备两个独立 checkout 或 worktree：
 
@@ -258,7 +258,7 @@ Developer Agent：
 先创建 Room 并注册两个 connector：
 
 ```bash
-BASE=http://124.222.24.34
+BASE=${REVIEW_ROOM_BASE:-http://127.0.0.1:8707}
 REPO_NAME=boyuan19910222-ui/lhagent
 MR_URL=https://github.com/boyuan19910222-ui/lhagent
 
@@ -291,7 +291,7 @@ DEVELOPER_TOKEN=$(jq -r '.connectorToken' <<< "$DEVELOPER_JSON")
 启动真实 Reviewer Agent：
 
 ```bash
-SERVICE=/Users/boyuan/Documents/Lighthouse/services/review-room-service
+SERVICE=${REVIEW_SERVICE_PATH:-/path/to/review-room-service}
 REVIEW_REPO=/path/to/reviewer-checkout
 
 cd "$REVIEW_REPO"
@@ -311,7 +311,7 @@ cd "$REVIEW_REPO"
 启动真实 Developer Agent：
 
 ```bash
-SERVICE=/Users/boyuan/Documents/Lighthouse/services/review-room-service
+SERVICE=${REVIEW_SERVICE_PATH:-/path/to/review-room-service}
 DEV_REPO=/path/to/developer-checkout
 
 cd "$DEV_REPO"

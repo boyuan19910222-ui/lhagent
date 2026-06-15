@@ -341,12 +341,21 @@ async def call_tool(store: Any, token: str, name: str, arguments: Dict[str, Any]
     if name == "list_tasks":
         return {"tasks": store.list_tasks(identity["roomId"], assigned_to=identity["name"])}
     if name == "claim_task":
-        return store.claim_task(arguments.get("taskId") or arguments.get("task_id") or "", {"agentName": identity["name"]})
+        task_id = arguments.get("taskId") or arguments.get("task_id")
+        if not task_id:
+            raise ValueError("taskId is required")
+        return store.claim_task(task_id, {"agentName": identity["name"]})
     if name == "update_task":
+        task_id = arguments.get("taskId") or arguments.get("task_id")
+        if not task_id:
+            raise ValueError("taskId is required")
+        status = arguments.get("status")
+        if not status:
+            raise ValueError("status is required")
         return store.update_task(
-            arguments.get("taskId") or arguments.get("task_id") or "",
+            task_id,
             {
-                "status": arguments.get("status"),
+                "status": status,
                 "result": arguments.get("result") or "",
                 "agentName": identity["name"],
             },

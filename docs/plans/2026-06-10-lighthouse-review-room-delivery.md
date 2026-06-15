@@ -46,7 +46,7 @@ Developer Agent 则负责实际代码修改、测试、运行服务、验证 UI 
 位置：
 
 ```text
-/Users/boyuan/Documents/Lighthouse/services/review-room-service
+<workspace>/services/review-room-service
 ```
 
 当前服务已经不是单纯的 demo API，而是一个本地可运行的共享黑板产品切片：
@@ -79,47 +79,47 @@ Developer Agent 则负责实际代码修改、测试、运行服务、验证 UI 
 
 ### 2. 新 Lighthouse 实例部署
 
-实例：
+实例信息应放在私有 runbook。公开计划只保留可替换占位：
 
 ```text
-Host: lh-review-room
-HostName: 124.222.24.34
-User: ubuntu
+Host: <deployment-host>
+HostName: <public-ip>
+User: <ssh-user>
 ```
 
 登录方式：
 
 ```bash
-ssh lh-review-room
+ssh <deployment-host>
 ```
 
 已配置：
 
-- 本机 SSH key：`~/.ssh/id_ed25519_lh_review_room`
-- SSH alias：`lh-review-room`
-- 远端目录：`/home/ubuntu/review-room-service`
-- systemd user service：`lighthouse-review-room.service`
+- 本机 SSH key：`<private-ssh-key>`
+- SSH alias：`<deployment-host>`
+- 远端目录：`<service-path>`
+- systemd user service：`<service-name>`
 - linger：`Linger=yes`
 
 服务状态：
 
 ```bash
-systemctl --user status lighthouse-review-room.service
-curl http://127.0.0.1:8707/health
+systemctl --user status <service-name>
+curl http://127.0.0.1:<service-port>/health
 ```
 
-说明：实例内 `127.0.0.1:8707` 健康检查通过，公网直连 `124.222.24.34:8707` 当前返回外层 502，说明公网链路或安全策略未放通。后续如需公网接入，需要开放安全组或配置 HTTPS 反向代理。
+说明：如需公网接入，需要开放安全组或配置 HTTPS 反向代理；具体网络排障记录应放在私有运维文档。
 
 当前可用的本地访问方式：
 
 ```bash
-ssh -N -L 8707:127.0.0.1:8707 lh-review-room
+ssh -N -L <local-port>:127.0.0.1:<service-port> <deployment-host>
 ```
 
 然后打开：
 
 ```text
-http://127.0.0.1:8707
+http://127.0.0.1:<local-port>
 ```
 
 ### 真实上手路径
@@ -258,7 +258,7 @@ src/app.ts
 本地：
 
 ```bash
-cd /Users/boyuan/Documents/Lighthouse/services/review-room-service
+cd <workspace>/services/review-room-service
 python3 -m unittest discover -s tests -v
 python3 -m py_compile review_room_service.py tests/test_review_room_service.py
 ```
@@ -273,7 +273,7 @@ OK
 远端：
 
 ```bash
-ssh lh-review-room 'curl -sS http://127.0.0.1:8707/health'
+ssh <deployment-host> 'curl -sS http://127.0.0.1:<service-port>/health'
 ```
 
 结果：
