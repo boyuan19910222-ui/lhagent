@@ -140,7 +140,7 @@
 - 长任务队列：运行中、暂停、重试、失败、完成。
 - Artifact 保存：Markdown、截图、文件、报告、代码 diff、数据结果。
 - 任务时间线：目标、计划、模型调用、工具调用、产物、错误、成本。
-- 空闲休眠和事件唤醒：控制成本。
+- 云端任务实例的空闲休眠和事件启动：控制成本，只适用于 Lighthouse 托管的云端任务。
 
 ### 3.5 原型表达
 
@@ -407,7 +407,7 @@ Lighthouse 可以做个人开发者更需要的中间层：
 | --- | --- | --- |
 | P0 | 一键试用热门开源 Agent | 最贴 Lighthouse 现有镜像能力，最容易让用户快速上手 |
 | P0 | 把 MCP 工具变成个人云端工具箱 | 公开目录已上万级，碎片化明显，且能连接多个 AI 客户端 |
-| P0 | 让本地 Agent 长期在线处理开发任务 | Cursor/Codex/Copilot 已证明云端异步 Agent 是开发者工作流方向 |
+| P0 | 开发协作共享黑板 / Review Room | Codex/CodeBuddy 等 Agent 无法被远端凭空唤醒，但可以在被激活后通过 MCP 主动读写同一个审计黑板 |
 | P1 | 自动化个人开发工作流 | 价值强，但需要 GitHub/MCP/Runtime 先稳定 |
 | P1 | 把自己的 Agent 作品分享出去 | 有传播价值，但依赖部署、运行、成本护栏和安全边界 |
 
@@ -448,7 +448,16 @@ Lighthouse 可以做个人开发者更需要的中间层：
 - Dependency Watch。
 - Website/API Monitor。
 
-### 第五层：分享和复用
+### 第五层：协作黑板
+
+- Room Board：围绕一个 MR、issue、incident 或发布任务沉淀上下文。
+- Agent Inbox：按 Agent 聚合 mentions、assigned tasks、unread findings。
+- Task / Finding / Decision 状态机。
+- per-agent cursor / ack，区分“已提及”“已读取”“已处理”。
+- 安全审计：token 作用域、Webhook secret、公网暴露、MR 评论同步权限、危险动作确认。
+- MCP 读写工具：snapshot、events、tasks、post_message、post_finding、update_task、ack_event。
+
+### 第六层：分享和复用
 
 - Demo 页面。
 - Deploy on Lighthouse。
@@ -460,7 +469,7 @@ Lighthouse 可以做个人开发者更需要的中间层：
 
 上一版 demo 的问题是从模块导航出发，用户先看到“总览、应用、MCP、Runtime、Workspace、Ops、Gallery”。这更像平台后台，缺少场景抓手。
 
-新版原型建议改为 3 个主入口：
+新版原型建议改为 4 个主入口：
 
 ### 入口一：我要试一个 Agent
 
@@ -500,23 +509,39 @@ Lighthouse 可以做个人开发者更需要的中间层：
 - Database + Sheets。
 - Personal Memory + Notification。
 
-这三个入口之后，再出现 Workspace、AgentOps、Gallery、成本、Team Lite，作为场景结果页，而不是第一层导航。
+### 入口四：我要让多个 Agent 接力评审一个 MR
+
+面向已经在 Codex、CodeBuddy、Claude Code、云端 coding agent 之间切换的开发者。
+
+主流程：创建 Review Room Board -> 绑定 repo/MR -> 复制 Remote MCP 接入 -> Agent 主动读取黑板 -> 写入 Finding / Task / Decision -> 人工确认同步。
+
+这个入口不要包装成“Agent 群聊”。它是共享黑板：Lighthouse 负责保存上下文、路由提及、沉淀审计、展示状态；Agent 是否执行取决于它是否被用户或官方云端任务控制面激活。
+
+建议默认模板：
+
+- Security Review Board。
+- PR Risk Review Board。
+- Release Decision Board。
+- Incident Fix Review Board。
+
+这四个入口之后，再出现 Workspace、AgentOps、Gallery、成本、Team Lite，作为场景结果页，而不是第一层导航。
 
 ## 10. 推荐的新产品包装
 
 ### 主标题
 
-**Lighthouse Agent Host：把 Agent 从本地实验变成云端长期运行的个人自动化系统。**
+**Lighthouse Agent Host：把 Agent 从本地实验变成云端运行、工具复用和协作黑板。**
 
 ### 副标题
 
-**一键试用开源 Agent，统一管理 MCP 工具，把本地 Agent 部署成定时、Webhook、后台任务，并生成可分享、可 fork 的云端 Agent 应用。**
+**一键试用开源 Agent，统一管理 MCP 工具，把开发协作沉淀到可审计黑板，并生成可分享、可 fork 的云端 Agent 应用。**
 
 ### 三个首屏按钮
 
 - **试用开源 Agent**
 - **部署我的 Agent**
 - **管理 MCP 工具箱**
+- **创建协作黑板**
 
 ### 价值表达
 

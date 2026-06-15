@@ -130,10 +130,34 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertIn("注册远端 Agent Connector", html)
         self.assertIn("/api/rooms/{roomId}/connectors", html)
         self.assertIn("/api/connectors/{connectorId}/events", html)
+        self.assertIn("/mcp", html)
+        self.assertIn("复制 MCP 接入话术", html)
+        self.assertIn("/api/rooms/{roomId}/mcp-invites", html)
         self.assertIn("创建体验房间", html)
         self.assertIn("Developer Agent 回复", html)
         self.assertIn("人工确认并同步", html)
         self.assertIn("/api/demo/session", html)
+
+    def test_mcp_invite_copy_has_http_fallback(self):
+        html = index_html()
+
+        self.assertIn("copyText(text)", html)
+        self.assertIn("document.createElement('textarea')", html)
+        self.assertIn("document.execCommand('copy')", html)
+        self.assertIn("showCopyFallback(text)", html)
+        self.assertIn("copyFallback: null", html)
+        self.assertIn("renderCopyFallback();", html)
+        self.assertIn("copyFallbackButton", html)
+        self.assertIn("已选中", html)
+        self.assertIn("浏览器没有放行自动复制", html)
+
+    def test_home_page_exposes_agent_mention_controls(self):
+        html = index_html()
+
+        self.assertIn('data-mention="Reviewer Agent"', html)
+        self.assertIn('data-mention="Developer Agent"', html)
+        self.assertIn("extractMentionNames", html)
+        self.assertIn("sendTopicMessage", html)
 
     def test_registers_local_and_remote_agent_connectors_for_room(self):
         room = self.store.create_room(

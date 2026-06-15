@@ -21,6 +21,10 @@ from urllib.parse import parse_qs, urlparse
 
 from aiohttp import web
 
+from review_room_mcp import AFTER_TOOL_APP_KEY as MCP_AFTER_TOOL_KEY
+from review_room_mcp import STORE_APP_KEY as MCP_STORE_KEY
+from review_room_mcp import handle_mcp_get, handle_mcp_post
+
 
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8707
@@ -124,6 +128,48 @@ class ReviewRoomStore:
                   updated_at INTEGER NOT NULL,
                   FOREIGN KEY(room_id) REFERENCES rooms(id)
                 );
+
+                CREATE TABLE IF NOT EXISTS events (
+                  cursor INTEGER PRIMARY KEY AUTOINCREMENT,
+                  id TEXT NOT NULL,
+                  room_id TEXT NOT NULL,
+                  type TEXT NOT NULL,
+                  actor_type TEXT NOT NULL,
+                  actor_name TEXT NOT NULL,
+                  payload_json TEXT NOT NULL,
+                  created_at INTEGER NOT NULL,
+                  FOREIGN KEY(room_id) REFERENCES rooms(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS tasks (
+                  id TEXT PRIMARY KEY,
+                  room_id TEXT NOT NULL,
+                  title TEXT NOT NULL,
+                  body TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  assigned_to TEXT NOT NULL,
+                  claimed_by TEXT NOT NULL,
+                  result TEXT NOT NULL,
+                  created_by TEXT NOT NULL,
+                  created_at INTEGER NOT NULL,
+                  updated_at INTEGER NOT NULL,
+                  FOREIGN KEY(room_id) REFERENCES rooms(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS mcp_invites (
+                  id TEXT PRIMARY KEY,
+                  room_id TEXT NOT NULL,
+                  agent_name TEXT NOT NULL,
+                  agent_role TEXT NOT NULL,
+                  token TEXT NOT NULL UNIQUE,
+                  permissions_json TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  connector_id TEXT NOT NULL DEFAULT '',
+                  expires_at INTEGER NOT NULL,
+                  created_at INTEGER NOT NULL,
+                  updated_at INTEGER NOT NULL,
+                  FOREIGN KEY(room_id) REFERENCES rooms(id)
+                );
                 """
             )
             room_columns = {
@@ -137,6 +183,27 @@ class ReviewRoomStore:
                         "UPDATE rooms SET owner_token = ? WHERE id = ?",
                         (make_id("rro"), row["id"]),
                     )
+            task_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(tasks)").fetchall()
+            }
+            task_column_defaults = {
+                "title": "TEXT NOT NULL DEFAULT ''",
+                "body": "TEXT NOT NULL DEFAULT ''",
+                "assigned_to": "TEXT NOT NULL DEFAULT ''",
+                "claimed_by": "TEXT NOT NULL DEFAULT ''",
+                "result": "TEXT NOT NULL DEFAULT ''",
+            }
+            for column, definition in task_column_defaults.items():
+                if column not in task_columns:
+                    conn.execute("ALTER TABLE tasks ADD COLUMN {} {}".format(column, definition))
+                    task_columns.add(column)
+            if "kind" in task_columns:
+                conn.execute("UPDATE tasks SET title = kind WHERE title = ''")
+            if "instruction" in task_columns:
+                conn.execute("UPDATE tasks SET body = instruction WHERE body = ''")
+            if "assigned_connector_id" in task_columns:
+                conn.execute("UPDATE tasks SET assigned_to = assigned_connector_id WHERE assigned_to = ''")
 
     def create_room(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         timestamp = now_ms()
@@ -211,11 +278,373 @@ class ReviewRoomStore:
                 "SELECT * FROM connectors WHERE room_id = ? ORDER BY created_at ASC",
                 (room_id,),
             ).fetchall()
+            task_rows = conn.execute(
+                "SELECT * FROM tasks WHERE room_id = ? ORDER BY created_at ASC",
+                (room_id,),
+            ).fetchall()
+            event_rows = conn.execute(
+                "SELECT * FROM events WHERE room_id = ? ORDER BY cursor ASC",
+                (room_id,),
+            ).fetchall()
         room = self._room_from_row(room_row)
         room["messages"] = [self._message_from_row(row) for row in message_rows]
         room["findings"] = [self._finding_from_row(row) for row in finding_rows]
         room["connectors"] = [self._connector_from_row(row) for row in connector_rows]
+        room["tasks"] = [self._task_from_row(row) for row in task_rows]
+        room["events"] = [self._event_from_row(row) for row in event_rows]
         return room
+
+    def record_event(
+        self,
+        room_id: str,
+        event_type: str,
+        payload: Dict[str, Any],
+        actor_type: str = "system",
+        actor_name: str = "Review Room",
+    ) -> Dict[str, Any]:
+        self.require_room(room_id)
+        timestamp = now_ms()
+        event_id = make_id("evt")
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO events
+                  (id, room_id, type, actor_type, actor_name, payload_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                RETURNING cursor
+                """,
+                (event_id, room_id, event_type, actor_type, actor_name, json_dumps(payload), timestamp),
+            ).fetchone()["cursor"]
+        return {
+            "id": event_id,
+            "cursor": cursor,
+            "roomId": room_id,
+            "type": event_type,
+            "actorType": actor_type,
+            "actorName": actor_name,
+            "payload": payload,
+            "createdAt": timestamp,
+        }
+
+    def list_room_events(self, room_id: str, after_cursor: int = 0, limit: int = 100) -> List[Dict[str, Any]]:
+        self.require_room(room_id)
+        safe_limit = max(1, min(int(limit or 100), 500))
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM events
+                WHERE room_id = ? AND cursor > ?
+                ORDER BY cursor ASC
+                LIMIT ?
+                """,
+                (room_id, int(after_cursor or 0), safe_limit),
+            ).fetchall()
+        return [self._event_from_row(row) for row in rows]
+
+    def record_message_mentions(self, room_id: str, message: Dict[str, Any]) -> None:
+        for agent in self.resolve_message_mentions(room_id, message):
+            self.record_event(
+                room_id,
+                "mention.requires_reply",
+                {"targetAgentName": agent["name"], "targetAgentId": agent.get("id", ""), "message": message},
+                actor_type=message["senderType"],
+                actor_name=message["senderName"],
+            )
+
+    def resolve_message_mentions(self, room_id: str, message: Dict[str, Any]) -> List[Dict[str, str]]:
+        room = self.get_room(room_id)
+        if not room:
+            return []
+        candidates: List[Dict[str, str]] = []
+        for participant in room.get("participants", []):
+            if participant.get("type") == "agent" and participant.get("name"):
+                candidates.append(
+                    {
+                        "id": participant.get("id") or participant.get("name"),
+                        "name": participant["name"],
+                        "role": participant.get("role") or "",
+                    }
+                )
+        for connector in room.get("connectors", []):
+            candidates.append({"id": connector["id"], "name": connector["name"], "role": connector.get("agentRole") or ""})
+
+        body = message.get("body") or ""
+        structured = message.get("payload", {}).get("mentions") or message.get("payload", {}).get("mentionedAgents") or []
+        if isinstance(structured, str):
+            structured = [structured]
+        structured_normalized = {str(item).strip().lower() for item in structured}
+        body_normalized = body.lower()
+
+        seen = set()
+        matched: List[Dict[str, str]] = []
+        for candidate in candidates:
+            name = candidate["name"]
+            candidate_id = candidate.get("id", "")
+            if name in seen:
+                continue
+            if message.get("senderType") == "agent" and message.get("senderName") == name:
+                continue
+            aliases = self.mention_aliases(candidate)
+            explicit_body_match = any(
+                re.search(r"@{}\b".format(re.escape(alias)), body_normalized)
+                for alias in aliases
+            )
+            structured_match = name.lower() in structured_normalized or candidate_id.lower() in structured_normalized
+            structured_match = structured_match or any(alias in structured_normalized for alias in aliases)
+            if explicit_body_match or structured_match:
+                seen.add(name)
+                matched.append(candidate)
+        return matched
+
+    def mention_aliases(self, candidate: Dict[str, str]) -> List[str]:
+        name = (candidate.get("name") or "").strip().lower()
+        role = (candidate.get("role") or "").strip().lower()
+        aliases = {name}
+        if name.endswith(" agent"):
+            aliases.add(name[: -len(" agent")])
+        if role:
+            aliases.add(role)
+        if role == "developer":
+            aliases.add("dev")
+        if role == "reviewer":
+            aliases.add("review")
+        return [alias for alias in aliases if alias]
+
+    def create_task(self, room_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        self.require_room(room_id)
+        timestamp = now_ms()
+        task = {
+            "id": make_id("task"),
+            "roomId": room_id,
+            "title": payload.get("title") or "未命名任务",
+            "body": payload.get("body") or "",
+            "status": payload.get("status") or "assigned",
+            "assignedTo": payload.get("assignedTo") or payload.get("assigned_to") or "",
+            "claimedBy": payload.get("claimedBy") or payload.get("claimed_by") or "",
+            "result": payload.get("result") or "",
+            "createdBy": payload.get("createdBy") or payload.get("created_by") or "review room owner",
+            "createdAt": timestamp,
+            "updatedAt": timestamp,
+        }
+        with self.connect() as conn:
+            columns = [
+                "id",
+                "room_id",
+                "title",
+                "body",
+                "status",
+                "assigned_to",
+                "claimed_by",
+                "result",
+                "created_by",
+                "created_at",
+                "updated_at",
+            ]
+            values: List[Any] = [
+                task["id"],
+                room_id,
+                task["title"],
+                task["body"],
+                task["status"],
+                task["assignedTo"],
+                task["claimedBy"],
+                task["result"],
+                task["createdBy"],
+                timestamp,
+                timestamp,
+            ]
+            task_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(tasks)").fetchall()
+            }
+            legacy_values = {
+                "kind": task["title"],
+                "instruction": task["body"],
+                "target_json": json_dumps({"assignedTo": task["assignedTo"]}),
+                "source_json": json_dumps({"createdBy": task["createdBy"]}),
+                "assigned_connector_id": task["assignedTo"],
+                "lease_expires_at": None,
+            }
+            for column, value in legacy_values.items():
+                if column in task_columns and column not in columns:
+                    columns.append(column)
+                    values.append(value)
+            conn.execute(
+                "INSERT INTO tasks ({}) VALUES ({})".format(
+                    ", ".join(columns),
+                    ", ".join(["?"] * len(columns)),
+                ),
+                tuple(values),
+            )
+            conn.execute("UPDATE rooms SET updated_at = ? WHERE id = ?", (timestamp, room_id))
+        self.record_event(room_id, "task.assigned", {"task": task}, actor_type="human", actor_name=task["createdBy"])
+        return task
+
+    def list_tasks(self, room_id: str, assigned_to: str = "") -> List[Dict[str, Any]]:
+        self.require_room(room_id)
+        with self.connect() as conn:
+            if assigned_to:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM tasks
+                    WHERE room_id = ? AND (assigned_to = ? OR assigned_to = '')
+                    ORDER BY created_at ASC
+                    """,
+                    (room_id, assigned_to),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM tasks WHERE room_id = ? ORDER BY created_at ASC",
+                    (room_id,),
+                ).fetchall()
+        return [self._task_from_row(row) for row in rows]
+
+    def get_task(self, task_id: str) -> Dict[str, Any]:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if not row:
+            raise KeyError("task not found")
+        return self._task_from_row(row)
+
+    def claim_task(self, task_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        task = self.get_task(task_id)
+        agent_name = payload.get("agentName") or payload.get("agent_name") or payload.get("claimedBy") or ""
+        if task["assignedTo"] and agent_name and task["assignedTo"] != agent_name:
+            raise PermissionError("task assigned to {}".format(task["assignedTo"]))
+        if task["status"] not in {"assigned", "running"}:
+            raise ValueError("task cannot be claimed from {}".format(task["status"]))
+        return self.update_task(task_id, {"status": "running", "claimedBy": agent_name, "agentName": agent_name})
+
+    def update_task(self, task_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        task = self.get_task(task_id)
+        status = payload.get("status") or task["status"]
+        if status not in {"assigned", "running", "completed", "failed", "cancelled"}:
+            raise ValueError("invalid task status")
+        timestamp = now_ms()
+        claimed_by = payload.get("claimedBy") or payload.get("claimed_by") or payload.get("agentName") or task["claimedBy"]
+        result = payload.get("result") if "result" in payload else task["result"]
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE tasks
+                SET status = ?, claimed_by = ?, result = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (status, claimed_by, result or "", timestamp, task_id),
+            )
+            conn.execute("UPDATE rooms SET updated_at = ? WHERE id = ?", (timestamp, task["roomId"]))
+            row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        updated = self._task_from_row(row)
+        self.record_event(
+            updated["roomId"],
+            "task.updated",
+            {"task": updated},
+            actor_type="agent" if claimed_by else "system",
+            actor_name=claimed_by or "Review Room",
+        )
+        return updated
+
+    def create_mcp_invite(self, room_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        self.require_room(room_id)
+        timestamp = now_ms()
+        ttl_ms = int(payload.get("ttlMs") or payload.get("ttl_ms") or 24 * 60 * 60 * 1000)
+        invite = {
+            "id": make_id("mcpi"),
+            "roomId": room_id,
+            "agentName": payload.get("agentName") or payload.get("agent_name") or "Remote Agent",
+            "agentRole": payload.get("agentRole") or payload.get("agent_role") or payload.get("role") or "reviewer",
+            "token": payload.get("token") or make_id("mcp"),
+            "permissions": payload.get("permissions") or ["room:read", "message:write", "finding:write", "task:update"],
+            "status": "provisioned",
+            "connectorId": "",
+            "expiresAt": timestamp + ttl_ms,
+            "createdAt": timestamp,
+            "updatedAt": timestamp,
+        }
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO mcp_invites
+                  (id, room_id, agent_name, agent_role, token, permissions_json, status, connector_id, expires_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    invite["id"],
+                    room_id,
+                    invite["agentName"],
+                    invite["agentRole"],
+                    invite["token"],
+                    json_dumps(invite["permissions"]),
+                    invite["status"],
+                    invite["connectorId"],
+                    invite["expiresAt"],
+                    invite["createdAt"],
+                    invite["updatedAt"],
+                ),
+            )
+        self.record_event(room_id, "mcp.invite_created", {"inviteId": invite["id"], "agentName": invite["agentName"]})
+        return invite
+
+    def get_mcp_invite_by_token(self, token: str) -> Dict[str, Any]:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM mcp_invites WHERE token = ?", (token,)).fetchone()
+        if not row:
+            raise PermissionError("invalid mcp token")
+        return self._mcp_invite_from_row(row)
+
+    def join_mcp_room(self, token: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        invite = self.get_mcp_invite_by_token(token)
+        room_id = payload.get("roomId") or payload.get("room_id") or invite["roomId"]
+        if room_id != invite["roomId"]:
+            raise PermissionError("mcp token is scoped to another room")
+        if invite["expiresAt"] < now_ms():
+            raise PermissionError("mcp invite expired")
+        connector_id = invite["connectorId"]
+        if not connector_id:
+            connector = self.register_connector(
+                room_id,
+                {
+                    "name": invite["agentName"],
+                    "kind": "mcp-agent",
+                    "role": invite["agentRole"],
+                    "token": token,
+                    "status": "connected",
+                },
+            )
+            connector_id = connector["id"]
+            timestamp = now_ms()
+            with self.connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE mcp_invites
+                    SET status = ?, connector_id = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    ("joined", connector_id, timestamp, invite["id"]),
+                )
+        self.mark_connector_seen(connector_id)
+        identity = self.authenticate_mcp_token(token)
+        self.record_event(room_id, "mcp.agent_joined", {"agentName": identity["name"], "agentRole": identity["role"]})
+        return identity
+
+    def authenticate_mcp_token(self, token: str) -> Dict[str, Any]:
+        if not token:
+            raise PermissionError("missing mcp token")
+        with self.connect() as conn:
+            connector = conn.execute("SELECT * FROM connectors WHERE token = ?", (token,)).fetchone()
+        if not connector:
+            raise PermissionError("mcp session has not joined a room")
+        data = self._connector_from_row(connector)
+        return {
+            "type": "mcp-agent",
+            "roomId": data["roomId"],
+            "connectorId": data["id"],
+            "name": data["name"],
+            "role": data["agentRole"],
+            "kind": data["kind"],
+            "sessionToken": token,
+            "token": token,
+        }
 
     def add_message(self, room_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         self.require_room(room_id)
@@ -249,6 +678,14 @@ class ReviewRoomStore:
                 ),
             )
             conn.execute("UPDATE rooms SET updated_at = ? WHERE id = ?", (timestamp, room_id))
+        self.record_event(
+            room_id,
+            "message.created",
+            {"message": message},
+            actor_type=message["senderType"],
+            actor_name=message["senderName"],
+        )
+        self.record_message_mentions(room_id, message)
         return message
 
     def add_finding(self, room_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -291,6 +728,13 @@ class ReviewRoomStore:
                 ),
             )
             conn.execute("UPDATE rooms SET updated_at = ? WHERE id = ?", (timestamp, room_id))
+        self.record_event(
+            room_id,
+            "finding.created",
+            {"finding": finding},
+            actor_type="agent",
+            actor_name=finding["createdBy"],
+        )
         self.add_message(
             room_id,
             {
@@ -322,7 +766,15 @@ class ReviewRoomStore:
             )
             conn.execute("UPDATE rooms SET updated_at = ? WHERE id = ?", (timestamp, row["room_id"]))
             updated = conn.execute("SELECT * FROM findings WHERE id = ?", (finding_id,)).fetchone()
-        return self._finding_from_row(updated)
+        finding = self._finding_from_row(updated)
+        self.record_event(
+            finding["roomId"],
+            "finding.updated",
+            {"finding": finding},
+            actor_type=payload.get("actorType") or "system",
+            actor_name=payload.get("actorName") or "Review Room",
+        )
+        return finding
 
     def create_demo_session(self) -> Dict[str, Any]:
         room = self.create_room(
@@ -703,6 +1155,51 @@ class ReviewRoomStore:
             "updatedAt": row["updated_at"],
         }
 
+    @staticmethod
+    def _event_from_row(row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "id": row["id"],
+            "cursor": row["cursor"],
+            "roomId": row["room_id"],
+            "type": row["type"],
+            "actorType": row["actor_type"],
+            "actorName": row["actor_name"],
+            "payload": json_loads(row["payload_json"], {}),
+            "createdAt": row["created_at"],
+        }
+
+    @staticmethod
+    def _task_from_row(row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "id": row["id"],
+            "roomId": row["room_id"],
+            "title": row["title"],
+            "body": row["body"],
+            "status": row["status"],
+            "assignedTo": row["assigned_to"],
+            "claimedBy": row["claimed_by"],
+            "result": row["result"],
+            "createdBy": row["created_by"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+
+    @staticmethod
+    def _mcp_invite_from_row(row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "id": row["id"],
+            "roomId": row["room_id"],
+            "agentName": row["agent_name"],
+            "agentRole": row["agent_role"],
+            "token": row["token"],
+            "permissions": json_loads(row["permissions_json"], []),
+            "status": row["status"],
+            "connectorId": row["connector_id"],
+            "expiresAt": row["expires_at"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+
 
 class ReviewRoomHandler(BaseHTTPRequestHandler):
     store: ReviewRoomStore
@@ -953,6 +1450,7 @@ async def handle_ws_event(
 ) -> None:
     event_type = payload.get("type")
     if event_type in {"message.create", "topic.continue"}:
+        mentions = payload.get("mentions") or payload.get("mentionedAgents") or []
         message = store.add_message(
             room_id,
             {
@@ -960,7 +1458,7 @@ async def handle_ws_event(
                 "senderName": identity["name"],
                 "kind": payload.get("kind") or ("owner_topic" if identity["type"] == "owner" else "connector_message"),
                 "body": payload.get("body") or "",
-                "payload": {"eventType": event_type, "role": identity["role"]},
+                "payload": {"eventType": event_type, "role": identity["role"], "mentions": mentions},
             },
         )
         await hub.broadcast(room_id, {"type": "message.created", "message": message})
@@ -1023,10 +1521,28 @@ async def handle_ws_event(
     await websocket.send_json({"type": "error", "error": "unknown event type"})
 
 
+def room_id_from_mcp_tool_result(result: Dict[str, Any]) -> str:
+    structured = result.get("structuredContent") or {}
+    if not isinstance(structured, dict):
+        return ""
+    room_id = structured.get("roomId") or structured.get("room_id")
+    if isinstance(room_id, str):
+        return room_id
+    return ""
+
+
 def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
     app = web.Application()
     app[STORE_KEY] = store or ReviewRoomStore(DEFAULT_DB_PATH)
+    app[MCP_STORE_KEY] = app[STORE_KEY]
     app[HUB_KEY] = RealtimeHub(app[STORE_KEY])
+
+    async def after_mcp_tool(_token: str, _name: str, _arguments: Dict[str, Any], result: Dict[str, Any]) -> None:
+        room_id = room_id_from_mcp_tool_result(result)
+        if room_id:
+            await app[HUB_KEY].broadcast(room_id, {"type": "room.snapshot", "room": app[STORE_KEY].get_room(room_id)})
+
+    app[MCP_AFTER_TOOL_KEY] = after_mcp_tool
 
     async def index(_request: web.Request) -> web.Response:
         return web.Response(text=index_html(), content_type="text/html", charset="utf-8")
@@ -1056,6 +1572,27 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
         identity = require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
         ensure_owner(identity)
         return json_response(app[STORE_KEY].register_connector(room_id, await request_json(request)), 201)
+
+    async def create_mcp_invite(request: web.Request) -> web.Response:
+        room_id = request.match_info["room_id"]
+        identity = require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
+        ensure_owner(identity)
+        return json_response(app[STORE_KEY].create_mcp_invite(room_id, await request_json(request)), 201)
+
+    async def list_tasks(request: web.Request) -> web.Response:
+        room_id = request.match_info["room_id"]
+        require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
+        return json_response({"tasks": app[STORE_KEY].list_tasks(room_id)})
+
+    async def create_task(request: web.Request) -> web.Response:
+        room_id = request.match_info["room_id"]
+        identity = require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
+        ensure_owner(identity)
+        body = await request_json(request)
+        body.setdefault("createdBy", identity.get("name") or "review room owner")
+        task = app[STORE_KEY].create_task(room_id, body)
+        await app[HUB_KEY].broadcast(room_id, {"type": "task.created", "task": task})
+        return json_response(task, 201)
 
     async def connector_event(request: web.Request) -> web.Response:
         connector_id = request.match_info["connector_id"]
@@ -1139,11 +1676,16 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
     app.router.add_post("/api/rooms/{room_id}/messages", add_message)
     app.router.add_post("/api/rooms/{room_id}/findings", add_finding)
     app.router.add_post("/api/rooms/{room_id}/connectors", register_connector)
+    app.router.add_post("/api/rooms/{room_id}/mcp-invites", create_mcp_invite)
+    app.router.add_get("/api/rooms/{room_id}/tasks", list_tasks)
+    app.router.add_post("/api/rooms/{room_id}/tasks", create_task)
     app.router.add_post("/api/connectors/{connector_id}/events", connector_event)
     app.router.add_patch("/api/findings/{finding_id}", update_finding)
     app.router.add_post("/api/findings/{finding_id}/developer-response", developer_response)
     app.router.add_post("/api/findings/{finding_id}/confirm", confirm_finding)
     app.router.add_get("/ws/rooms/{room_id}", websocket_room)
+    app.router.add_get("/mcp", handle_mcp_get)
+    app.router.add_post("/mcp", handle_mcp_post)
     return app
 
 
@@ -1174,7 +1716,7 @@ def index_html() -> str:
     <div class="shell topbar">
       <div>
         <h1>Lighthouse Review Room</h1>
-        <p>纯 Review Room 产品能力：review room owner 通过 WebSocket 监督 Reviewer Agent 与 Developer Agent 的代码评审协作。</p>
+        <p>Review Room 原生暴露 Remote MCP；WebSocket Connector 继续作为本地/兼容接入路径。</p>
       </div>
       <div class="actions">
         <button id="refreshRooms">刷新房间</button>
@@ -1192,7 +1734,7 @@ def index_html() -> str:
           <div class="field"><label>仓库</label><input id="roomRepo" value="lighthouse/review-room"></div>
           <div class="field"><label>MR 地址</label><input id="roomMr" value="https://git.example.com/lighthouse/review-room/-/merge_requests/1"></div>
         </div>
-        <p class="notice">REST: <code>POST /api/rooms</code>、<code>POST /api/rooms/{roomId}/connectors</code>、<code>POST /api/connectors/{connectorId}/events</code>、<code>/api/demo/session</code>。Realtime: <code>/ws/rooms/{roomId}?token=...</code> via <code>new WebSocket</code>。</p>
+        <p class="notice">MCP: <code>/mcp</code>、<code>POST /api/rooms/{roomId}/mcp-invites</code>。REST: <code>POST /api/rooms</code>、<code>POST /api/rooms/{roomId}/connectors</code>、<code>POST /api/connectors/{connectorId}/events</code>、<code>/api/demo/session</code>。Realtime: <code>/ws/rooms/{roomId}?token=...</code> via <code>new WebSocket</code>。</p>
       </div>
     </section>
     <div class="grid" style="margin-top:16px">
@@ -1210,7 +1752,7 @@ def index_html() -> str:
     </div>
   </main>
   <script>
-    const state = { rooms: [], room: null, ws: null, tokens: JSON.parse(localStorage.getItem('reviewRoomOwnerTokens') || '{}') };
+    const state = { rooms: [], room: null, ws: null, copyFallback: null, tokens: JSON.parse(localStorage.getItem('reviewRoomOwnerTokens') || '{}') };
     const statusText = { open: '进行中', completed: '已完成', needs_developer_response: '等待 Developer Agent', developer_responded: '等待 owner 确认', accepted: '已确认', rejected: '已驳回' };
     function saveTokens(){ localStorage.setItem('reviewRoomOwnerTokens', JSON.stringify(state.tokens)); }
     function esc(v){ return String(v ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;'); }
@@ -1223,7 +1765,37 @@ def index_html() -> str:
     function authHeaders(roomId){ return { 'Content-Type':'application/json', Authorization:`Bearer ${state.tokens[roomId] || ''}` }; }
     function roleStatus(role){
       const found = ((state.room && state.room.connectors) || []).find(c => c.agentRole === role);
-      return found ? `${found.name} · token ready` : '未注册';
+      return found ? `${found.name} · ${found.status || 'connected'} · ${found.kind || 'connector'}` : '未注册';
+    }
+    function extractMentionNames(body){
+      const normalized = (body || '').toLowerCase();
+      const options = [
+        ['Reviewer Agent', ['@reviewer agent', '@reviewer', '@review']],
+        ['Developer Agent', ['@developer agent', '@developer', '@dev']]
+      ];
+      return options
+        .filter(([, aliases]) => aliases.some(alias => normalized.includes(alias)))
+        .map(([name]) => name);
+    }
+    function insertMention(name){
+      const input = document.getElementById('topicInput');
+      if(!input) return;
+      const mention = `@${name} `;
+      const start = input.selectionStart ?? input.value.length;
+      const end = input.selectionEnd ?? input.value.length;
+      const prefix = input.value.slice(0, start);
+      const suffix = input.value.slice(end);
+      const spacer = prefix && !/\\s$/.test(prefix) ? ' ' : '';
+      input.value = `${prefix}${spacer}${mention}${suffix}`;
+      const next = (prefix + spacer + mention).length;
+      input.focus();
+      input.setSelectionRange(next, next);
+    }
+    function sendTopicMessage(){
+      const input = document.getElementById('topicInput');
+      if(!input) return;
+      const body = input.value;
+      sendSocket({ type:'message.create', body, mentions:extractMentionNames(body) });
     }
     async function loadRooms(){
       const data = await api('/api/rooms');
@@ -1283,6 +1855,110 @@ def index_html() -> str:
       });
       await selectRoom(state.room.id);
     }
+    async function copyText(text){
+      if(navigator.clipboard && navigator.clipboard.writeText && window.isSecureContext){
+        try{
+          await navigator.clipboard.writeText(text);
+          return true;
+        }catch(_err){}
+      }
+      return fallbackCopyText(text);
+    }
+    function fallbackCopyText(text){
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'fixed';
+      textarea.style.left = '-9999px';
+      textarea.style.top = '0';
+      document.body.appendChild(textarea);
+      try{
+        return copyTextarea(textarea);
+      }finally{
+        document.body.removeChild(textarea);
+      }
+    }
+    function copyTextarea(textarea){
+      textarea.focus();
+      textarea.select();
+      textarea.setSelectionRange(0, textarea.value.length);
+      let copied = false;
+      try{
+        copied = document.execCommand('copy');
+      }catch(_err){
+        copied = false;
+      }
+      return copied;
+    }
+    function showCopyFallback(text){
+      state.copyFallback = { roomId: state.room && state.room.id, text, copied:false };
+      renderCopyFallback();
+    }
+    function renderCopyFallback(){
+      const detail = document.getElementById('detailBody');
+      if(!detail) return;
+      const existing = document.getElementById('copyFallback');
+      if(existing) existing.remove();
+      if(!state.copyFallback || !state.room || state.copyFallback.roomId !== state.room.id) return;
+      const wrapper = document.createElement('div');
+      wrapper.id = 'copyFallback';
+      wrapper.className = 'message owner';
+      wrapper.style.marginBottom = '12px';
+      const copyStatus = state.copyFallback.copied ? '已复制' : '待复制';
+      const buttonText = state.copyFallback.copied ? '已复制' : '复制';
+      wrapper.innerHTML = `
+        <div class="message-head"><h3>MCP 接入话术</h3><span class="tag waiting">${copyStatus}</span></div>
+        <p>浏览器没有放行自动复制，请点下面按钮复制，或直接选中文本。</p>
+        <textarea id="copyFallbackText" readonly></textarea>
+        <div class="actions" style="margin-top:8px"><button class="primary" id="copyFallbackButton">${buttonText}</button></div>`;
+      detail.prepend(wrapper);
+      const textarea = document.getElementById('copyFallbackText');
+      const button = document.getElementById('copyFallbackButton');
+      textarea.value = state.copyFallback.text;
+      textarea.focus();
+      textarea.select();
+      button.addEventListener('click', () => {
+        const copied = copyTextarea(textarea);
+        if(copied){
+          state.copyFallback.copied = true;
+          button.textContent = '已复制';
+          wrapper.querySelector('.tag').textContent = '已复制';
+        }else{
+          button.textContent = '已选中';
+          wrapper.querySelector('.tag').textContent = '已选中';
+          textarea.focus();
+          textarea.select();
+        }
+      });
+    }
+    async function createMcpInvite(role){
+      if(!state.room) return;
+      const agentName = role === 'reviewer' ? 'Reviewer Agent' : 'Developer Agent';
+      const invite = await api(`/api/rooms/${encodeURIComponent(state.room.id)}/mcp-invites`, {
+        method:'POST',
+        headers: authHeaders(state.room.id),
+        body: JSON.stringify({ agentName, agentRole: role, ttlMs: 24 * 60 * 60 * 1000 })
+      });
+      const mcpUrl = `${location.origin}/mcp`;
+      const text = [
+        `请添加 Remote MCP Server:`,
+        `name: lighthouse-review-room`,
+        `url: ${mcpUrl}`,
+        `auth: Bearer ${invite.token}`,
+        ``,
+        `添加后请调用 join_room，roomId=${state.room.id}。`,
+        `明确 @${agentName} 的消息必须回复；分配给你的 task 必须执行；未 @ 的聊天室消息只作为上下文。`,
+        `所有回复请通过 post_message、post_finding 或 update_task 回写 Review Room。`
+      ].join('\\n');
+      const copied = await copyText(text);
+      await selectRoom(state.room.id);
+      if(copied){
+        state.copyFallback = null;
+        alert('已复制 MCP 接入话术');
+      }else{
+        showCopyFallback(text);
+      }
+    }
     function connectSocket(){
       if(!state.room) return;
       if(state.ws) state.ws.close();
@@ -1309,18 +1985,32 @@ def index_html() -> str:
       document.getElementById('detailMeta').textContent = `${(room.context && room.context.repository) || '未绑定仓库'} · ${room.mrUrl || '无 MR 地址'}`;
       const messages = room.messages || [];
       const findings = room.findings || [];
+      const tasks = room.tasks || [];
+      const events = room.events || [];
+      const latestCursor = events.length ? events[events.length - 1].cursor : 0;
+      const pendingMentions = events.filter(event => {
+        if(event.type !== 'mention.requires_reply') return false;
+        const message = (event.payload && event.payload.message) || {};
+        return message.senderName !== (event.payload && event.payload.targetAgentName);
+      }).length;
+      const pendingTasks = tasks.filter(task => ['assigned','running'].includes(task.status)).length;
       document.getElementById('detailBody').innerHTML = `
         <div class="role-row">
           <div class="role"><h3>review room owner</h3><p>Web 端监督者 · owner token</p><span class="tag online">online</span></div>
-          <div class="role"><h3>Reviewer Agent</h3><p>${esc(roleStatus('reviewer'))}</p><button data-role="reviewer">注册远端 Agent Connector</button></div>
-          <div class="role"><h3>Developer Agent</h3><p>${esc(roleStatus('developer'))}</p><button data-role="developer">注册本地 Agent Connector</button></div>
+          <div class="role"><h3>Reviewer Agent</h3><p>${esc(roleStatus('reviewer'))}</p><div class="actions"><button data-mcp-role="reviewer">复制 MCP 接入话术</button><button data-role="reviewer">注册远端 Agent Connector</button></div></div>
+          <div class="role"><h3>Developer Agent</h3><p>${esc(roleStatus('developer'))}</p><div class="actions"><button data-mcp-role="developer">复制 MCP 接入话术</button><button data-role="developer">注册本地 Agent Connector</button></div></div>
+        </div>
+        <div class="actions" style="margin-top:12px">
+          <span class="tag">MCP cursor ${esc(latestCursor)}</span>
+          <span class="tag">待回复 @ ${esc(pendingMentions)}</span>
+          <span class="tag">待执行 task ${esc(pendingTasks)}</span>
         </div>
         <div class="chat-layout" style="margin-top:16px">
           <div>
             <h2>聊天室</h2>
             <div class="timeline">${messages.length ? messages.map(renderMessage).join('') : '<div class="empty">暂无消息</div>'}</div>
             <div class="field" style="margin-top:12px"><label>owner 发起话题</label><textarea id="topicInput">请评审这个 MR 的鉴权风险，并给出可执行修复建议。</textarea></div>
-            <div class="actions" style="margin-top:8px"><button class="primary" id="sendTopic">发送话题</button></div>
+            <div class="actions" style="margin-top:8px"><button type="button" data-mention="Reviewer Agent">@Reviewer</button><button type="button" data-mention="Developer Agent">@Developer</button><button class="primary" id="sendTopic">发送话题</button></div>
           </div>
           <div>
             <h2>Finding / Decision</h2>
@@ -1328,9 +2018,12 @@ def index_html() -> str:
           </div>
         </div>`;
       document.querySelectorAll('[data-role]').forEach(btn => btn.addEventListener('click', () => registerConnector(btn.dataset.role)));
-      document.getElementById('sendTopic').addEventListener('click', () => sendSocket({ type:'message.create', body:document.getElementById('topicInput').value }));
+      document.querySelectorAll('[data-mcp-role]').forEach(btn => btn.addEventListener('click', () => createMcpInvite(btn.dataset.mcpRole).catch(alert)));
+      document.querySelectorAll('[data-mention]').forEach(btn => btn.addEventListener('click', () => insertMention(btn.dataset.mention)));
+      document.getElementById('sendTopic').addEventListener('click', () => sendTopicMessage());
       document.querySelectorAll('[data-confirm]').forEach(btn => btn.addEventListener('click', () => sendSocket({ type:'finding.confirm', findingId:btn.dataset.confirm, decision:'accepted', body:'确认该修复方向。' })));
       document.querySelectorAll('[data-reject]').forEach(btn => btn.addEventListener('click', () => sendSocket({ type:'finding.reject', findingId:btn.dataset.reject, decision:'rejected', body:'驳回该结论，请继续讨论。' })));
+      renderCopyFallback();
     }
     function renderMessage(message){
       const cls = message.senderType === 'human' ? 'owner' : 'agent';
