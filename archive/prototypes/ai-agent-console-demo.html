@@ -1,0 +1,1121 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Lighthouse AI Agent 控制台 Demo</title>
+    <style>
+      :root {
+        --bg: #f4f6fb;
+        --panel: #fff;
+        --panel-2: #f8fafd;
+        --line: #dde3ef;
+        --line-2: #edf1f7;
+        --text: #172033;
+        --muted: #667085;
+        --weak: #8a94a6;
+        --nav: #20242c;
+        --nav-2: #2a3040;
+        --blue: #1764e8;
+        --cyan: #0c8cae;
+        --green: #0f9f6e;
+        --amber: #b87509;
+        --red: #d14343;
+        --violet: #6b5bd2;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-width: 1180px;
+        color: var(--text);
+        background: var(--bg);
+      }
+
+      button,
+      input {
+        font: inherit;
+      }
+
+      button {
+        cursor: pointer;
+      }
+
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+
+      .shell {
+        display: grid;
+        grid-template-columns: 208px 1fr;
+        min-height: 100vh;
+      }
+
+      .sidebar {
+        background: var(--nav);
+        color: #d8deea;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        height: 50px;
+        padding: 0 18px;
+        border-bottom: 1px solid #303746;
+        color: #fff;
+        font-size: 17px;
+        font-weight: 700;
+      }
+
+      .mark {
+        width: 24px;
+        height: 24px;
+        border-radius: 5px;
+        background: linear-gradient(135deg, #2b7cff, #35c3ff);
+      }
+
+      .product {
+        padding: 20px 18px 12px;
+        color: #fff;
+        font-size: 18px;
+        font-weight: 700;
+      }
+
+      .nav {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        padding: 0 8px 24px;
+      }
+
+      .nav a,
+      .nav-title {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        min-height: 36px;
+        padding: 0 10px;
+      }
+
+      .nav-title {
+        margin-top: 10px;
+        color: #8d96a8;
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .nav a.active {
+        background: var(--nav-2);
+        color: #fff;
+        font-weight: 700;
+      }
+
+      .nav-icon {
+        display: grid;
+        place-items: center;
+        width: 18px;
+        height: 18px;
+        border-radius: 4px;
+        background: #344057;
+        color: #cfe0ff;
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .main {
+        min-width: 972px;
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 50px;
+        padding: 0 24px;
+        background: #1e2025;
+        color: #c7cedb;
+      }
+
+      .global-search {
+        width: 480px;
+        height: 30px;
+        display: flex;
+        align-items: center;
+        padding: 0 12px;
+        border: 1px solid #3b414d;
+        color: #929cab;
+        background: #15171b;
+      }
+
+      .top-links {
+        display: flex;
+        gap: 26px;
+        font-size: 14px;
+        font-weight: 600;
+      }
+
+      .workspace {
+        padding: 18px 24px 28px;
+      }
+
+      .page-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        margin-bottom: 14px;
+      }
+
+      .eyebrow {
+        color: var(--blue);
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      h1 {
+        margin-top: 4px;
+        font-size: 24px;
+        line-height: 1.25;
+      }
+
+      .page-subtitle {
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .head-actions {
+        display: flex;
+        gap: 8px;
+      }
+
+      .btn {
+        height: 34px;
+        padding: 0 14px;
+        border: 1px solid var(--line);
+        background: #fff;
+        color: var(--text);
+        font-weight: 600;
+      }
+
+      .btn.primary {
+        border-color: var(--blue);
+        background: var(--blue);
+        color: #fff;
+      }
+
+      .summary-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+        margin-bottom: 14px;
+      }
+
+      .metric {
+        min-height: 82px;
+        padding: 14px;
+        border: 1px solid var(--line);
+        background: var(--panel);
+      }
+
+      .metric label {
+        display: block;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .metric strong {
+        display: block;
+        margin-top: 8px;
+        font-size: 24px;
+      }
+
+      .metric span {
+        display: block;
+        margin-top: 5px;
+        color: var(--weak);
+        font-size: 12px;
+      }
+
+      .tabs {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        height: 44px;
+        padding: 0 4px;
+        border: 1px solid var(--line);
+        background: var(--panel);
+      }
+
+      .tab {
+        height: 34px;
+        padding: 0 16px;
+        border: 0;
+        border-bottom: 2px solid transparent;
+        background: transparent;
+        color: var(--muted);
+        font-weight: 700;
+      }
+
+      .tab.active {
+        color: var(--blue);
+        border-bottom-color: var(--blue);
+        background: #f3f7ff;
+      }
+
+      .view {
+        display: none;
+      }
+
+      .view.active {
+        display: block;
+      }
+
+      .content {
+        margin-top: 12px;
+      }
+
+      .market-layout {
+        display: grid;
+        grid-template-columns: 1fr 312px;
+        gap: 12px;
+      }
+
+      .panel {
+        border: 1px solid var(--line);
+        background: var(--panel);
+      }
+
+      .panel-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        min-height: 48px;
+        padding: 0 14px;
+        border-bottom: 1px solid var(--line-2);
+      }
+
+      .panel-head h2 {
+        font-size: 16px;
+      }
+
+      .filters {
+        display: flex;
+        gap: 8px;
+      }
+
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        height: 24px;
+        padding: 0 8px;
+        border: 1px solid var(--line);
+        color: var(--muted);
+        background: #fff;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .chip.blue {
+        border-color: #bfd2ff;
+        color: var(--blue);
+        background: #f0f5ff;
+      }
+
+      .app-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+        padding: 12px;
+      }
+
+      .app-card {
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        min-height: 278px;
+        padding: 14px;
+        border: 1px solid var(--line);
+        background: #fff;
+      }
+
+      .app-top {
+        display: flex;
+        gap: 12px;
+      }
+
+      .app-logo {
+        display: grid;
+        place-items: center;
+        width: 42px;
+        height: 42px;
+        border-radius: 8px;
+        color: #fff;
+        font-size: 18px;
+        font-weight: 800;
+      }
+
+      .logo-openclaw {
+        background: linear-gradient(135deg, #1764e8, #0d9ac1);
+      }
+
+      .logo-hermes {
+        background: linear-gradient(135deg, #5d5fef, #19a57a);
+      }
+
+      .app-title {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .app-title h3 {
+        font-size: 17px;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        height: 20px;
+        padding: 0 7px;
+        border-radius: 10px;
+        background: #eef4ff;
+        color: var(--blue);
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .app-desc {
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.55;
+      }
+
+      .cap-list {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        margin: 14px 0;
+      }
+
+      .cap {
+        padding: 8px;
+        border: 1px solid var(--line-2);
+        background: var(--panel-2);
+      }
+
+      .cap span {
+        display: block;
+        color: var(--weak);
+        font-size: 12px;
+      }
+
+      .cap strong {
+        display: block;
+        margin-top: 3px;
+        font-size: 13px;
+      }
+
+      .app-actions {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding-top: 12px;
+        border-top: 1px solid var(--line-2);
+      }
+
+      .link {
+        border: 0;
+        background: transparent;
+        color: var(--blue);
+        font-weight: 700;
+      }
+
+      .side-panel-body {
+        padding: 14px;
+      }
+
+      .scenario {
+        display: grid;
+        grid-template-columns: 26px 1fr;
+        gap: 10px;
+        padding: 12px 0;
+        border-bottom: 1px solid var(--line-2);
+      }
+
+      .scenario:last-child {
+        border-bottom: 0;
+      }
+
+      .scenario-icon {
+        display: grid;
+        place-items: center;
+        width: 26px;
+        height: 26px;
+        border-radius: 6px;
+        background: #edf7f7;
+        color: var(--cyan);
+        font-weight: 800;
+      }
+
+      .scenario strong {
+        display: block;
+        font-size: 14px;
+      }
+
+      .scenario span {
+        display: block;
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+
+      .agent-list {
+        border: 1px solid var(--line);
+        background: var(--panel);
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+
+      th,
+      td {
+        height: 54px;
+        padding: 0 12px;
+        border-bottom: 1px solid var(--line-2);
+        text-align: left;
+        vertical-align: middle;
+      }
+
+      th {
+        height: 40px;
+        color: var(--muted);
+        background: var(--panel-2);
+        font-weight: 700;
+      }
+
+      .name-cell strong,
+      .endpoint strong {
+        display: block;
+        font-size: 13px;
+      }
+
+      .name-cell span,
+      .endpoint span {
+        display: block;
+        margin-top: 3px;
+        color: var(--weak);
+        font-size: 12px;
+      }
+
+      .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--green);
+        font-weight: 700;
+      }
+
+      .status.warn {
+        color: var(--amber);
+      }
+
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: currentColor;
+      }
+
+      .ops {
+        display: flex;
+        gap: 10px;
+      }
+
+      .split {
+        display: grid;
+        grid-template-columns: 1fr 360px;
+        gap: 12px;
+      }
+
+      .checklist {
+        padding: 6px 14px 14px;
+      }
+
+      .check-item {
+        display: grid;
+        grid-template-columns: 26px 1fr auto;
+        gap: 10px;
+        align-items: center;
+        min-height: 62px;
+        border-bottom: 1px solid var(--line-2);
+      }
+
+      .check-item:last-child {
+        border-bottom: 0;
+      }
+
+      .check {
+        display: grid;
+        place-items: center;
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        background: #e8f7f1;
+        color: var(--green);
+        font-weight: 900;
+      }
+
+      .check.pending {
+        background: #fff7e8;
+        color: var(--amber);
+      }
+
+      .check-item strong {
+        display: block;
+        font-size: 14px;
+      }
+
+      .check-item span {
+        display: block;
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .api-box {
+        padding: 14px;
+      }
+
+      .api-row {
+        margin-bottom: 12px;
+      }
+
+      .api-row label {
+        display: block;
+        margin-bottom: 6px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .code {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        min-height: 36px;
+        padding: 0 10px;
+        border: 1px solid var(--line);
+        background: #f7f9fc;
+        color: #31405a;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+        overflow: hidden;
+      }
+
+      .code span {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .copy {
+        flex: 0 0 auto;
+        margin-left: 8px;
+        border: 0;
+        color: var(--blue);
+        background: transparent;
+        font-weight: 800;
+      }
+
+      .diag-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .diag {
+        min-height: 164px;
+        padding: 14px;
+        border: 1px solid var(--line);
+        background: var(--panel);
+      }
+
+      .diag h3 {
+        font-size: 15px;
+      }
+
+      .diag-value {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        margin-top: 18px;
+      }
+
+      .diag-value strong {
+        font-size: 28px;
+      }
+
+      .diag-value span {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .bar {
+        height: 8px;
+        margin-top: 18px;
+        background: #edf1f7;
+      }
+
+      .bar span {
+        display: block;
+        height: 100%;
+        background: var(--blue);
+      }
+
+      .log {
+        margin-top: 12px;
+        padding: 10px;
+        background: #1f2630;
+        color: #dce5f3;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+        line-height: 1.55;
+      }
+
+      .toast {
+        position: fixed;
+        right: 24px;
+        bottom: 24px;
+        display: none;
+        min-width: 220px;
+        padding: 12px 14px;
+        border: 1px solid #b9d8c9;
+        background: #f0fbf6;
+        color: #08784f;
+        box-shadow: 0 10px 30px rgba(23, 32, 51, 0.16);
+        font-weight: 700;
+      }
+
+      .toast.show {
+        display: block;
+      }
+
+      @media (max-width: 900px) {
+        body {
+          min-width: 0;
+        }
+
+        .shell {
+          grid-template-columns: 1fr;
+        }
+
+        .sidebar {
+          display: none;
+        }
+
+        .main {
+          min-width: 0;
+        }
+
+        .topbar,
+        .page-head,
+        .market-layout,
+        .split,
+        .diag-grid,
+        .summary-grid,
+        .app-grid {
+          display: block;
+        }
+
+        .global-search,
+        .top-links,
+        .head-actions {
+          margin-top: 10px;
+        }
+
+        .workspace {
+          padding: 14px;
+        }
+
+        .metric,
+        .panel,
+        .diag {
+          margin-bottom: 10px;
+        }
+
+        .tabs {
+          overflow-x: auto;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="mark" aria-hidden="true"></span>
+          <span>腾讯云</span>
+        </div>
+        <div class="product">轻量云</div>
+        <nav class="nav" aria-label="轻量云导航">
+          <a class="active" href="#">
+            <span class="nav-icon">AI</span>
+            <span>AI Agent</span>
+          </a>
+          <span class="nav-title">轻量应用服务器</span>
+          <a href="#"><span class="nav-icon">S</span><span>服务器</span></a>
+          <a href="#"><span class="nav-icon">T</span><span>OrcaTerm</span></a>
+          <a href="#"><span class="nav-icon">A</span><span>自动化助手</span></a>
+          <a href="#"><span class="nav-icon">I</span><span>镜像</span></a>
+          <a href="#"><span class="nav-icon">D</span><span>云硬盘</span></a>
+          <a href="#"><span class="nav-icon">K</span><span>SSH 密钥</span></a>
+          <a href="#"><span class="nav-icon">F</span><span>防火墙模板</span></a>
+          <span class="nav-title">轻量域名</span>
+          <a href="#"><span class="nav-icon">DN</span><span>域名</span></a>
+          <span class="nav-title">轻量数据库</span>
+          <a href="#"><span class="nav-icon">DB</span><span>数据库</span></a>
+        </nav>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div class="global-search">搜索 Agent、实例 ID、公网 IP、MCP endpoint</div>
+          <div class="top-links">
+            <span>集团账号</span>
+            <span>备案</span>
+            <span>工具</span>
+            <span>客服支持</span>
+            <span>费用</span>
+          </div>
+        </header>
+
+        <div class="workspace">
+          <section class="page-head">
+            <div>
+              <div class="eyebrow">Lighthouse AI Runtime</div>
+              <h1>AI Agent 工作台</h1>
+              <p class="page-subtitle">部署、接入、调用和诊断 OpenClaw、Hermes Agent 等 AI Agent 应用。</p>
+            </div>
+            <div class="head-actions">
+              <button class="btn">导入 Agent Manifest</button>
+              <button class="btn primary">新建 Agent</button>
+            </div>
+          </section>
+
+          <section class="summary-grid" aria-label="AI Agent 概览">
+            <div class="metric">
+              <label>Agent 实例</label>
+              <strong>18</strong>
+              <span>12 个运行中，3 个待配置</span>
+            </div>
+            <div class="metric">
+              <label>可用应用</label>
+              <strong>6</strong>
+              <span>OpenClaw、Hermes、MCP Server 等</span>
+            </div>
+            <div class="metric">
+              <label>24h 调用</label>
+              <strong>42.8K</strong>
+              <span>接口、渠道、MCP 工具调用合计</span>
+            </div>
+            <div class="metric">
+              <label>诊断风险</label>
+              <strong>2</strong>
+              <span>1 个端口未放通，1 个 Token 将过期</span>
+            </div>
+          </section>
+
+          <nav class="tabs" aria-label="AI Agent 页面标签">
+            <button class="tab active" data-view="market">应用市场</button>
+            <button class="tab" data-view="agents">我的 Agent</button>
+            <button class="tab" data-view="connect">接入与调用</button>
+            <button class="tab" data-view="diagnose">诊断</button>
+          </nav>
+
+          <div class="content">
+            <section class="view active" id="market">
+              <div class="market-layout">
+                <div class="panel">
+                  <div class="panel-head">
+                    <h2>Agent 应用市场</h2>
+                    <div class="filters">
+                      <span class="chip blue">推荐</span>
+                      <span class="chip">多渠道</span>
+                      <span class="chip">MCP</span>
+                      <span class="chip">开发者工具</span>
+                    </div>
+                  </div>
+                  <div class="app-grid">
+                    <article class="app-card">
+                      <div>
+                        <div class="app-top">
+                          <div class="app-logo logo-openclaw">OC</div>
+                          <div>
+                            <div class="app-title">
+                              <h3>OpenClaw</h3>
+                              <span class="badge">首推</span>
+                            </div>
+                            <p class="app-desc">适合快速搭建个人或团队 AI 助手，支持微信、QQ、企微、飞书、钉钉等通道接入。</p>
+                          </div>
+                        </div>
+                        <div class="cap-list">
+                          <div class="cap"><span>推荐套餐</span><strong>2C2G / 40GB</strong></div>
+                          <div class="cap"><span>入口</span><strong>Web UI + API</strong></div>
+                          <div class="cap"><span>渠道</span><strong>6 类</strong></div>
+                          <div class="cap"><span>Agent 友好</span><strong>Manifest / MCP</strong></div>
+                        </div>
+                      </div>
+                      <div class="app-actions">
+                        <button class="link">查看配置</button>
+                        <button class="btn primary">一键部署</button>
+                      </div>
+                    </article>
+
+                    <article class="app-card">
+                      <div>
+                        <div class="app-top">
+                          <div class="app-logo logo-hermes">H</div>
+                          <div>
+                            <div class="app-title">
+                              <h3>Hermes Agent</h3>
+                              <span class="badge">长任务</span>
+                            </div>
+                            <p class="app-desc">适合执行型 Agent、后台任务、技能扩展和自动化工作流，强调运行态诊断和版本管理。</p>
+                          </div>
+                        </div>
+                        <div class="cap-list">
+                          <div class="cap"><span>推荐套餐</span><strong>2C4G / 60GB</strong></div>
+                          <div class="cap"><span>入口</span><strong>AgentChat + API</strong></div>
+                          <div class="cap"><span>技能</span><strong>SkillHub</strong></div>
+                          <div class="cap"><span>Agent 友好</span><strong>OpenAPI / Logs</strong></div>
+                        </div>
+                      </div>
+                      <div class="app-actions">
+                        <button class="link">查看配置</button>
+                        <button class="btn primary">一键部署</button>
+                      </div>
+                    </article>
+                  </div>
+                </div>
+
+                <aside class="panel">
+                  <div class="panel-head">
+                    <h2>推荐工作流</h2>
+                  </div>
+                  <div class="side-panel-body">
+                    <div class="scenario">
+                      <span class="scenario-icon">1</span>
+                      <div>
+                        <strong>先部署，再配置密钥</strong>
+                        <span>模型 Key、渠道 Token、Webhook Secret 通过控制台注入。</span>
+                      </div>
+                    </div>
+                    <div class="scenario">
+                      <span class="scenario-icon">2</span>
+                      <div>
+                        <strong>自动探测入口</strong>
+                        <span>检测 Web UI、API、MCP endpoint 和防火墙端口。</span>
+                      </div>
+                    </div>
+                    <div class="scenario">
+                      <span class="scenario-icon">3</span>
+                      <div>
+                        <strong>输出机器可读信息</strong>
+                        <span>生成 OpenAPI、agent-card、llms.txt，便于 AI 工具调用。</span>
+                      </div>
+                    </div>
+                  </div>
+                </aside>
+              </div>
+            </section>
+
+            <section class="view" id="agents">
+              <div class="agent-list">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Agent</th>
+                      <th>应用</th>
+                      <th>状态</th>
+                      <th>访问入口</th>
+                      <th>24h 调用</th>
+                      <th>最近诊断</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td class="name-cell"><strong>OpenClaw-prod</strong><span>lhins-krjkkpqf · 广州</span></td>
+                      <td>OpenClaw</td>
+                      <td><span class="status"><span class="dot"></span>运行中</span></td>
+                      <td class="endpoint"><strong>https://oc.example.cn</strong><span>MCP: /mcp</span></td>
+                      <td>28.6K</td>
+                      <td>健康</td>
+                      <td><div class="ops"><button class="link">打开</button><button class="link">诊断</button></div></td>
+                    </tr>
+                    <tr>
+                      <td class="name-cell"><strong>Hermes-lab</strong><span>lhins-5e32s7id · 广州</span></td>
+                      <td>Hermes Agent</td>
+                      <td><span class="status warn"><span class="dot"></span>待配置</span></td>
+                      <td class="endpoint"><strong>43.139.107.237:3000</strong><span>API: /v1/runs</span></td>
+                      <td>2.1K</td>
+                      <td>微信 Token 将过期</td>
+                      <td><div class="ops"><button class="link">接入</button><button class="link">诊断</button></div></td>
+                    </tr>
+                    <tr>
+                      <td class="name-cell"><strong>MCP-toolbox</strong><span>lhins-mpiaarxd · 上海</span></td>
+                      <td>MCP Server</td>
+                      <td><span class="status"><span class="dot"></span>运行中</span></td>
+                      <td class="endpoint"><strong>https://mcp.example.cn</strong><span>Tools: 12</span></td>
+                      <td>12.1K</td>
+                      <td>健康</td>
+                      <td><div class="ops"><button class="link">Schema</button><button class="link">日志</button></div></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="view" id="connect">
+              <div class="split">
+                <div class="panel">
+                  <div class="panel-head">
+                    <h2>OpenClaw-prod 接入清单</h2>
+                    <span class="chip blue">5 / 6 已完成</span>
+                  </div>
+                  <div class="checklist">
+                    <div class="check-item">
+                      <span class="check">✓</span>
+                      <div><strong>模型 Key</strong><span>Hy3 Preview 已配置，支持用量统计。</span></div>
+                      <button class="link">管理</button>
+                    </div>
+                    <div class="check-item">
+                      <span class="check">✓</span>
+                      <div><strong>微信 / QQ 通道</strong><span>2 个通道已接入，Webhook 回调正常。</span></div>
+                      <button class="link">查看</button>
+                    </div>
+                    <div class="check-item">
+                      <span class="check">✓</span>
+                      <div><strong>MCP endpoint</strong><span>已暴露工具发现地址，支持 Token 鉴权。</span></div>
+                      <button class="link">复制</button>
+                    </div>
+                    <div class="check-item">
+                      <span class="check pending">!</span>
+                      <div><strong>自定义域名</strong><span>建议绑定 HTTPS 域名后再对外开放 Agent API。</span></div>
+                      <button class="link">配置</button>
+                    </div>
+                  </div>
+                </div>
+
+                <aside class="panel">
+                  <div class="panel-head">
+                    <h2>给 AI 工具调用</h2>
+                  </div>
+                  <div class="api-box">
+                    <div class="api-row">
+                      <label>OpenAPI Schema</label>
+                      <div class="code"><span>https://oc.example.cn/.well-known/openapi.json</span><button class="copy">复制</button></div>
+                    </div>
+                    <div class="api-row">
+                      <label>MCP Server</label>
+                      <div class="code"><span>https://oc.example.cn/mcp</span><button class="copy">复制</button></div>
+                    </div>
+                    <div class="api-row">
+                      <label>Agent Card</label>
+                      <div class="code"><span>https://oc.example.cn/.well-known/agent-card.json</span><button class="copy">复制</button></div>
+                    </div>
+                    <div class="api-row">
+                      <label>llms.txt</label>
+                      <div class="code"><span>https://oc.example.cn/llms.txt</span><button class="copy">复制</button></div>
+                    </div>
+                  </div>
+                </aside>
+              </div>
+            </section>
+
+            <section class="view" id="diagnose">
+              <div class="diag-grid">
+                <article class="diag">
+                  <h3>服务可达性</h3>
+                  <div class="diag-value"><strong>99.98%</strong><span>过去 24 小时</span></div>
+                  <div class="bar"><span style="width: 96%"></span></div>
+                </article>
+                <article class="diag">
+                  <h3>工具调用成功率</h3>
+                  <div class="diag-value"><strong>97.4%</strong><span>MCP / API</span></div>
+                  <div class="bar"><span style="width: 88%"></span></div>
+                </article>
+                <article class="diag">
+                  <h3>平均响应时延</h3>
+                  <div class="diag-value"><strong>842ms</strong><span>P50</span></div>
+                  <div class="bar"><span style="width: 42%"></span></div>
+                </article>
+              </div>
+              <div class="panel" style="margin-top: 12px">
+                <div class="panel-head">
+                  <h2>AI 诊断摘要</h2>
+                  <button class="btn">重新诊断</button>
+                </div>
+                <div class="side-panel-body">
+                  <p class="page-subtitle">检测到 Hermes-lab 的微信通道 Token 将在 3 天后过期；OpenClaw-prod 的 443、3000、8080 端口可达，MCP 工具发现正常。</p>
+                  <pre class="log">[10:32:16] healthcheck /api/status 200
+[10:32:18] mcp/list_tools 200 tools=18
+[10:32:21] channel/wechat token_expires_in=3d
+[10:32:23] firewall tcp/443 open, tcp/3000 open</pre>
+                </div>
+              </div>
+            </section>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <div class="toast" id="toast">已复制到剪贴板</div>
+
+    <script>
+      const tabs = document.querySelectorAll(".tab");
+      const views = document.querySelectorAll(".view");
+      const toast = document.querySelector("#toast");
+
+      tabs.forEach((tab) => {
+        tab.addEventListener("click", () => {
+          tabs.forEach((item) => item.classList.remove("active"));
+          views.forEach((view) => view.classList.remove("active"));
+          tab.classList.add("active");
+          document.querySelector(`#${tab.dataset.view}`).classList.add("active");
+        });
+      });
+
+      document.querySelectorAll(".copy").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const text = button.previousElementSibling.textContent;
+          try {
+            await navigator.clipboard.writeText(text);
+          } catch (error) {
+            window.prompt("复制以下内容", text);
+          }
+          toast.classList.add("show");
+          window.setTimeout(() => toast.classList.remove("show"), 1400);
+        });
+      });
+    </script>
+  </body>
+</html>

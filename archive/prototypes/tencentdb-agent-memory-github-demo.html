@@ -1,0 +1,617 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TencentDB Agent Memory GitHub Link Demo</title>
+  <style>
+    :root {
+      --bg: #f2f4f8;
+      --panel: #ffffff;
+      --line: #e6e9ef;
+      --text: #1f2329;
+      --muted: #646a73;
+      --blue: #0052d9;
+      --green: #1fbf75;
+      --dark: #202124;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 12px/18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    .topbar {
+      height: 50px;
+      background: #181818;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      padding: 0 18px;
+      gap: 24px;
+      font-size: 14px;
+    }
+
+    .hamburger {
+      width: 18px;
+      height: 14px;
+      display: grid;
+      gap: 4px;
+    }
+
+    .hamburger span {
+      height: 2px;
+      background: #d9dde3;
+    }
+
+    .brand {
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    .search {
+      flex: 1;
+      max-width: 520px;
+      margin-left: 120px;
+      color: #b8bec8;
+      background: #222;
+      border: 1px solid #303030;
+      padding: 8px 14px;
+    }
+
+    .shell {
+      display: grid;
+      grid-template-columns: 200px 1fr;
+      min-height: calc(100vh - 50px);
+    }
+
+    .sidebar {
+      background: #202124;
+      color: #dfe3eb;
+      padding: 16px 8px;
+    }
+
+    .side-title {
+      padding: 0 10px 16px;
+      font-size: 18px;
+      font-weight: 600;
+    }
+
+    .nav-item {
+      height: 36px;
+      display: flex;
+      align-items: center;
+      padding: 0 10px;
+      gap: 10px;
+      border-radius: 2px;
+      color: #c9ced8;
+    }
+
+    .nav-item.active {
+      background: #2d3752;
+      color: #fff;
+    }
+
+    .dot-icon {
+      width: 16px;
+      height: 16px;
+      border: 1px solid currentColor;
+      border-radius: 2px;
+    }
+
+    main {
+      background: #fff;
+    }
+
+    .promo {
+      height: 51px;
+      display: flex;
+      align-items: center;
+      padding: 0 24px;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(90deg, #fff8ef, #fff);
+      color: #3b3f47;
+      gap: 14px;
+      font-size: 14px;
+    }
+
+    .tag {
+      color: #b66d00;
+      border: 1px solid #ffbd68;
+      background: #fff1da;
+      padding: 2px 8px;
+      font-size: 12px;
+    }
+
+    .instance {
+      height: 51px;
+      display: flex;
+      align-items: center;
+      padding: 0 20px;
+      border-bottom: 1px solid var(--line);
+      gap: 18px;
+    }
+
+    .back {
+      color: var(--blue);
+      font-size: 22px;
+    }
+
+    .instance-title {
+      font-size: 18px;
+      font-weight: 600;
+    }
+
+    .ip {
+      margin-left: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 400;
+    }
+
+    .instance-actions {
+      margin-left: auto;
+      display: flex;
+      gap: 8px;
+    }
+
+    .primary,
+    .plain {
+      height: 32px;
+      padding: 0 22px;
+      border: 1px solid #d8dde6;
+      background: #fff;
+      color: #1f2329;
+      font: inherit;
+    }
+
+    .primary {
+      background: var(--blue);
+      color: #fff;
+      border-color: var(--blue);
+    }
+
+    .tabs {
+      height: 48px;
+      display: flex;
+      align-items: center;
+      padding: 0 20px;
+      border-bottom: 1px solid var(--line);
+      gap: 36px;
+      color: #343840;
+    }
+
+    .tabs .active {
+      height: 48px;
+      display: flex;
+      align-items: center;
+      color: #111;
+      font-weight: 600;
+      border-bottom: 2px solid var(--blue);
+    }
+
+    .app-head {
+      display: flex;
+      align-items: center;
+      padding: 18px 28px 36px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .mascot {
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      background:
+        radial-gradient(circle at 28px 13px, #111 0 2px, transparent 3px),
+        radial-gradient(circle at 15px 14px, #111 0 2px, transparent 3px),
+        #ee2737;
+      margin-right: 14px;
+    }
+
+    .app-name {
+      font-size: 18px;
+      font-weight: 600;
+      line-height: 24px;
+    }
+
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+    }
+
+    .app-actions {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .pill {
+      height: 36px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 18px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: #fff;
+      color: #2b3038;
+      text-decoration: none;
+      white-space: nowrap;
+      box-shadow: 0 2px 6px rgba(31, 35, 41, 0.04);
+      font-size: 12px;
+      line-height: 18px;
+      justify-content: center;
+    }
+
+    .pill:first-child {
+      width: 192px;
+    }
+
+    .pill:nth-child(n + 2) {
+      width: 134px;
+    }
+
+    .pill-icon {
+      width: 16px;
+      height: 16px;
+      display: inline-grid;
+      place-items: center;
+      color: currentColor;
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .content {
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      padding: 24px 20px 56px;
+    }
+
+    .subnav {
+      border-right: 1px solid var(--line);
+      color: #3f4652;
+    }
+
+    .subnav div {
+      height: 48px;
+      display: flex;
+      align-items: center;
+      line-height: 30px;
+    }
+
+    .subnav .selected {
+      color: #111;
+      font-weight: 400;
+      border-right: 2px solid var(--blue);
+    }
+
+    .new {
+      margin-left: 6px;
+      padding: 0 4px;
+      color: #fff;
+      background: #ee2737;
+      border-radius: 8px;
+      font-size: 12px;
+    }
+
+    .memory-card {
+      margin-left: 24px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+    }
+
+    .memory-inner {
+      display: grid;
+      grid-template-columns: 1fr 280px;
+      gap: 40px;
+      padding: 20px 20px 16px;
+    }
+
+    .memory-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      font-size: 16px;
+      line-height: 24px;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+
+    .memory-title-text {
+      margin-right: 4px;
+    }
+
+    .link {
+      color: var(--blue);
+      font-size: 12px;
+      font-weight: 400;
+      line-height: 18px;
+      text-decoration: none;
+    }
+
+    .feature-issue-link {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      height: 22px;
+      padding: 0 7px;
+      border: 1px solid #cfd7e6;
+      border-radius: 2px;
+      color: #17233d;
+      background: #f8fbff;
+      font-size: 12px;
+      line-height: 18px;
+      font-weight: 400;
+      text-decoration: none;
+    }
+
+    .feature-issue-link:hover {
+      border-color: var(--blue);
+      color: var(--blue);
+    }
+
+    .feature-issue-link::after {
+      content: attr(data-tooltip);
+      position: absolute;
+      left: 50%;
+      bottom: calc(100% + 8px);
+      z-index: 5;
+      width: max-content;
+      max-width: 280px;
+      padding: 6px 8px;
+      border-radius: 2px;
+      background: rgba(31, 35, 41, 0.95);
+      color: #fff;
+      font-size: 12px;
+      font-weight: 400;
+      line-height: 18px;
+      white-space: normal;
+      opacity: 0;
+      pointer-events: none;
+      transform: translateX(-50%) translateY(4px);
+      transition: opacity 0.12s ease, transform 0.12s ease;
+    }
+
+    .feature-issue-link::before {
+      content: "";
+      position: absolute;
+      left: 50%;
+      bottom: calc(100% + 3px);
+      z-index: 6;
+      border: 5px solid transparent;
+      border-top-color: rgba(31, 35, 41, 0.95);
+      opacity: 0;
+      pointer-events: none;
+      transform: translateX(-50%) translateY(4px);
+      transition: opacity 0.12s ease, transform 0.12s ease;
+    }
+
+    .feature-issue-link:hover::after,
+    .feature-issue-link:hover::before,
+    .feature-issue-link:focus-visible::after,
+    .feature-issue-link:focus-visible::before {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+
+    .desc {
+      margin: 0 0 10px;
+      color: #3f4652;
+    }
+
+    .desc strong {
+      color: #111;
+    }
+
+    ul {
+      margin: 0;
+      padding-left: 18px;
+      color: #2c3038;
+    }
+
+    li { margin: 7px 0; }
+
+    .chart {
+      display: grid;
+      align-content: end;
+      justify-content: center;
+      min-height: 170px;
+      color: #8a9099;
+      font-size: 12px;
+    }
+
+    .metric {
+      color: var(--blue);
+      font-size: 24px;
+      font-weight: 700;
+    }
+
+    .bars {
+      display: flex;
+      align-items: end;
+      gap: 24px;
+      margin-top: 24px;
+      height: 88px;
+      border-bottom: 1px dashed #d5dbe6;
+    }
+
+    .bar {
+      width: 56px;
+      border-radius: 4px 4px 0 0;
+    }
+
+    .bar.old {
+      height: 44px;
+      background: #46c5a5;
+    }
+
+    .bar.new-bar {
+      height: 72px;
+      background: #2f73e5;
+    }
+
+    .toggle-row {
+      height: 54px;
+      display: flex;
+      align-items: center;
+      padding: 0 24px;
+      background: #f7f9fc;
+      border-top: 1px solid var(--line);
+      gap: 10px;
+      color: #6b7280;
+    }
+
+    .toggle {
+      width: 36px;
+      height: 20px;
+      border-radius: 10px;
+      background: var(--blue);
+      position: relative;
+    }
+
+    .toggle::after {
+      content: "";
+      position: absolute;
+      right: 2px;
+      top: 2px;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #fff;
+    }
+
+    .annotation {
+      margin: 18px 0 0 24px;
+      padding: 14px 16px;
+      width: min(820px, calc(100% - 24px));
+      background: #f8fbff;
+      border: 1px solid #d7e6ff;
+      color: #34517a;
+    }
+
+    .annotation strong {
+      color: #17233d;
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="hamburger" aria-hidden="true"><span></span><span></span><span></span></div>
+    <div class="brand">腾讯云</div>
+    <div class="search">支持通过实例ID、IP、名称等搜索资源</div>
+    <div>集团账号</div>
+    <div>备案</div>
+    <div>工具</div>
+    <div>客服支持</div>
+  </header>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="side-title">轻量云</div>
+      <div class="nav-item"><span class="dot-icon"></span>Hermes Agent</div>
+      <div class="nav-item active"><span class="dot-icon"></span>服务器</div>
+      <div class="nav-item"><span class="dot-icon"></span>OrcaTerm</div>
+      <div class="nav-item"><span class="dot-icon"></span>自动化助手</div>
+      <div class="nav-item"><span class="dot-icon"></span>镜像</div>
+      <div class="nav-item"><span class="dot-icon"></span>云硬盘</div>
+    </aside>
+    <main>
+      <section class="promo">
+        <span class="tag">最新自研模型</span>
+        混元 Hy3 preview 连续三周位列全球大模型API调用榜单 OpenRouter 周榜第一
+      </section>
+      <section class="instance">
+        <span class="back">←</span>
+        <div class="instance-title">boyuan直播龙虾 <span class="ip">IPv4 106.53.164.10</span></div>
+        <div class="instance-actions">
+          <button class="primary">登录</button>
+          <button class="plain">关机</button>
+          <button class="plain">重启</button>
+          <button class="plain">更多操作</button>
+        </div>
+      </section>
+      <nav class="tabs">
+        <span>概要</span>
+        <span class="active">应用管理</span>
+        <span>域名解析</span>
+        <span>云硬盘</span>
+        <span>防火墙</span>
+        <span>SSH密钥</span>
+        <span>快照</span>
+        <span>监控</span>
+      </nav>
+      <section class="app-head">
+        <div class="mascot" aria-hidden="true"></div>
+        <div>
+          <div class="app-name">OpenClaw <span class="ip">2026.4.21  一键更新</span></div>
+          <div class="status"><span class="status-dot"></span>运行中 <a class="link" href="#">重启</a></div>
+        </div>
+        <div class="app-actions">
+          <a class="pill" href="#"><span class="pill-icon">✓</span>安全开启OpenClaw面板</a>
+          <a class="pill" href="#"><span class="pill-icon">↗</span>更新日志</a>
+          <a class="pill" href="#"><span class="pill-icon">◇</span>问题反馈</a>
+        </div>
+      </section>
+      <section class="content">
+        <nav class="subnav">
+          <div>基础配置</div>
+          <div>Token 用量</div>
+          <div class="selected">记忆管理 <span class="new">NEW</span></div>
+          <div>龙虾医院</div>
+          <div>教程合集</div>
+        </nav>
+        <div>
+          <article class="memory-card">
+            <div class="memory-inner">
+              <div>
+                <div class="memory-title">
+                  <span class="memory-title-text">TencentDB Agent Memory 记忆增强插件</span>
+                  <a class="link" href="#">详细说明</a>
+                  <a class="feature-issue-link" href="https://github.com/Tencent/TencentDB-Agent-Memory/issues" target="_blank" rel="noreferrer" data-tooltip="觉得不错欢迎star，如遇问题欢迎反馈issue。" title="觉得不错欢迎star，如遇问题欢迎反馈issue。">
+                    <span>◎</span>Github地址
+                  </a>
+                </div>
+                <p class="desc"><strong>免费使用，一键增强</strong> —— 让 OpenClaw 从“能执行任务的 Agent”，进化为可持续懂你、跨会话不断线的长期可依赖 AI 助理。</p>
+                <ul>
+                  <li><strong>记忆更稳定</strong> —— 自动提取偏好、约束与任务状态，无需手动触发。</li>
+                  <li><strong>理解更深刻</strong> —— 回顾记忆盒字塔逐步提炼，从“记住你说过什么”到“理解你是谁”。</li>
+                  <li><strong>检索更精准</strong> —— 记忆分层组织，按场景归类，按需精准召回。</li>
+                  <li><strong>跨会话不断</strong> —— 记忆跨聊天通道共享，不随上下文压缩丢失。</li>
+                </ul>
+              </div>
+              <div class="chart">
+                <div>Personamem 测评准确率对比</div>
+                <div><span class="metric">59.0%</span> 提升</div>
+                <div class="bars">
+                  <div class="bar old"></div>
+                  <div class="bar new-bar"></div>
+                </div>
+              </div>
+            </div>
+            <div class="toggle-row"><span class="toggle"></span>已开启</div>
+          </article>
+          <div class="annotation">
+            <strong>推荐位置：</strong>放在“TencentDB Agent Memory 记忆增强插件”标题行，和“详细说明”并列。入口只属于这张功能卡，用户会理解为仅反馈记忆增强插件的问题，而不是 OpenClaw 应用或轻量云控制台的全局问题。
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

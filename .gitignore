@@ -1,10 +1,16 @@
 node_modules/
 
-tmp/
+.DS_Store
+**/.DS_Store
 
 __pycache__/
 *.py[cod]
 .pytest_cache/
 
-experiments/review-room/service/.venv/
-experiments/review-room/service/review-room.sqlite3
+.venv/
+
+tmp/
+*.sqlite3
+
+# Research checkouts live in their own Git repositories.
+remote-repos/
