@@ -59,6 +59,8 @@ P0 should prove:
   semantics, SSE events, and scoped thread workflow.
 - Add a compact manual scenario script for owner -> reviewer -> developer ->
   verification -> owner decision.
+- Keep Workbench CRUD/UI work framework-first: define the capability matrix and
+  Console information architecture before expanding full CRUD implementation.
 - Add a "known limitations" section for local P0, remote MCP, encoding, and
   cleanup boundaries.
 - Keep root `npm run test:review-room` pointed at the canonical service tests.
