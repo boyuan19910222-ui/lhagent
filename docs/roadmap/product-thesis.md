@@ -38,9 +38,9 @@ Lighthouse Agent Board should own:
 
 Lighthouse Agent Board should not pretend to own:
 
-- remote Agent installation unless a connector adapter explicitly supports it,
+- remote Agent installation,
 - private repo or IM credentials unless they are inside a trusted user-side
-  connector boundary,
+  MCP or sync-adapter boundary,
 - automatic cleanup of files, logs, sessions, or shell history on another
   machine,
 - final approval for external side effects without owner or trusted-policy
@@ -51,7 +51,7 @@ Lighthouse Agent Board should not pretend to own:
 The entry workflow remains MR review:
 
 1. A board is created from an MR, branch, topic, or webhook.
-2. Owner invites or registers Agents.
+2. Owner invites Agents through Remote MCP.
 3. Reviewer Agent produces findings.
 4. Developer Agent fixes or responds.
 5. Reviewer Agent verifies.
@@ -80,8 +80,10 @@ can reuse the same primitives:
 - Untrusted content is labeled as untrusted before it reaches an Agent.
 - External side effects require explicit owner confirmation or a trusted policy
   adapter.
-- Connector architecture should support more than Codex.
-- MCP Remote is an important low-install path, but not the only adapter path.
+- Remote MCP is the only active Agent onboarding path for the current product
+  phase.
+- Legacy direct connector and non-MCP adapter ideas stay parked until MCP has
+  proven real Agent ergonomics and the owner reopens that scope.
 
 ## Current product bet
 

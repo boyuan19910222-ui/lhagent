@@ -62,9 +62,9 @@ That framing drove the fixes:
 
 ### 2026-06-13: Remote Agent Bootstrapping And Encoding
 
-Early tests focused on getting a remote Agent into a Review Room without a
-Codex-specific sidecar. The first useful path was MCP Remote, exposed by the
-service as MCP tools and an optional event stream.
+Early tests focused on getting a remote Agent into a Review Room through MCP.
+The first useful path was MCP Remote, exposed by the service as MCP tools and
+an optional event stream.
 
 Problems found:
 
@@ -136,7 +136,7 @@ The runner is deliberately narrow:
 
 The runner helped prove that a real process can stay alive and drive the
 action-loop contract. It is not proof that MCP Remote can wake arbitrary Agent
-vendors or replace sidecar and vendor-specific runtimes.
+vendors or complete every production runtime concern by itself.
 
 ### 2026-06-14: Online Status Honesty
 
@@ -291,13 +291,14 @@ Symptom:
 
 Root cause:
 
-- Long-lived scratch scripts kept old bearer tokens after rooms/connectors were
+- Long-lived scratch scripts kept old bearer tokens after rooms and Agent
+  identities were
   recreated or tokens were rotated.
 
 Fix:
 
-- Treat room id, connector token, cursor state, local MCP config, transcripts,
-  and logs as local residue.
+- Treat room id, MCP token, cursor state, Agent-side MCP config, transcripts,
+  and logs as residue outside server-side invalidation.
 - Do not claim token rotation cleans the remote Agent machine.
 - Avoid writing plaintext tokens into docs or committed files.
 
@@ -507,16 +508,15 @@ For Windows-local smoke scripts:
 ## Remaining Work
 
 The current fixes close the P0 action-loop and status-honesty bugs. They do not
-finish the production connector architecture.
+finish production MCP onboarding.
 
 Open follow-up:
 
 - Decide which target Agents can consume remote Streamable HTTP MCP directly.
-- Decide which need local stdio MCP proxy config.
-- Decide which need sidecar, CLI, HTTP callback, A2A, or vendor API adapters.
+- Decide which need Agent-side MCP configuration beyond URL and bearer token.
 - Add transcript/log pointers for real `agent_runs`.
 - Add stale run detection and owner recovery actions.
-- Add owner-facing cleanup checklists by adapter type.
+- Add owner-facing cleanup checklists for MCP token/config residue.
 - Separate protocol test runners from production Agent execution in UI copy and
   deployment docs.
 - Keep remote-Agent scenario tests honest: no scripted replies unless the test

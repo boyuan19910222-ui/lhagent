@@ -90,6 +90,22 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         data = await response.json()
         return response, data
 
+    async def patch_json(self, path, payload, token=None):
+        headers = {}
+        if token:
+            headers["Authorization"] = "Bearer {}".format(token)
+        response = await self.client.patch(path, json=payload, headers=headers)
+        data = await response.json()
+        return response, data
+
+    async def delete_json(self, path, payload, token=None):
+        headers = {}
+        if token:
+            headers["Authorization"] = "Bearer {}".format(token)
+        response = await self.client.delete(path, json=payload, headers=headers)
+        data = await response.json()
+        return response, data
+
     async def test_rest_requires_owner_token_for_room_snapshot_and_connector_registration(self):
         create_response, room = await self.post_json("/api/rooms", {"title": "MR"})
         self.assertEqual(create_response.status, 201)
@@ -114,6 +130,100 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(allowed_snapshot.status, 200)
         self.assertEqual(allowed_connector.status, 201)
         self.assertTrue(connector["connectorToken"].startswith("rrc_"))
+
+    async def test_workbench_api_create_list_read_and_lifecycle(self):
+        create_response, workbench = await self.post_json(
+            "/api/workbenches",
+            {
+                "title": "MR: terminal workbench",
+                "repository": "lighthouse/console",
+                "mrUrl": "https://git.example.com/lighthouse/console/-/merge_requests/12",
+            },
+        )
+        list_response = await self.client.get("/api/workbenches")
+        list_data = await list_response.json()
+        connector = self.store.register_connector(
+            workbench["id"],
+            {"name": "Reviewer Agent", "role": "reviewer"},
+        )
+        denied_read = await self.client.get("/api/workbenches/{}".format(workbench["id"]))
+        denied_connector_read = await self.client.get(
+            "/api/workbenches/{}".format(workbench["id"]),
+            headers={"Authorization": "Bearer {}".format(connector["connectorToken"])},
+        )
+        allowed_read = await self.client.get(
+            "/api/workbenches/{}".format(workbench["id"]),
+            headers={"Authorization": "Bearer {}".format(workbench["ownerToken"])},
+        )
+        allowed_detail = await allowed_read.json()
+        rename_response, renamed = await self.patch_json(
+            "/api/workbenches/{}".format(workbench["id"]),
+            {"title": "MR: renamed terminal workbench"},
+            workbench["ownerToken"],
+        )
+        archive_response, archived = await self.post_json(
+            "/api/workbenches/{}/archive".format(workbench["id"]),
+            {},
+            workbench["ownerToken"],
+        )
+        restore_response, restored = await self.post_json(
+            "/api/workbenches/{}/restore".format(workbench["id"]),
+            {},
+            workbench["ownerToken"],
+        )
+        delete_response, deleted = await self.delete_json(
+            "/api/workbenches/{}".format(workbench["id"]),
+            {"confirm": True, "reason": "owner cleanup"},
+            workbench["ownerToken"],
+        )
+
+        self.assertEqual(create_response.status, 201)
+        self.assertEqual(list_response.status, 200)
+        self.assertEqual(denied_read.status, 403)
+        self.assertEqual(denied_connector_read.status, 403)
+        self.assertEqual(allowed_read.status, 200)
+        self.assertNotIn("ownerToken", list_data["workbenches"][0])
+        self.assertEqual(list_data["workbenches"][0]["template"], "mr-review")
+        self.assertIn("counts", list_data["workbenches"][0])
+        self.assertEqual(allowed_detail["title"], "MR: terminal workbench")
+        self.assertEqual(rename_response.status, 200)
+        self.assertEqual(renamed["title"], "MR: renamed terminal workbench")
+        self.assertEqual(archive_response.status, 200)
+        self.assertEqual(archived["status"], "archived")
+        self.assertEqual(restore_response.status, 200)
+        self.assertEqual(restored["status"], "open")
+        self.assertEqual(delete_response.status, 200)
+        self.assertEqual(deleted["status"], "deleted")
+        self.assertIn("does not clean remote Agent machines", deleted["cleanupBoundary"])
+
+    async def test_workbench_lifecycle_api_requires_owner_token_and_confirmation(self):
+        _, workbench = await self.post_json("/api/workbenches", {"title": "MR: guarded"})
+
+        denied_rename, _ = await self.patch_json(
+            "/api/workbenches/{}".format(workbench["id"]),
+            {"title": "bad"},
+            "wrong-token",
+        )
+        denied_archive, _ = await self.post_json(
+            "/api/workbenches/{}/archive".format(workbench["id"]),
+            {},
+            "wrong-token",
+        )
+        denied_delete, _ = await self.delete_json(
+            "/api/workbenches/{}".format(workbench["id"]),
+            {"confirm": True},
+            "wrong-token",
+        )
+        unconfirmed_delete, _ = await self.delete_json(
+            "/api/workbenches/{}".format(workbench["id"]),
+            {"confirm": False},
+            workbench["ownerToken"],
+        )
+
+        self.assertEqual(denied_rename.status, 403)
+        self.assertEqual(denied_archive.status, 403)
+        self.assertEqual(denied_delete.status, 403)
+        self.assertEqual(unconfirmed_delete.status, 400)
 
     async def test_websocket_room_broadcasts_topic_finding_response_and_confirmation(self):
         _, room = await self.post_json(
@@ -216,10 +326,10 @@ class CodexConnectorClientTest(unittest.TestCase):
 
         self.assertIn("/ws/rooms/", html)
         self.assertIn("new WebSocket", html)
-        self.assertIn("Agent Board owner", html)
-        self.assertIn("Reviewer Agent", html)
-        self.assertIn("Developer Agent", html)
-        self.assertIn("Finding / Decision", html)
+        self.assertIn("工作台负责人", html)
+        self.assertIn("评审智能体", html)
+        self.assertIn("开发智能体", html)
+        self.assertIn("发现 / 负责人决策", html)
 
     def test_parse_room_url_converts_http_to_websocket_path(self):
         ws_url = parse_room_url("http://127.0.0.1:8707", "room_123", "token_abc")

@@ -34,6 +34,154 @@ Notes:
 
 ## Lighthouse Agent Board local P0
 
+### Workbench CRUD and Terminal Operations UI framework
+
+Status: `Done in local P0 on 2026-06-16`
+
+Evidence:
+
+- [services/review-room-service/review_room_service.py](../../services/review-room-service/review_room_service.py)
+- [services/review-room-service/tests/test_review_room_service.py](../../services/review-room-service/tests/test_review_room_service.py)
+- [services/review-room-service/tests/test_review_room_p0.py](../../services/review-room-service/tests/test_review_room_p0.py)
+- [docs/roadmap/tracks/lighthouse-productization.md](./tracks/lighthouse-productization.md)
+- `.venv/bin/python -m py_compile services/review-room-service/review_room_service.py`
+- `.venv/bin/python -m unittest services.review-room-service.tests.test_review_room_service`
+- `.venv/bin/python -m unittest services.review-room-service.tests.test_review_room_p0.ReviewRoomP0AioHttpTest.test_workbench_api_create_list_read_and_lifecycle services.review-room-service.tests.test_review_room_p0.ReviewRoomP0AioHttpTest.test_workbench_lifecycle_api_requires_owner_token_and_confirmation`
+- `npm test`: OpenClaw Billing Guardian 16 Node tests passed; Agent Board
+  canonical service 51 Python unittest tests passed.
+- Browser smoke on `http://127.0.0.1:8707`: Workbench Hall opens, MR Review
+  Workbench creation opens detail, workflow rail renders Intake/Review/Fix/
+  Verify/Decision, Create Task remains explicit, Context Stream and Activity /
+  Audit Log render, desktop and 390px mobile had no horizontal overflow and no
+  console or failed-response errors.
+
+Notes:
+
+- Product UI now uses Workbench and Agent Board language while backend
+  compatibility keeps room identifiers and existing `/api/rooms` routes.
+- `/api/workbenches` supports create, list, and read summaries for the MR Review
+  template.
+- Rename, archive, restore, and delete are implemented as owner-gated lifecycle
+  operations that create audit events.
+- Delete creates a server-side Workbench tombstone only; it does not clean
+  remote Agent machines, shell history, MCP config, transcripts, logs,
+  caches, or workspace files.
+- The built-in HTML is still a local P0 productization surface, not the final
+  Lighthouse Console product.
+
+### Workbench remote lightweight preview
+
+Status: `Verified preview on 2026-06-16`
+
+Evidence:
+
+- [services/review-room-service/review_room_service.py](../../services/review-room-service/review_room_service.py)
+- [services/review-room-service/tests/test_review_room_service.py](../../services/review-room-service/tests/test_review_room_service.py)
+- Remote service: `lighthouse-review-room.service` on `ubuntu@124.222.24.34`
+  active on port 80.
+- `http://124.222.24.34/health`: HTTP 200 with `{"ok": true}`.
+- `http://124.222.24.34/api/workbenches`: HTTP 200 after smoke cleanup, with no
+  remaining `Codex remote smoke` rooms.
+- Remote API smoke: `POST /api/workbenches` returned 201, authenticated
+  `GET /api/workbenches/{id}` returned 200, and list summary returned 200.
+- Browser smoke on `http://124.222.24.34`: Workbench Hall rendered on desktop
+  and 390px mobile, no horizontal overflow, no console errors, and no failed
+  responses.
+- Chinese-copy browser smoke on local and remote preview: visible Hall and
+  Detail copy use Chinese labels for the terminal console, workflow rail,
+  actions, panels, metrics, findings, decisions, and audit log; legacy English
+  UI phrases were not present in `innerText`.
+- `npm test`: OpenClaw Billing Guardian 16 Node tests passed; Agent Board
+  canonical service 53 Python unittest tests passed.
+
+Notes:
+
+- Deployment uploaded the current local service file to the existing lightweight
+  server and restarted systemd; it did not pull remote code or install
+  dependencies.
+- Remote preview exposed legacy SQLite schema drift in `agent_runs`,
+  `decisions`, `handoffs`, and `threads`. Startup migrations and regression
+  tests now cover those older P0 tables.
+- Smoke data created during verification was removed from the remote database.
+- This is a remote preview deployment, not a complete real remote-Agent
+  scenario verification.
+
+### Workbench MCP-only onboarding cleanup
+
+Status: `Verified preview on 2026-06-16`
+
+Evidence:
+
+- [services/review-room-service/review_room_service.py](../../services/review-room-service/review_room_service.py)
+- [services/review-room-service/tests/test_review_room_service.py](../../services/review-room-service/tests/test_review_room_service.py)
+- [services/review-room-service/README.md](../../services/review-room-service/README.md)
+- [docs/roadmap/decisions.md](./decisions.md)
+- [docs/roadmap/tracks/connector-and-mcp.md](./tracks/connector-and-mcp.md)
+- `.venv/bin/python -m py_compile services/review-room-service/review_room_service.py`
+- `.venv/bin/python -m unittest services.review-room-service.tests.test_review_room_service`
+- `.venv/bin/python -m unittest services.review-room-service.tests.test_review_room_p0.ReviewRoomP0AioHttpTest.test_workbench_api_create_list_read_and_lifecycle services.review-room-service.tests.test_review_room_p0.ReviewRoomP0AioHttpTest.test_workbench_lifecycle_api_requires_owner_token_and_confirmation`
+- `npm test`: OpenClaw Billing Guardian 16 Node tests passed; Agent Board
+  canonical service 53 Python unittest tests passed.
+- Documentation scan for deprecated onboarding terms returned no matches.
+- Local browser smoke on `http://127.0.0.1:8710`: Workbench detail showed two
+  `复制 MCP 接入话术` buttons, no deprecated onboarding strings in visible text or
+  HTML, no console or failed-response errors, and no desktop/mobile horizontal
+  overflow.
+- Remote deployment to `ubuntu@124.222.24.34` restarted
+  `lighthouse-review-room.service`; `http://124.222.24.34/health` returned HTTP
+  200 with `{"ok": true}`.
+- Remote browser smoke on `http://124.222.24.34`: temporary Workbench detail
+  showed two `复制 MCP 接入话术` buttons, no deprecated onboarding strings in
+  visible text or HTML, no console or failed-response errors, and no
+  desktop/mobile horizontal overflow.
+
+Notes:
+
+- Workbench product UI and current docs now expose MCP invite copy plus `/mcp`
+  only for Agent onboarding.
+- Backend compatibility names such as `Room` and `connectors` remain where they
+  support schema compatibility, MCP identity state, and older tests; they are
+  not presented as user-facing setup paths.
+- Remote smoke data created for this verification was removed from the remote
+  database.
+
+### Real remote MCP Agent Board inbox and messaging scenario
+
+Status: `Verified partial real-Agent scenario on 2026-06-16`
+
+Evidence:
+
+- Deployed Agent Board endpoint: `http://124.222.24.34/mcp`.
+- Real board: `room_9ca7dd3449614fc3`.
+- Real MCP Agents joined the same board as `评审智能体` with reviewer role and
+  `开发智能体` with developer role.
+- `评审智能体` successfully called `join_room`, `get_room_snapshot`,
+  `heartbeat`, `list_tasks`, `wait_room_events`, and `post_message` through the
+  deployed `/mcp` endpoint.
+- Owner messages that explicitly mentioned `@评审智能体` created
+  high-priority Inbox items with `requiresReply=true`.
+- Owner messages that mentioned `@开发智能体` created a high-priority Inbox item
+  for the Developer Agent while still entering other Agents' Inbox as normal
+  supervision context.
+- Normal messages remained discussion only: `list_tasks` stayed empty, no
+  `agentRuns` were created, and `评审智能体` did not call task claim/run tools.
+- `评审智能体` used only `post_message` for ordinary replies and read MR !965
+  only after the owner explicitly allowed read-only access.
+- `评审智能体` and `开发智能体` exchanged visible board messages after both Agents
+  were connected.
+
+Notes:
+
+- This verifies the real remote MCP message, Inbox, mention, and Agent-to-Agent
+  coordination path with activated Agents.
+- It does not yet verify task claim, `agent_run`, completion, handoff, or owner
+  decision flows with real activated Agents.
+- The deployed MCP tool surface used in this scenario did not expose
+  `request_owner_confirmation`; the attempted call returned
+  `unknown tool: request_owner_confirmation`, so owner confirmation was handled
+  in visible board conversation rather than through a first-class decision
+  record.
+
 ### Full local repository test suite
 
 Status: `Verified on 2026-06-15`
@@ -83,8 +231,8 @@ Evidence:
 
 Notes:
 
-- The P0 service models rooms, messages, findings, connectors, developer
-  responses, human confirmation, MR webhook ingestion, and snapshots.
+- The P0 service models rooms, messages, findings, MCP Agent identities,
+  developer responses, human confirmation, MR webhook ingestion, and snapshots.
 
 ### Explicit task and Agent run loop
 
@@ -98,24 +246,25 @@ Evidence:
 
 Notes:
 
-- Owner-created tasks and connector-started `agent_runs` are present in room
+- Owner-created tasks and Agent-started `agent_runs` are present in room
   snapshots.
 
-### Connector registration, metadata, and bootstrap
+### MCP identity metadata and bootstrap
 
 Status: `Done in local P0`
 
 Evidence:
 
 - [docs/concepts/review-room-connector-architecture.md](../concepts/review-room-connector-architecture.md)
-- `test_registers_local_and_remote_agent_connectors_for_room`
+- `test_agent_invite_defaults_to_mcp_remote`
 - `test_agent_invite_creates_invited_agent_member`
-- `test_agent_invite_can_request_codex_sidecar_adapter`
+- MCP invite and identity tests in the canonical service suite.
 
 Notes:
 
-- Agent invites default toward `mcp-remote` while allowing explicit
-  `codex-sidecar` compatibility.
+- Current Workbench UI and docs expose MCP invite copy and `/mcp` only. Older
+  non-MCP onboarding evidence is retained in git history, not as current
+  product guidance.
 
 ### Connector token rotation and disconnect
 
@@ -322,6 +471,6 @@ Notes:
 
 These are not complete until current evidence is refreshed:
 
-- Real remote Agent scenario using the current MCP Remote path.
+- Real remote task/run scenario using the current MCP Remote path.
 - Owner-facing cleanup checklist by adapter type.
 - Transcript or log pointer behavior across real adapter runs.

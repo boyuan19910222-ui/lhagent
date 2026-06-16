@@ -2,7 +2,7 @@
 
 ## 核心结论
 
-Review Room P0 先聚焦纯产品能力，不接 Lighthouse 控制台：在 Lighthouse 实例内运行一个 Review Room 后端，提供 Agent 协作黑板、Remote MCP 工具、WebSocket 状态流和兼容 Connector 协议，让 `review room owner` 能监督 `Reviewer Agent` 与 `Developer Agent` 围绕代码评审异步交接上下文、任务、Finding 和 Decision。
+Review Room P0 先聚焦纯产品能力，不接 Lighthouse 控制台：在 Lighthouse 实例内运行一个 Review Room 后端，提供 Agent 协作黑板、Remote MCP 工具和 WebSocket 状态流，让 `review room owner` 能监督 `Reviewer Agent` 与 `Developer Agent` 围绕代码评审异步交接上下文、任务、Finding 和 Decision。
 
 重要校准：Review Room 不再承诺“远端主动唤醒本地 Agent”。它是一个持久黑板和审计状态机。Agent 只有在自己已被用户或官方任务控制面激活时，才会主动通过 MCP 读取黑板并回写结果。
 
@@ -12,16 +12,16 @@ Review Room P0 先聚焦纯产品能力，不接 Lighthouse 控制台：在 Ligh
 - Web 页面：服务根路径 `/`，展示 Room Board、Agent Inbox、消息流、Task、Finding / Decision 卡片。
 - MCP 协议：`GET/POST /mcp`，给已激活的 Agent 提供 snapshot、events、tasks、message/finding/task 回写工具。
 - 实时协议：`GET /ws/rooms/{roomId}?token=...`，用于 Web UI 和兼容客户端刷新状态，不是唤醒未运行 Agent 的机制。
-- 鉴权：创建 Room 返回 `ownerToken`；每个 Agent Connector 有独立 `connectorToken`。
-- Agent 侧兼容工具：`services/review-room-service/codex_connector.py` 可用于协议验证和调试，但不作为正式产品路线；正式路线不要求用户在 Agent 本地额外部署 runner、daemon 或插件。
+- 鉴权：创建 Room 返回 `ownerToken`；每个 MCP Agent invite 有独立 token。
+- Agent 接入：当前产品文档只保留 Remote MCP，不再提供直接 Agent 注册路径。
 
 ## P0 边界
 
-- Review Room 后端只保存 Room Board、Message、Task、Finding、Decision、Connector、确认状态和审计事件。
+- Review Room 后端只保存 Room Board、Message、Task、Finding、Decision、MCP Agent identity、确认状态和审计事件。
 - 后端不保存 OpenAI/Codex 密钥，不代跑真实 Agent。
 - P0 不做 MR 评论回写、不接 Lighthouse Console、不做多节点同步。
 - P0 不做本地 Agent 唤醒；`@AgentName` 和 `task.assigned` 只是给 Agent 下次主动读取时消费的路由/工作项。
-- 兼容保留旧 REST Connector event 和 WebSocket 入口，但主体验走 Remote MCP 读写黑板。
+- 主体验走 Remote MCP 读写黑板。
 
 ## 验证
 

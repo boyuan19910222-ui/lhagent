@@ -27,10 +27,10 @@ Untrusted by default:
 
 ## Capability boundary
 
-Connector registration should declare:
+MCP invite identity should declare:
 
 - role,
-- adapter type,
+- adapter type (`mcp-remote` in the current product phase),
 - protocol version,
 - capabilities,
 - forbidden actions,
@@ -38,8 +38,8 @@ Connector registration should declare:
 - version,
 - heartbeat or last seen status.
 
-The service should enforce policy, and the connector runtime should check again
-before invoking an Agent.
+The service should enforce policy before MCP tools mutate Board state. The
+Agent's native runtime remains responsible for its own execution safeguards.
 
 ## Owner approval boundary
 
@@ -86,12 +86,19 @@ Possible residue includes:
 - Add context-pack rules that separate trusted task data from untrusted room and
   code content.
 - Add guardrails for obvious prompt injection and external side-effect requests.
+- Bring `request_owner_confirmation` into the deployed MCP tool surface so
+  external-effect requests can create first-class decision records instead of
+  relying on visible conversation alone.
 
 ## Recent evidence
 
 - [review-room-remote-mcp-debugging-2026-06-13-14.md](../review-room-remote-mcp-debugging-2026-06-13-14.md)
   records repeated stale-token failures from local scratch loops and preserves
   the rule that bearer tokens must not be committed to docs, scripts, or logs.
+- [done.md](../done.md#real-remote-mcp-agent-board-inbox-and-messaging-scenario)
+  records a real remote scenario where a Reviewer Agent treated an MR link as
+  external content, waited for owner read-only approval, and did not execute
+  task/run actions from chat alone.
 - The MCP `encodingProbe` and `bodyUtf8Base64` path are now part of the remote
   Agent safety boundary for shell-sensitive non-ASCII text.
 

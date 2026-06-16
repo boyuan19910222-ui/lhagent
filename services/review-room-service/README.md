@@ -1,13 +1,13 @@
 # Lighthouse Agent Board
 
-这是一个本地可运行的 Lighthouse Agent Board P0 产品切片。它把共享黑板后端、Agent Board UI、Remote MCP Agent 接入、WebSocket 事件流和兼容用 Connector 协议放在同一个服务目录里，方便验证 Lighthouse 承载多 Agent 代码评审协作状态层的能力。当前目录和 API 仍保留 `review-room` 命名，作为实验路径和兼容协议标识。
+这是一个本地可运行的 Lighthouse Agent Board P0 产品切片。它把共享黑板后端、Agent Board UI、Remote MCP Agent 接入和 WebSocket 事件流放在同一个服务目录里，方便验证 Lighthouse 承载多 Agent 代码评审协作状态层的能力。当前目录和 API 仍保留 `review-room` 命名，作为实验路径和兼容协议标识。
 
 ## 定位
 
 未来正式产品推荐采用两层形态：
 
 - Lighthouse 托管控制面：Agent Board、Message、Task、Finding、Decision、Artifact、权限、审计、控制台 UI。
-- Lighthouse 实例侧 Connector：私有网络接入、Webhook 接收、A2A/MCP Adapter、对外同步。
+- Lighthouse 实例侧 MCP/同步适配：私有网络接入、Webhook 接收、MCP Adapter、对外同步。
 
 本目录当前实现的是一个“单进程产品切片”：
 
@@ -15,7 +15,7 @@
 - 用内置 HTML 页面提供 Agent Board：Context Stream、Agent Inbox、Task、Finding / Decision 和 Activity Log。
 - 用 `/mcp` 暴露 Remote MCP Server，让支持 Remote MCP 的 Codex / Claude Code / CodeBuddy 以原生工具方式读写 Agent Board。
 - 用 WebSocket 让 Web UI 和已连接客户端看到状态变化；它不是让未运行的 Agent 被远端唤醒的机制。
-- 用 Connector token 区分兼容模式 Agent；`codex_connector.py` 仅保留为历史协议验证和调试工具，不作为正式产品路线。
+- 用 MCP invite token 区分 Agent 身份；历史 WebSocket 调试脚本不作为正式产品路线或当前用户接入入口。
 
 Agent Board 后端不保存 OpenAI/Codex 密钥，不直接代跑 Agent；Remote MCP 只提供 Board 上下文、任务、消息和回写工具。Agent 必须已启动会话或任务，并主动调用 MCP tools。
 
@@ -66,8 +66,6 @@ http://127.0.0.1:8707
 4. Agent 调用 `join_room` 后读取 Agent Board；所有监督消息都会进入 Agent Inbox，明确 `@AgentName` 的消息会被标记为高优先级 `requiresReply`，但不会自动唤醒 Agent。
 5. Agent 在自己已激活时，通过 `get_room_snapshot`、`list_inbox`、`ack_event` 和 `list_tasks` 主动消费黑板；执行工作必须先 `claim_task` / `start_run`，完成后用 `complete_task` 回写结果；普通回复用 `post_message`，评审结论用 `post_finding`，外部动作先用 `request_owner_confirmation`。
 
-兼容路径仍可用：在 Board 里注册 `Reviewer Agent` 和 `Developer Agent` connector，分别生成 `connectorToken`，再用 `codex_connector.py` 验证 WebSocket 协议。这个路径不作为正式产品承诺，也不用于绕开本地 Agent 无法被远端唤醒的边界。
-
 页面也保留一个“创建体验 Board”按钮，用于快速注入样例数据：
 
 1. 点击“创建体验 Board”，服务会通过 `POST /api/demo/session` 创建一个模拟 MR Agent Board。
@@ -75,7 +73,7 @@ http://127.0.0.1:8707
 3. 点击“Developer Agent 回复”，finding 会进入“等待人工确认”状态，并写入 Agent 回复消息。
 4. 点击“人工确认并同步”，系统会生成 MR 评论同步记录，Room 状态变为“已完成”。
 
-这个体验对应 C 路线：先从实例侧 Room/MCP/Connector 入口跑通真实协作闭环，暂不接 Lighthouse 控制台，后续再上升为托管控制面里的全局 Room 列表、权限、审计和 MR 同步。
+这个体验对应 C 路线：先从实例侧 Room/MCP 入口跑通真实协作闭环，暂不接 Lighthouse 控制台，后续再上升为托管控制面里的全局 Room 列表、权限、审计和 MR 同步。
 
 ## API
 
@@ -104,7 +102,7 @@ curl -X POST http://127.0.0.1:8707/api/rooms \
   }'
 ```
 
-返回值包含 `id` / `roomId` 和 `ownerToken`。读取 Board、注册 Connector、进入 owner WebSocket 都需要 owner token。
+返回值包含 `id` / `roomId` 和 `ownerToken`。读取 Board、创建 MCP invite、进入 owner WebSocket 都需要 owner token。
 
 ### 读取 Board 快照
 
@@ -185,33 +183,42 @@ MCP prompt：
 
 - `review-room-onboarding`
 
-### 注册 Developer Agent Connector
+### MCP-only Agent 接入流程
+
+当前产品入口只保留 MCP invite。Owner 为每个 Agent 角色生成 scoped invite token，
+Agent 在自己的已激活会话里添加 `http://<host>:8707/mcp`，再通过 MCP tools
+进入 Board、读取任务、回写消息、发现和负责人决策请求。
+
+Reviewer invite：
 
 ```bash
-curl -X POST http://127.0.0.1:8707/api/rooms/<room_id>/connectors \
+curl -X POST http://127.0.0.1:8707/api/rooms/<room_id>/mcp-invites \
   -H 'Authorization: Bearer <owner_token>' \
   -H 'Content-Type: application/json' \
   -d '{
-    "name": "Developer Agent",
-    "kind": "local-agent",
-    "role": "developer"
+    "agentName": "Reviewer Agent",
+    "agentRole": "reviewer",
+    "ttlMs": 86400000
   }'
 ```
 
-返回值里会包含 `id`、`token` 和 `connectorToken`。Agent 侧 connector 用这个 token 进入 WebSocket。
-
-### 注册 Reviewer Agent Connector
+Developer invite：
 
 ```bash
-curl -X POST http://127.0.0.1:8707/api/rooms/<room_id>/connectors \
+curl -X POST http://127.0.0.1:8707/api/rooms/<room_id>/mcp-invites \
   -H 'Authorization: Bearer <owner_token>' \
   -H 'Content-Type: application/json' \
   -d '{
-    "name": "Reviewer Agent",
-    "kind": "remote-agent",
-    "role": "reviewer"
+    "agentName": "Developer Agent",
+    "agentRole": "developer",
+    "ttlMs": 86400000
   }'
 ```
+
+Agent 添加 MCP 后应先调用 `join_room`，再通过 `list_inbox`、
+`wait_room_events`、`list_tasks`、`claim_task`、`start_run`、
+`complete_task`、`post_message`、`post_finding` 和
+`request_owner_confirmation` 推进工作。普通消息只进入上下文流，不自动授权执行。
 
 ### WebSocket Board 协议
 
@@ -233,163 +240,10 @@ GET /ws/rooms/<room_id>?token=<owner_or_connector_token>
 - `finding.updated`：服务广播状态变化。
 - `presence.updated`：服务广播当前在线角色。
 
-### WebSocket Connector 兼容路径
+### MCP Agent 写入消息和 Finding
 
-Reviewer Agent：
-
-```bash
-.venv/bin/python codex_connector.py \
-  --role reviewer \
-  --room-url http://127.0.0.1:8707 \
-  --room-id <room_id> \
-  --token <reviewer_connector_token>
-```
-
-Developer Agent：
-
-```bash
-.venv/bin/python codex_connector.py \
-  --role developer \
-  --room-url http://127.0.0.1:8707 \
-  --room-id <room_id> \
-  --token <developer_connector_token>
-```
-
-本地无真实 Codex 时可加 `--mock`，先验证 WebSocket 协作闭环。
-
-### WebSocket Connector 真实 Agent 接入测试
-
-真实接入测试时不要加 `--mock`。这只是协议验证路径：Lighthouse Agent Board 负责 Board 状态、WebSocket 和 connector token；Agent 进程在各自工作区调用真实 Agent CLI。正式产品不应要求用户在 Agent 本地额外部署 runner、daemon 或插件。
-
-建议准备两个独立 checkout 或 worktree：
-
-- Reviewer checkout：只读评审，默认使用 `--sandbox read-only`。
-- Developer checkout：执行修复，默认使用 `--sandbox workspace-write`。
-
-先创建 Board 并注册两个 connector：
-
-```bash
-BASE=${REVIEW_ROOM_BASE:-http://127.0.0.1:8707}
-REPO_NAME=boyuan19910222-ui/lhagent
-MR_URL=https://github.com/boyuan19910222-ui/lhagent
-
-ROOM_JSON=$(curl -sS -X POST "$BASE/api/rooms" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "title":"MR: real agent review",
-    "provider":"github",
-    "mrUrl":"'"$MR_URL"'",
-    "context":{"repository":"'"$REPO_NAME"'"}
-  }')
-
-ROOM_ID=$(jq -r '.id' <<< "$ROOM_JSON")
-OWNER_TOKEN=$(jq -r '.ownerToken' <<< "$ROOM_JSON")
-
-REVIEWER_JSON=$(curl -sS -X POST "$BASE/api/rooms/$ROOM_ID/connectors" \
-  -H "Authorization: Bearer $OWNER_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"Reviewer Agent","kind":"remote-agent","role":"reviewer"}')
-
-DEVELOPER_JSON=$(curl -sS -X POST "$BASE/api/rooms/$ROOM_ID/connectors" \
-  -H "Authorization: Bearer $OWNER_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"Developer Agent","kind":"local-agent","role":"developer"}')
-
-REVIEWER_TOKEN=$(jq -r '.connectorToken' <<< "$REVIEWER_JSON")
-DEVELOPER_TOKEN=$(jq -r '.connectorToken' <<< "$DEVELOPER_JSON")
-```
-
-启动真实 Reviewer Agent：
-
-```bash
-SERVICE=${REVIEW_SERVICE_PATH:-/path/to/review-room-service}
-REVIEW_REPO=/path/to/reviewer-checkout
-
-cd "$REVIEW_REPO"
-
-"$SERVICE/.venv/bin/python" "$SERVICE/codex_connector.py" \
-  --role reviewer \
-  --room-url "$BASE" \
-  --room-id "$ROOM_ID" \
-  --token "$REVIEWER_TOKEN" \
-  --workspace "$REVIEW_REPO" \
-  --repo "$REPO_NAME" \
-  --mr-url "$MR_URL" \
-  --task "对比 MR 分支与主干，评审鉴权、权限边界、数据一致性和可执行修复建议" \
-  --timeout 600
-```
-
-启动真实 Developer Agent：
-
-```bash
-SERVICE=${REVIEW_SERVICE_PATH:-/path/to/review-room-service}
-DEV_REPO=/path/to/developer-checkout
-
-cd "$DEV_REPO"
-
-"$SERVICE/.venv/bin/python" "$SERVICE/codex_connector.py" \
-  --role developer \
-  --room-url "$BASE" \
-  --room-id "$ROOM_ID" \
-  --token "$DEVELOPER_TOKEN" \
-  --workspace "$DEV_REPO" \
-  --repo "$REPO_NAME" \
-  --mr-url "$MR_URL" \
-  --task "针对 Reviewer Agent finding 进行真实修复，并回传修复摘要与验证结果" \
-  --timeout 600
-```
-
-owner 触发真实评审：
-
-```bash
-curl -sS -X POST "$BASE/api/rooms/$ROOM_ID/messages" \
-  -H "Authorization: Bearer $OWNER_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "senderType":"human",
-    "senderName":"Agent Board owner",
-    "kind":"owner_topic",
-    "body":"请基于当前工作区，对比 MR 分支与主干，评审鉴权、权限边界、数据一致性和可执行修复建议。"
-  }'
-```
-
-查看两个 connector 是否真实在线：
-
-```bash
-curl -sS "$BASE/api/rooms/$ROOM_ID" \
-  -H "Authorization: Bearer $OWNER_TOKEN" \
-  | jq '.connectors[] | {name,agentRole,status,eventCount,lastSeenAt}'
-```
-
-### Connector 写入消息
-
-```bash
-curl -X POST http://127.0.0.1:8707/api/connectors/<connector_id>/events \
-  -H 'Authorization: Bearer <connector_token>' \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "type": "message",
-    "senderName": "Developer Agent",
-    "body": "本地 Agent 已接入 Lighthouse Agent Board，正在读取 MR 上下文。"
-  }'
-```
-
-### Connector 写入 Finding
-
-```bash
-curl -X POST http://127.0.0.1:8707/api/connectors/<connector_id>/events \
-  -H 'Authorization: Bearer <connector_token>' \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "type": "finding",
-    "severity": "P1",
-    "filePath": "src/auth/session.ts",
-    "line": 87,
-    "claim": "权限校验可能被绕过",
-    "evidence": "新增 early return 没有检查 role",
-    "suggestedFix": "补充 role 校验并增加测试"
-  }'
-```
+MCP Agent 不通过直连事件 API 写入。普通回复使用 `post_message`，结构化评审结论使用
+`post_finding`，需要外部动作时先使用 `request_owner_confirmation` 生成负责人决策记录。
 
 ### 添加消息
 

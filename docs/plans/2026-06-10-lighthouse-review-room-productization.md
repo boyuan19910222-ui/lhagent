@@ -1,6 +1,6 @@
 # Lighthouse Review Room Productization Implementation Plan
 
-> 2026-06-15 update: this plan is kept as historical implementation context. The product direction has changed from a realtime Agent room / connector-driven chat to a shared blackboard model. Do not treat local Agent daemons, connector runners, or remote wake-up behavior as the product path. Preserve the useful parts: scoped identity, durable Room state, Message/Task/Finding/Decision records, audit trail, and human confirmation.
+> 2026-06-16 update: this plan is kept as historical implementation context. The product direction has changed from a realtime Agent room to an MCP-only shared blackboard model. Do not treat non-MCP onboarding, non-MCP runners, or remote wake-up behavior as the product path. Preserve the useful parts: scoped identity, durable Room state, Message/Task/Finding/Decision records, audit trail, and human confirmation.
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 

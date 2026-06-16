@@ -79,25 +79,36 @@ Key tracks:
 - [Observability and routing](./tracks/observability-and-routing.md)
 - [Safety and lifecycle](./tracks/safety-and-lifecycle.md)
 
-## M3: Connector ecosystem
+Current evidence:
+
+- [Real remote MCP Agent Board inbox and messaging scenario](./done.md#real-remote-mcp-agent-board-inbox-and-messaging-scenario):
+  activated Reviewer and Developer Agents joined the same deployed board,
+  recovered context, handled direct mentions through Inbox, and kept ordinary
+  chat separate from task execution.
+
+Remaining proof:
+
+- Verify the real task claim, `agent_run`, completion, handoff, and owner
+  decision loop with activated Agents, not only messages and Inbox routing.
+
+## M3: MCP Agent onboarding
 
 Status: `Planned`
 
 Goal:
 
-- Split the connector protocol, connector runtime, and Agent adapters so
-  Lighthouse Agent Board is not locked to the current Codex sidecar.
+- Make Remote MCP onboarding reliable enough for real Agent Board evaluation
+  without adding non-MCP onboarding paths.
 
 Acceptance:
 
-- Connector registration declares adapter type, protocol version, capabilities,
-  forbidden actions, heartbeat, and version.
-- `codex-sidecar` remains a compatibility adapter.
+- MCP invite bootstrap declares role, capabilities, forbidden actions, status
+  semantics, and expiry.
 - `mcp-remote` is validated against at least one real Agent path.
-- The adapter matrix documents which Agents need MCP, sidecar, CLI, HTTP,
-  vendor API, or A2A integration.
-- Bootstrap UX explains what Lighthouse Agent Board can start remotely and what still
-  requires user-side setup.
+- The MCP compatibility matrix documents which Agents support remote MCP, which
+  need Agent-side configuration, and which cannot join yet.
+- Bootstrap UX explains what Lighthouse Agent Board can invalidate server-side
+  and what still requires user-side setup.
 
 Key track:
 

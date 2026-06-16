@@ -5,12 +5,13 @@
 Deliver a simple, visible Lighthouse Agent Board integration path that validates
 the product ideas from the architecture notes:
 
-- Connector registration is explicit about adapter type, protocol version, capabilities, and forbidden actions.
+- MCP invite identity is explicit about adapter type, protocol version,
+  capabilities, and forbidden actions.
 - Human chat does not automatically trigger every Agent.
 - Owner-created tasks drive Agent execution.
 - Every Agent execution is visible through `agent_runs`.
-- Existing Codex connector remains the first adapter.
-- MCP Gateway is explored as an adapter path, not as the only connector architecture.
+- Remote MCP is the only active Agent onboarding path for the current product
+  phase.
 - The running slice is deployed to the lightweight cloud Agent Board service for hands-on verification.
 
 ## Delivery slices
@@ -19,16 +20,18 @@ the product ideas from the architecture notes:
 
 User-visible result:
 
-- Owner can create a task for a specific connector.
-- The assigned connector receives `task.assigned`.
-- The connector starts an `agent_run`, produces a finding/message/response, and completes the task.
+- Owner can create a task for a specific MCP Agent identity.
+- The assigned MCP Agent sees `task.assigned`.
+- The MCP Agent starts an `agent_run`, produces a finding/message/response, and
+  completes the task.
 - Room snapshot shows `tasks` and `agentRuns`.
 
 Implementation:
 
 - Add `tasks` table.
 - Add `agent_runs` table.
-- Add connector metadata fields: `adapterType`, `protocolVersion`, `capabilities`, `forbidden`, `version`, and `heartbeatAt`.
+- Add MCP identity metadata fields: `adapterType`, `protocolVersion`,
+  `capabilities`, `forbidden`, `version`, and `heartbeatAt`.
 - Add REST endpoints:
   - `POST /api/rooms/{room_id}/tasks`
   - `POST /api/tasks/{task_id}/runs`
@@ -44,34 +47,39 @@ Implementation:
 
 Verification:
 
-- Unit tests prove task assignment, connector-only run start, task completion, and snapshot visibility.
-- WebSocket tests prove a connector receives assignment and emits run lifecycle events.
+- Unit tests prove task assignment, MCP-authenticated run start, task
+  completion, and snapshot visibility.
+- MCP tests prove an Agent can see assignment and emit run lifecycle updates.
 
-### Slice 2: Simple connector bootstrap
+### Slice 2: Simple MCP bootstrap
 
 User-visible result:
 
-- After registering a connector, owner sees a concrete command/config path for starting the connector.
-- The command keeps the existing `codex_connector.py` path as the first adapter.
+- After creating an MCP invite, owner sees concrete MCP URL/auth copy for the
+  target Agent.
+- The bootstrap copy names the first expected tool calls and states that normal
+  messages are not execution authority.
 
 Implementation:
 
-- Add generated connector config fields to registration response.
-- Document local and remote command examples in the service README.
-- Keep tokens visible only to the owner and returned registration response.
+- Add generated MCP bootstrap fields to the invite response.
+- Document MCP invite and `/mcp` setup in the service README.
+- Keep tokens visible only to the owner and returned invite response.
 
 Verification:
 
-- Tests prove registration response includes adapter metadata and bootstrap details.
-- Room snapshot hides connector tokens from guests/connectors.
+- Tests prove invite response includes adapter metadata and bootstrap details.
+- Room snapshot hides MCP tokens from guests and Agents.
 
 ### Slice 3: MCP Gateway experiment
 
 User-visible result:
 
-- A minimal MCP-style gateway can read a room snapshot and submit a structured finding through connector identity.
+- A minimal MCP gateway can read a room snapshot and submit a structured
+  finding through MCP identity.
 - The experiment clearly states what still requires real Agent compatibility testing.
-- Agent invite links default to the MCP Remote adapter and expose MCP bootstrap details before falling back to sidecar-specific setup.
+- Agent invite links use the MCP Remote adapter and expose MCP bootstrap
+  details.
 
 Implementation:
 
@@ -93,7 +101,8 @@ User-visible result:
 
 - The public Agent Board service on the lightweight cloud host runs the updated code.
 - Health check passes.
-- A remote smoke test creates a room, registers a connector, creates a task, starts a run, completes the task, and reads the final snapshot.
+- A remote smoke test creates a room, creates an MCP invite, claims a task,
+  starts a run, completes the task, and reads the final snapshot.
 
 Verification:
 
@@ -105,8 +114,10 @@ Verification:
 
 User-visible result:
 
-- Owner can create a room, invite an Agent, and see the connector bootstrap path from the same page.
-- Owner can open the right-side `任务与运行` panel, choose a connector, and assign a structured task without calling curl manually.
+- Owner can create a room, invite an Agent, and see the MCP bootstrap path from
+  the same page.
+- Owner can open the right-side `任务与运行` panel, choose an MCP Agent role, and
+  assign a structured task without calling curl manually.
 - The page shows current tasks and `agentRuns`, making Agent background work visible during the review.
 
 Implementation:
@@ -120,25 +131,27 @@ Verification:
 - Home page tests prove the task/run controls and API wiring are present.
 - End-to-end API smoke still proves the same task/run loop on the deployed service.
 
-### Slice 6: Connector token rotation
+### Slice 6: MCP token rotation
 
 User-visible result:
 
-- Owner can rotate an Agent connector token without deleting the connector record.
-- Old connector tokens stop working immediately.
-- Active connector WebSocket sessions are disconnected and must reconnect with the new token.
+- Owner can rotate an MCP Agent token without deleting Board history.
+- Old MCP tokens stop working immediately.
+- Active MCP sessions must reconnect with the new token.
 - The Room timeline records an audit event without leaking the new token.
 
 Implementation:
 
-- Add `POST /api/rooms/{room_id}/connectors/{connector_id}/rotate-token`.
-- Return the new connector token and bootstrap command only in the owner-authenticated response.
-- Reset the connector to `invited` until it reconnects with the rotated token.
+- Add an owner-authenticated token rotation path for MCP Agent identity.
+- Return the new MCP token and bootstrap copy only in the owner-authenticated
+  response.
+- Reset the Agent identity to `invited` until it reconnects with the rotated
+  token.
 
 Verification:
 
 - Store tests prove old token invalidation, new token authentication, and audit redaction.
-- HTTP tests prove old connector events fail and new connector events work.
+- HTTP tests prove old MCP tokens fail and new MCP tokens work.
 - WebSocket tests prove active old sessions receive a disconnect event.
 
 ### Slice 7: Reviewer-to-Developer handoff
@@ -169,7 +182,8 @@ User-visible result:
 
 - When a Developer Agent completes a `fix` task created from a handoff, Agent Board creates a follow-up `verify` task.
 - The verification task keeps source links to the fix task, finding, and handoff.
-- Agent Board assigns the verification task back to the original Reviewer Agent when that connector is still eligible.
+- Agent Board assigns the verification task back to the original Reviewer Agent
+  when that MCP identity is still eligible.
 - The Reviewer Agent receives a normal `task.assigned` event; verification remains explicit task execution, not hidden chat-triggered work.
 
 Implementation:
@@ -183,16 +197,19 @@ Verification:
 
 - Store tests prove `fix -> verify` task generation and source linkage.
 - HTTP tests prove Developer task completion creates a Reviewer verification task in the room snapshot.
-- WebSocket tests prove the Reviewer connector receives `task.assigned` for the generated verification task.
+- MCP tests prove the Reviewer Agent can see `task.assigned` for the generated
+  verification task.
 
 ### Slice 9: Claimable tasks and MCP task discovery
 
 User-visible result:
 
 - Owner can create an open task with `target.mode=claim`.
-- A connector must explicitly claim matching work before it can start an `agent_run`.
-- Claim checks enforce connector room, revoked status, target role, and target capability.
-- MCP-style connectors can list room tasks and claim eligible tasks without installing the Codex sidecar.
+- An MCP Agent must explicitly claim matching work before it can start an
+  `agent_run`.
+- Claim checks enforce Board, revoked status, target role, and target
+  capability.
+- MCP Agents can list room tasks and claim eligible tasks through `/mcp`.
 
 Implementation:
 
@@ -204,7 +221,8 @@ Implementation:
 
 Verification:
 
-- Store tests prove unmatched connectors cannot claim and open tasks cannot run before claim.
+- Store tests prove unmatched MCP identities cannot claim and open tasks cannot
+  run before claim.
 - HTTP tests prove claim is required before starting a run.
 - WebSocket tests prove claim produces realtime assignment and then allows run start.
 - MCP tests prove task listing marks claimable work and `claim_task` assigns it.
@@ -213,14 +231,16 @@ Verification:
 
 User-visible result:
 
-- MCP-style connectors can start an observable `agent_run` for an assigned or claimed task.
-- MCP-style connectors can complete their assigned task and record the final message without installing the Codex sidecar.
+- MCP Agents can start an observable `agent_run` for an assigned or claimed
+  task.
+- MCP Agents can complete their assigned task and record the final message.
 - Completion through MCP reuses the same follow-up task behavior as REST and WebSocket completion.
 
 Implementation:
 
 - Add MCP tools `start_run` and `complete_task`.
-- Reuse connector token identity and existing `start_agent_run` / `complete_task_result` store checks.
+- Reuse MCP token identity and existing `start_agent_run` /
+  `complete_task_result` store checks.
 - Broadcast the same `agent_run.started`, `task.completed`, optional follow-up `task.created`, and `room.snapshot` events as the REST path.
 - Record MCP-started runs as `adapterType=mcp-remote`, mark MCP callers as `mcp_ready`, and keep MCP tool activity separate from WebSocket online presence.
 
@@ -235,7 +255,8 @@ Verification:
 
 User-visible result:
 
-- MCP-style connectors can ask the room owner to approve or reject a proposed action without executing it.
+- MCP Agents can ask the room owner to approve or reject a proposed action
+  without executing it.
 - Agent Board records the request as a first-class decision object in board state.
 - The owner can accept or reject the decision from Agent Board state, leaving an auditable message trail before any external sync adapter acts.
 
@@ -248,16 +269,19 @@ Implementation:
 
 Verification:
 
-- MCP tests prove owner tokens cannot impersonate connector tools.
-- MCP tests prove connector requests create pending decision records and room status `needs_owner_decision`.
-- API tests prove connectors cannot decide requests and owner decisions clear the pending count.
+- MCP tests prove owner tokens cannot impersonate Agent tools.
+- MCP tests prove Agent requests create pending decision records and room status
+  `needs_owner_decision`.
+- API tests prove Agents cannot decide requests and owner decisions clear the
+  pending count.
 
 ### Slice 12: MCP message and handoff proposal tools
 
 User-visible result:
 
-- MCP-style connectors can post ordinary room messages without installing the Codex sidecar.
-- MCP-style reviewer connectors can propose a handoff from a finding into follow-up work, while the owner still decides whether it becomes a task.
+- MCP Agents can post ordinary room messages.
+- MCP reviewer Agents can propose a handoff from a finding into follow-up work,
+  while the owner still decides whether it becomes a task.
 - Chat remains separate from execution: `post_message` writes timeline state only and does not trigger Agent work.
 
 Implementation:
@@ -268,7 +292,7 @@ Implementation:
 
 Verification:
 
-- MCP tests prove owner tokens cannot use connector message tools.
+- MCP tests prove owner tokens cannot use Agent message tools.
 - MCP tests prove `post_message` cannot spoof structured finding kinds or trigger hosted Agent replies.
 - MCP tests prove only reviewer connectors can propose handoffs, and owner acceptance still creates developer work and follow-up verification.
 
@@ -276,7 +300,8 @@ Verification:
 
 User-visible result:
 
-- A connected MCP-style Agent can receive board messages and board state changes in realtime without a WebSocket sidecar.
+- A connected MCP Agent can receive board messages and board state changes in
+  realtime through MCP polling or wait tools.
 - The Agent can decide whether to reply after reading events; ordinary chat remains collaboration input, not automatic execution.
 - The Agent can resume from `Last-Event-ID` or store `nextCursor` and continue from the last observed event after reconnect.
 
@@ -291,18 +316,22 @@ Implementation:
 
 Verification:
 
-- MCP tests prove owner tokens cannot open connector event streams or poll as connectors.
+- MCP tests prove owner tokens cannot open Agent event streams or poll as
+  Agents.
 - MCP tests prove an open SSE stream receives a new room message in realtime.
 - MCP tests prove polling returns room messages and structured task events with trust labels.
 - MCP tests prove cursor pagination returns only events after the supplied cursor.
-- Snapshot tests prove MCP polling marks the connector `mcp_ready` while realtime streams mark the connector `mcp_streaming` and count as online.
+- Snapshot tests prove MCP polling marks the Agent identity `mcp_ready` while
+  realtime waits mark it `mcp_streaming` and count as online.
 
 ### Slice 14: Scoped deliberation threads
 
 User-visible result:
 
-- Owner or a connector can open a scoped `agent_deliberation` thread with explicit connector participants.
-- Only the owner or listed connector participants can post thread messages or summarize the thread.
+- Owner or an MCP Agent can open a scoped `agent_deliberation` thread with
+  explicit Agent participants.
+- Only the owner or listed Agent participants can post thread messages or
+  summarize the thread.
 - Thread turns are bounded by `maxTurns`; when the Agent turn budget is reached, the thread moves to `needs_summary`.
 - A structured thread summary can mark the room `needs_owner_decision` without auto-creating tasks or external sync.
 
@@ -315,13 +344,14 @@ Implementation:
 Verification:
 
 - Store tests prove thread participants, turn limits, summaries, and `openThreadCount`.
-- REST tests prove guests cannot create threads and non-participant connectors cannot post to scoped threads.
+- REST tests prove guests cannot create threads and non-participant Agents
+  cannot post to scoped threads.
 - Snapshot tests prove summaries do not create tasks and `needs_owner_decision` remains an owner-visible state.
 
 ## Current acceptance checklist
 
 - [ ] Local task/run tests pass.
-- [ ] Local connector task-assignment tests pass.
+- [ ] MCP Agent task-assignment tests pass.
 - [ ] Claimable task routing tests pass.
 - [ ] Home page exposes visible task/run controls.
 - [ ] Connector token rotation tests pass.

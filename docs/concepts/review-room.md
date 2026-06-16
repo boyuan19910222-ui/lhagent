@@ -50,7 +50,10 @@ Remote Reviewer Agents are better suited for read-only, review, verification, an
 - Audit connector security boundaries such as token scope, webhook secret handling, public exposure, and MR comment permissions.
 - Re-check completed fixes and return pass/fail plus remaining findings.
 
-Local Developer Agents are better suited for source edits, tests, running services, UI verification, and preparing commits. This keeps write conflicts inside the local workspace and keeps remote Agents focused on review output.
+Developer Agents with trusted workspace access are better suited for source
+edits, tests, running services, UI verification, and preparing commits. This
+keeps write conflicts inside the owned workspace and keeps Reviewer Agents
+focused on review output.
 
 ## Local product slice
 
@@ -63,14 +66,15 @@ services/review-room-service
 The older `experiments/review-room/service` tree is now a legacy P0 protocol
 reference and should not receive new product features.
 
-The service uses SQLite for state, `aiohttp` for the realtime HTTP/WebSocket surface, and `codex_connector.py` as the Agent-side bridge to `codex exec --json`. It models:
+The service uses SQLite for state, `aiohttp` for the HTTP/WebSocket surface,
+and `/mcp` for Remote MCP Agent access. It models:
 
 - Agent Board storage.
 - Board messages.
 - Structured findings.
-- Local and remote Agent connectors.
-- Token-authenticated connector events.
-- Board-scoped owner and connector WebSocket identities.
+- MCP Agent identities and status.
+- Token-authenticated MCP tool calls.
+- Board-scoped owner WebSocket identities.
 - Guest invites, join tokens, and owner-controlled member disconnect.
 - Developer Agent responses.
 - Human confirmation and MR sync preview.
@@ -78,7 +82,10 @@ The service uses SQLite for state, `aiohttp` for the realtime HTTP/WebSocket sur
 - Automatic Reviewer verification tasks after Developer fix completion.
 - GitLab/GitHub-style merge request webhook ingestion.
 
-It is intentionally small enough to run on a Lighthouse instance after installing the service requirements, and concrete enough to validate the full Room -> Connector -> Finding -> Developer response -> human confirmation loop with real Agent processes.
+It is intentionally small enough to run on a Lighthouse instance after
+installing the service requirements, and concrete enough to validate the full
+Room -> MCP Agent -> Finding -> Developer response -> human confirmation loop
+with real Agent sessions.
 
 ## API surface
 
@@ -89,12 +96,10 @@ It is intentionally small enough to run on a Lighthouse instance after installin
 - `GET /api/rooms/{id}`
 - `POST /api/rooms/{id}/invites`
 - `POST /api/rooms/{id}/join`
-- `POST /api/rooms/{id}/connectors`
-- `POST /api/rooms/{id}/connectors/{connector_id}/rotate-token`
+- `POST /api/rooms/{id}/mcp-invites`
 - `POST /api/rooms/{id}/tasks`
 - `POST /api/rooms/{id}/threads`
 - `POST /api/rooms/{id}/disconnect`
-- `POST /api/connectors/{id}/events`
 - `POST /api/tasks/{id}/claim`
 - `POST /api/tasks/{id}/runs`
 - `POST /api/tasks/{id}/complete`
@@ -127,28 +132,35 @@ It is intentionally small enough to run on a Lighthouse instance after installin
 
 P0: Local research loop
 
-- Run the included connector service.
-- Exercise MR webhook -> Room -> WebSocket connector -> Finding -> Developer Agent response -> human confirmation.
-- Add webhook secret validation and connector token rotation before public exposure.
+- Run the included Agent Board service.
+- Exercise MR webhook -> Room -> MCP Agent -> Finding -> Developer Agent
+  response -> human confirmation.
+- Add webhook secret validation and MCP token rotation before public exposure.
 - Use SSH tunnel or HTTPS reverse proxy for controlled access.
 
-P0.5: Connector and execution hardening
+P0.5: MCP and execution hardening
 
-- Keep `codex_connector.py` as a compatibility adapter, not the universal connector contract.
-- Add connector metadata such as adapter type, protocol version, capabilities, forbidden actions, heartbeat, and version.
+- Keep MCP invite copy as the only owner-facing Agent onboarding path.
+- Add MCP identity metadata such as adapter type, protocol version,
+  capabilities, forbidden actions, heartbeat, and version.
 - Add first-class `agent_runs` so background Agent work is visible even when a vendor session list is not.
 - Add `task.create` and direct `task.assigned` so normal room messages do not trigger Agent execution.
-- Add `task.claim` so open role/capability work cannot run until an eligible connector explicitly claims it.
-- Add owner-triggered connector token rotation so leaked or stale connector credentials can be invalidated without deleting the connector record.
+- Add `task.claim` so open role/capability work cannot run until an eligible
+  MCP identity explicitly claims it.
+- Add owner-triggered MCP token rotation so leaked or stale credentials can be
+  invalidated without deleting Board history.
 - Add `handoff.propose` and owner accept/reject so Reviewer Agent recommendations become Developer Agent tasks only through visible Agent Board state.
 - Add automatic `verify` task generation after completed handoff-backed `fix` tasks, preserving links to the source finding and handoff.
-- Add MCP `start_run` and `complete_task` tools so MCP-style connectors can produce first-class `agent_runs`.
+- Add MCP `start_run` and `complete_task` tools so MCP Agents can produce
+  first-class `agent_runs`.
 - Add decision records and MCP `request_owner_confirmation` so external actions stay behind owner approval.
-- Add MCP `post_message` and `propose_handoff` so lightweight connectors can join room discussion and propose owner-visible handoffs without a sidecar.
+- Add MCP `post_message` and `propose_handoff` so Agents can join room
+  discussion and propose owner-visible handoffs.
 - Add scoped `agent_deliberation` threads so multi-Agent discussion is visible, bounded, participant-scoped, and summarized before owner action.
-- Extract a generic connector runtime or sidecar with adapter dispatch.
-- Add bootstrap commands, generated config, service setup, logs, reconnect policy, and token rotation.
-- Build a minimal MCP Gateway experiment for read-only room snapshots and structured finding submission.
+- Improve MCP bootstrap copy, status semantics, reconnect guidance, and token
+  rotation.
+- Expand the MCP Gateway from read-only snapshots into the full review/fix/
+  verify/decision loop.
 
 P1: Lighthouse control plane
 

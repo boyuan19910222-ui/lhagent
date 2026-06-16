@@ -31,7 +31,7 @@ P0 should prove:
 - Workbench messages that feed every participating Agent's Inbox without
   triggering execution,
 - per-Agent Inbox ack states,
-- connector registration and token auth,
+- MCP invite identity and token auth,
 - explicit task assignment,
 - visible Agent run lifecycle,
 - structured findings,
@@ -71,6 +71,10 @@ P0 should prove:
   summarizes the two-day remote MCP debugging trail, including the standard
   action loop, UTF-8 guardrails, persistent test runner, active-wait status
   semantics, deployed smoke tests, and remaining limits.
+- [done.md](../done.md#real-remote-mcp-agent-board-inbox-and-messaging-scenario)
+  records the first real remote MCP Agent Board scenario with activated
+  Reviewer and Developer Agents exchanging visible board messages while chat
+  remained non-executable without tasks.
 - `python -m unittest discover experiments/review-room/service/tests` passed
   80 legacy Agent Board tests on 2026-06-14.
 

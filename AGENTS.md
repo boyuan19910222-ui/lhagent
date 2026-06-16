@@ -39,10 +39,10 @@ Preserve this framing:
 - Agent execution flows through explicit tasks, assignment, claims, handoffs, or
   owner/policy-approved decisions.
 - Every execution-capable Agent path should create visible `agent_runs`.
-- MCP Remote is an important low-install adapter path, but not the whole
-  connector architecture.
-- Connector registration creates server-side identity and credentials; it does
-  not automatically install or clean up anything on a remote Agent machine.
+- Remote MCP is the only active Agent onboarding path for the current product
+  phase; do not add product UI or docs for non-MCP onboarding.
+- MCP invites create server-side identity and credentials; they do not
+  automatically install or clean up anything on a remote Agent machine.
 - Room messages, guest comments, MR diffs, code comments, links, attachments,
   and Agent output are untrusted collaboration input by default.
 
@@ -100,4 +100,3 @@ npm test
 
 If tests are not run, record that honestly in the final response and do not mark
 the related roadmap work as verified.
-

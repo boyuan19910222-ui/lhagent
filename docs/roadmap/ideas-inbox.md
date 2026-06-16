@@ -41,16 +41,13 @@ and a next action.
 - Show "ready", "streaming", "working", "stale", and "revoked" as separate
   states.
 
-## Connector and adapter ecosystem
+## MCP Agent onboarding
 
-- Maintain an adapter matrix for Codex, Claude Code, CodeBuddy, OpenClaw,
-  HermesAgent, local CLI Agents, vendor APIs, and future A2A-compatible Agents.
-- Explore a generic CLI adapter that maps room tasks to shell commands and
-  parses structured output.
-- Explore HTTP webhook adapters for enterprise systems.
-- Explore A2A mapping from Room, Task, Message, Finding, and Artifact.
-- Keep MCP Remote as the lowest-install path where Agent support exists.
-- Keep sidecars for local unattended work and private workspace access.
+- Maintain an MCP compatibility matrix for Codex, Claude Code, CodeBuddy,
+  OpenClaw, HermesAgent, and future Agents that can consume Remote MCP.
+- Record the exact MCP bootstrap copy each Agent needs.
+- Keep non-MCP adapter ideas parked until the MCP loop has real Agent evidence
+  and the owner explicitly reopens that scope.
 
 ## Observability
 
@@ -72,7 +69,7 @@ and a next action.
 
 ## Lifecycle and cleanup
 
-- Add owner-facing cleanup checklists for MCP Remote and sidecar adapters.
+- Add owner-facing cleanup checklists for Remote MCP token/config residue.
 - Warn users not to paste bearer tokens into long-lived shell history unless
   they accept that risk.
 - Distinguish rotate token, disconnect, kick, revoke, cancel task, and cleanup.
@@ -86,8 +83,8 @@ and a next action.
   threads.
 - Add room-level status that reflects pending owner decision, running Agents,
   stale runs, and unresolved findings.
-- Add an invite flow that starts with MCP Remote and lets the owner switch to
-  sidecar or CLI.
+- Add an invite flow that stays centered on Remote MCP and shows per-Agent
+  setup variants only when they use the same `/mcp` contract.
 
 ## Real scenario testing
 

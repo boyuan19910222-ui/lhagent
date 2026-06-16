@@ -290,6 +290,137 @@ class ReviewRoomStore:
                 conn.execute("UPDATE tasks SET body = instruction WHERE body = ''")
             if "assigned_connector_id" in task_columns:
                 conn.execute("UPDATE tasks SET assigned_to = assigned_connector_id WHERE assigned_to = ''")
+            agent_run_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(agent_runs)").fetchall()
+            }
+            if "agent_name" not in agent_run_columns:
+                conn.execute("ALTER TABLE agent_runs ADD COLUMN agent_name TEXT NOT NULL DEFAULT ''")
+                conn.execute(
+                    """
+                    UPDATE agent_runs
+                    SET agent_name = COALESCE(
+                      (SELECT connectors.name FROM connectors WHERE connectors.id = agent_runs.connector_id),
+                      ''
+                    )
+                    WHERE agent_name = ''
+                    """
+                )
+                conn.execute(
+                    """
+                    UPDATE agent_runs
+                    SET agent_name = COALESCE(
+                      (SELECT tasks.claimed_by FROM tasks WHERE tasks.id = agent_runs.task_id),
+                      ''
+                    )
+                    WHERE agent_name = ''
+                    """
+                )
+                conn.execute(
+                    """
+                    UPDATE agent_runs
+                    SET agent_name = COALESCE(
+                      (SELECT tasks.assigned_to FROM tasks WHERE tasks.id = agent_runs.task_id),
+                      'Agent'
+                    )
+                    WHERE agent_name = ''
+                    """
+                )
+            decision_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(decisions)").fetchall()
+            }
+            decision_column_defaults = {
+                "kind": "TEXT NOT NULL DEFAULT 'owner_decision'",
+                "requester": "TEXT NOT NULL DEFAULT ''",
+                "action": "TEXT NOT NULL DEFAULT ''",
+                "reason": "TEXT NOT NULL DEFAULT ''",
+                "target_type": "TEXT NOT NULL DEFAULT 'sync'",
+                "target_id": "TEXT NOT NULL DEFAULT ''",
+            }
+            for column, definition in decision_column_defaults.items():
+                if column not in decision_columns:
+                    conn.execute("ALTER TABLE decisions ADD COLUMN {} {}".format(column, definition))
+                    decision_columns.add(column)
+            if "created_by" in decision_columns:
+                conn.execute("UPDATE decisions SET requester = created_by WHERE requester = '' AND created_by != ''")
+            if "requested_by_connector_id" in decision_columns:
+                conn.execute(
+                    """
+                    UPDATE decisions
+                    SET requester = COALESCE(
+                      (SELECT connectors.name FROM connectors WHERE connectors.id = decisions.requested_by_connector_id),
+                      requester
+                    )
+                    WHERE requester = ''
+                    """
+                )
+            if "proposal" in decision_columns:
+                conn.execute("UPDATE decisions SET action = proposal WHERE action = '' AND proposal != ''")
+            if "question" in decision_columns:
+                conn.execute("UPDATE decisions SET action = question WHERE action = '' AND question != ''")
+            if "risk" in decision_columns:
+                conn.execute("UPDATE decisions SET reason = risk WHERE reason = '' AND risk != ''")
+            if "sync_target" in decision_columns:
+                conn.execute("UPDATE decisions SET target_id = sync_target WHERE target_id = '' AND sync_target != ''")
+            conn.execute("UPDATE decisions SET kind = 'owner_decision' WHERE kind = ''")
+            conn.execute("UPDATE decisions SET requester = 'Agent' WHERE requester = ''")
+            conn.execute("UPDATE decisions SET action = '请求负责人决策' WHERE action = ''")
+            conn.execute("UPDATE decisions SET target_type = 'sync' WHERE target_type = ''")
+
+            handoff_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(handoffs)").fetchall()
+            }
+            handoff_column_defaults = {
+                "from_agent": "TEXT NOT NULL DEFAULT ''",
+                "target_agent": "TEXT NOT NULL DEFAULT ''",
+            }
+            for column, definition in handoff_column_defaults.items():
+                if column not in handoff_columns:
+                    conn.execute("ALTER TABLE handoffs ADD COLUMN {} {}".format(column, definition))
+                    handoff_columns.add(column)
+            if "from_connector_id" in handoff_columns:
+                conn.execute(
+                    """
+                    UPDATE handoffs
+                    SET from_agent = COALESCE(
+                      (SELECT connectors.name FROM connectors WHERE connectors.id = handoffs.from_connector_id),
+                      from_agent
+                    )
+                    WHERE from_agent = ''
+                    """
+                )
+            if "created_by" in handoff_columns:
+                conn.execute("UPDATE handoffs SET from_agent = created_by WHERE from_agent = '' AND created_by != ''")
+            if "target_json" in handoff_columns:
+                for row in conn.execute("SELECT id, target_json FROM handoffs WHERE target_agent = ''").fetchall():
+                    target = json_loads(row["target_json"], {})
+                    target_agent = (
+                        target.get("agentName")
+                        or target.get("agent_name")
+                        or target.get("name")
+                        or target.get("role")
+                        or ""
+                    )
+                    if target_agent:
+                        conn.execute(
+                            "UPDATE handoffs SET target_agent = ? WHERE id = ?",
+                            (target_agent, row["id"]),
+                        )
+            conn.execute("UPDATE handoffs SET from_agent = 'Agent' WHERE from_agent = ''")
+            conn.execute("UPDATE handoffs SET target_agent = 'Developer Agent' WHERE target_agent = ''")
+
+            thread_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(threads)").fetchall()
+            }
+            if "title" not in thread_columns:
+                conn.execute("ALTER TABLE threads ADD COLUMN title TEXT NOT NULL DEFAULT ''")
+                thread_columns.add("title")
+            if "question" in thread_columns:
+                conn.execute("UPDATE threads SET title = question WHERE title = '' AND question != ''")
+            conn.execute("UPDATE threads SET title = 'Agent thread' WHERE title = ''")
 
     def create_room(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         timestamp = now_ms()
@@ -347,6 +478,97 @@ class ReviewRoomStore:
             rows = conn.execute("SELECT * FROM rooms ORDER BY updated_at DESC").fetchall()
         return [self._room_from_row(row) for row in rows]
 
+    def create_workbench(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        context = dict(payload.get("context") or {})
+        context.setdefault("template", payload.get("template") or "mr-review")
+        context.setdefault("repository", payload.get("repository") or payload.get("repo") or "")
+        context.setdefault("owner", payload.get("owner") or "Agent Board owner")
+        context.setdefault(
+            "workflow",
+            ["intake", "review", "fix", "verify", "decision"],
+        )
+        room = self.create_room(
+            {
+                "title": payload.get("title") or "MR Review Workbench",
+                "provider": payload.get("provider") or "lighthouse",
+                "mrUrl": payload.get("mrUrl") or payload.get("mr_url") or "",
+                "ownerToken": payload.get("ownerToken") or payload.get("owner_token"),
+                "status": payload.get("status") or "open",
+                "context": context,
+                "participants": payload.get("participants"),
+            }
+        )
+        self.record_event(
+            room["id"],
+            "workbench.created",
+            {"workbench": self.workbench_summary(room), "template": context["template"]},
+            actor_type="human",
+            actor_name=context["owner"],
+        )
+        return self.get_room(room["id"]) or room
+
+    def list_workbenches(self) -> List[Dict[str, Any]]:
+        summaries = []
+        for room in self.list_rooms():
+            loaded = self.get_room(room["id"])
+            if loaded:
+                summaries.append(self.workbench_summary(loaded))
+        return summaries
+
+    def workbench_summary(self, room: Dict[str, Any]) -> Dict[str, Any]:
+        context = room.get("context") or {}
+        decisions = room.get("decisions") or []
+        findings = room.get("findings") or []
+        handoffs = room.get("handoffs") or []
+        threads = room.get("threads") or []
+        agent_runs = room.get("agentRuns") or []
+        connectors = room.get("connectors") or []
+        pending_owner_actions = sum(1 for decision in decisions if decision.get("status") == "pending")
+        pending_owner_actions += sum(1 for finding in findings if finding.get("status") == "developer_responded")
+        pending_owner_actions += sum(1 for handoff in handoffs if handoff.get("status") == "proposed")
+        pending_owner_actions += sum(
+            1
+            for thread in threads
+            if (thread.get("summary") or {}).get("needs_owner_decision")
+        )
+        active_run_count = sum(1 for run in agent_runs if run.get("status") in {"running", "started"})
+        active_connectors = sum(
+            1
+            for connector in connectors
+            if connector.get("status") in {"connected", "mcp_ready", "mcp_streaming"}
+        )
+        return {
+            "id": room["id"],
+            "roomId": room["id"],
+            "title": room["title"],
+            "status": room["status"],
+            "template": context.get("template") or "mr-review",
+            "provider": room["provider"],
+            "mrUrl": room["mrUrl"],
+            "repository": context.get("repository") or "",
+            "updatedAt": room["updatedAt"],
+            "createdAt": room["createdAt"],
+            "counts": {
+                "messages": len(room.get("messages") or []),
+                "tasks": len(room.get("tasks") or []),
+                "findings": len(findings),
+                "connectors": len(connectors),
+                "decisions": len(decisions),
+                "handoffs": len(handoffs),
+                "threads": len(threads),
+                "inboxItems": len(room.get("inboxItems") or []),
+                "agentRuns": len(agent_runs),
+                "events": len(room.get("events") or []),
+            },
+            "pendingOwnerActions": pending_owner_actions,
+            "activeRunCount": active_run_count,
+            "connectorStatus": {
+                "total": len(connectors),
+                "active": active_connectors,
+                "statuses": [connector.get("status") or "unknown" for connector in connectors],
+            },
+        }
+
     def get_room(self, room_id: str) -> Optional[Dict[str, Any]]:
         with self.connect() as conn:
             room_row = conn.execute("SELECT * FROM rooms WHERE id = ?", (room_id,)).fetchone()
@@ -403,6 +625,105 @@ class ReviewRoomStore:
         room["handoffs"] = [self._handoff_from_row(row) for row in handoff_rows]
         room["threads"] = [self._thread_from_row(row) for row in thread_rows]
         room["events"] = [self._event_from_row(row) for row in event_rows]
+        return room
+
+    def require_owner_token(self, room_id: str, token: str) -> Dict[str, Any]:
+        identity = self.authenticate_room_token(room_id, token)
+        if identity["type"] != "owner":
+            raise PermissionError("owner token required")
+        return identity
+
+    def update_workbench(self, room_id: str, payload: Dict[str, Any], token: str) -> Dict[str, Any]:
+        identity = self.require_owner_token(room_id, token)
+        room = self.get_room(room_id)
+        if not room:
+            raise KeyError("room not found")
+        timestamp = now_ms()
+        title = payload.get("title") or room["title"]
+        status = payload.get("status") or room["status"]
+        context = dict(room.get("context") or {})
+        if "repository" in payload:
+            context["repository"] = payload.get("repository") or ""
+        if "template" in payload:
+            context["template"] = payload.get("template") or "mr-review"
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE rooms
+                SET title = ?, status = ?, context_json = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (title, status, json_dumps(context), timestamp, room_id),
+            )
+        event_type = "workbench.renamed" if title != room["title"] else "workbench.updated"
+        self.record_event(
+            room_id,
+            event_type,
+            {"title": title, "status": status, "context": context},
+            actor_type="human",
+            actor_name=identity["name"],
+        )
+        return self.get_room(room_id) or room
+
+    def archive_workbench(self, room_id: str, token: str) -> Dict[str, Any]:
+        identity = self.require_owner_token(room_id, token)
+        room = self._set_workbench_status(room_id, "archived")
+        self.record_event(
+            room_id,
+            "workbench.archived",
+            {"status": "archived"},
+            actor_type="human",
+            actor_name=identity["name"],
+        )
+        return self.get_room(room_id) or room
+
+    def restore_workbench(self, room_id: str, token: str) -> Dict[str, Any]:
+        identity = self.require_owner_token(room_id, token)
+        room = self._set_workbench_status(room_id, "open")
+        self.record_event(
+            room_id,
+            "workbench.restored",
+            {"status": "open"},
+            actor_type="human",
+            actor_name=identity["name"],
+        )
+        return self.get_room(room_id) or room
+
+    def delete_workbench(self, room_id: str, payload: Dict[str, Any], token: str) -> Dict[str, Any]:
+        identity = self.require_owner_token(room_id, token)
+        if not payload.get("confirm"):
+            raise ValueError("delete requires owner confirmation")
+        cleanup_boundary = (
+            "Server-side Workbench tombstone only; this does not clean remote Agent machines, "
+            "shell history, MCP config, transcripts, logs, caches, or workspace files."
+        )
+        room = self._set_workbench_status(room_id, "deleted")
+        self.record_event(
+            room_id,
+            "workbench.deleted",
+            {
+                "status": "deleted",
+                "reason": payload.get("reason") or "",
+                "cleanupBoundary": cleanup_boundary,
+            },
+            actor_type="human",
+            actor_name=identity["name"],
+        )
+        deleted = self.get_room(room_id) or room
+        deleted["cleanupBoundary"] = cleanup_boundary
+        return deleted
+
+    def _set_workbench_status(self, room_id: str, status: str) -> Dict[str, Any]:
+        self.require_room(room_id)
+        timestamp = now_ms()
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE rooms SET status = ?, updated_at = ? WHERE id = ?",
+                (status, timestamp, room_id),
+            )
+        room = self.get_room(room_id)
+        if not room:
+            raise KeyError("room not found")
         return room
 
     def record_event(
@@ -1777,6 +2098,19 @@ class ReviewRoomHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/rooms":
                 self.send_json({"rooms": self.store.list_rooms()})
                 return
+            if parsed.path == "/api/workbenches":
+                self.send_json({"workbenches": self.store.list_workbenches()})
+                return
+            match = re.match(r"^/api/workbenches/([^/]+)$", parsed.path)
+            if match:
+                token = self.read_bearer_token({})
+                self.store.require_owner_token(match.group(1), token)
+                room = self.store.get_room(match.group(1))
+                if not room:
+                    self.send_error_json(HTTPStatus.NOT_FOUND, "workbench not found")
+                    return
+                self.send_json(room)
+                return
             match = re.match(r"^/api/rooms/([^/]+)$", parsed.path)
             if match:
                 room = self.store.get_room(match.group(1))
@@ -1795,6 +2129,17 @@ class ReviewRoomHandler(BaseHTTPRequestHandler):
             body = self.read_json()
             if parsed.path == "/api/rooms":
                 self.send_json(self.store.create_room(body), HTTPStatus.CREATED)
+                return
+            if parsed.path == "/api/workbenches":
+                self.send_json(self.store.create_workbench(body), HTTPStatus.CREATED)
+                return
+            match = re.match(r"^/api/workbenches/([^/]+)/archive$", parsed.path)
+            if match:
+                self.send_json(self.store.archive_workbench(match.group(1), self.read_bearer_token(body)))
+                return
+            match = re.match(r"^/api/workbenches/([^/]+)/restore$", parsed.path)
+            if match:
+                self.send_json(self.store.restore_workbench(match.group(1), self.read_bearer_token(body)))
                 return
             if parsed.path == "/api/demo/session":
                 self.send_json(self.store.create_demo_session(), HTTPStatus.CREATED)
@@ -1843,6 +2188,10 @@ class ReviewRoomHandler(BaseHTTPRequestHandler):
         try:
             parsed = urlparse(self.path)
             body = self.read_json()
+            match = re.match(r"^/api/workbenches/([^/]+)$", parsed.path)
+            if match:
+                self.send_json(self.store.update_workbench(match.group(1), body, self.read_bearer_token(body)))
+                return
             match = re.match(r"^/api/findings/([^/]+)$", parsed.path)
             if match:
                 self.send_json(self.store.update_finding(match.group(1), body))
@@ -1850,6 +2199,28 @@ class ReviewRoomHandler(BaseHTTPRequestHandler):
             self.send_error_json(HTTPStatus.NOT_FOUND, "not found")
         except KeyError as exc:
             self.send_error_json(HTTPStatus.NOT_FOUND, str(exc))
+        except PermissionError as exc:
+            self.send_error_json(HTTPStatus.FORBIDDEN, str(exc))
+        except ValueError as exc:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
+        except Exception as exc:
+            self.send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+
+    def do_DELETE(self) -> None:
+        try:
+            parsed = urlparse(self.path)
+            body = self.read_json()
+            match = re.match(r"^/api/workbenches/([^/]+)$", parsed.path)
+            if match:
+                self.send_json(self.store.delete_workbench(match.group(1), body, self.read_bearer_token(body)))
+                return
+            self.send_error_json(HTTPStatus.NOT_FOUND, "not found")
+        except KeyError as exc:
+            self.send_error_json(HTTPStatus.NOT_FOUND, str(exc))
+        except PermissionError as exc:
+            self.send_error_json(HTTPStatus.FORBIDDEN, str(exc))
+        except ValueError as exc:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
         except Exception as exc:
             self.send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
 
@@ -1900,7 +2271,7 @@ class ReviewRoomHandler(BaseHTTPRequestHandler):
 
     def add_cors_headers(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET,POST,PATCH,OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type,Authorization")
 
     def log_message(self, fmt: str, *args: Any) -> None:
@@ -2117,6 +2488,49 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
     async def create_room(request: web.Request) -> web.Response:
         return json_response(app[STORE_KEY].create_room(await request_json(request)), 201)
 
+    async def list_workbenches(_request: web.Request) -> web.Response:
+        return json_response({"workbenches": app[STORE_KEY].list_workbenches()})
+
+    async def create_workbench(request: web.Request) -> web.Response:
+        return json_response(app[STORE_KEY].create_workbench(await request_json(request)), 201)
+
+    async def get_workbench(request: web.Request) -> web.Response:
+        room_id = request.match_info["room_id"]
+        identity = require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
+        ensure_owner(identity)
+        room = app[STORE_KEY].get_room(room_id)
+        if not room:
+            raise web.HTTPNotFound(text=json_dumps({"ok": False, "error": "workbench not found"}), content_type="application/json")
+        return json_response(room)
+
+    async def update_workbench(request: web.Request) -> web.Response:
+        room_id = request.match_info["room_id"]
+        identity = require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
+        ensure_owner(identity)
+        return json_response(app[STORE_KEY].update_workbench(room_id, await request_json(request), identity["token"]))
+
+    async def archive_workbench(request: web.Request) -> web.Response:
+        room_id = request.match_info["room_id"]
+        identity = require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
+        ensure_owner(identity)
+        return json_response(app[STORE_KEY].archive_workbench(room_id, identity["token"]))
+
+    async def restore_workbench(request: web.Request) -> web.Response:
+        room_id = request.match_info["room_id"]
+        identity = require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
+        ensure_owner(identity)
+        return json_response(app[STORE_KEY].restore_workbench(room_id, identity["token"]))
+
+    async def delete_workbench(request: web.Request) -> web.Response:
+        room_id = request.match_info["room_id"]
+        identity = require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
+        ensure_owner(identity)
+        try:
+            deleted = app[STORE_KEY].delete_workbench(room_id, await request_json(request), identity["token"])
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        return json_response(deleted)
+
     async def demo_session(_request: web.Request) -> web.Response:
         return json_response(app[STORE_KEY].create_demo_session(), 201)
 
@@ -2231,6 +2645,13 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
     app.router.add_get("/health", health)
     app.router.add_get("/api/rooms", list_rooms)
     app.router.add_post("/api/rooms", create_room)
+    app.router.add_get("/api/workbenches", list_workbenches)
+    app.router.add_post("/api/workbenches", create_workbench)
+    app.router.add_get("/api/workbenches/{room_id}", get_workbench)
+    app.router.add_patch("/api/workbenches/{room_id}", update_workbench)
+    app.router.add_post("/api/workbenches/{room_id}/archive", archive_workbench)
+    app.router.add_post("/api/workbenches/{room_id}/restore", restore_workbench)
+    app.router.add_delete("/api/workbenches/{room_id}", delete_workbench)
     app.router.add_post("/api/demo/session", demo_session)
     app.router.add_post("/api/webhooks/merge-request", merge_request_webhook)
     app.router.add_get("/api/rooms/{room_id}", get_room)
@@ -2256,65 +2677,99 @@ def index_html() -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Lighthouse Agent Board</title>
+  <title>Lighthouse 工作台</title>
+  <link rel="icon" href="data:,">
   <style>
-    :root{--bg:#f5f7fb;--panel:#fff;--line:#d9e1ec;--text:#202938;--muted:#647084;--blue:#1663e9;--green:#08745f;--red:#c7362f;--amber:#a05f00}
-    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-    button,input,textarea{font:inherit}button{min-height:34px;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--text);padding:0 12px;cursor:pointer}
-    button.primary{border-color:var(--blue);background:var(--blue);color:#fff}button.success{border-color:var(--green);background:var(--green);color:#fff}button.danger{border-color:var(--red);background:var(--red);color:#fff}
-    button:disabled{opacity:.55;cursor:not-allowed}input,textarea{width:100%;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--text);padding:9px 10px}textarea{min-height:88px;resize:vertical}
-    header{border-bottom:1px solid var(--line);background:#fff}.shell{max-width:1280px;margin:0 auto;padding:18px}.topbar{display:flex;gap:16px;align-items:flex-start;justify-content:space-between}
-    h1{margin:0 0 6px;font-size:24px;line-height:1.2}h2{margin:0;font-size:16px}h3{margin:0;font-size:14px}p{margin:6px 0 0;color:var(--muted);line-height:1.55}code{border-radius:4px;background:#eef3f9;padding:2px 6px}
-    .grid{display:grid;grid-template-columns:320px minmax(0,1fr);gap:16px}.panel{border:1px solid var(--line);border-radius:8px;background:var(--panel);min-width:0}.panel-head{display:flex;align-items:center;justify-content:space-between;gap:10px;border-bottom:1px solid var(--line);padding:14px 16px}.panel-body{padding:16px}
-    .actions{display:flex;flex-wrap:wrap;gap:8px}.form-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.field{display:grid;gap:6px}.field label{font-size:13px;font-weight:650}.room-list{display:grid;gap:8px}.room-item{width:100%;min-height:76px;text-align:left;padding:10px}.room-item.active{border-color:var(--blue);box-shadow:0 0 0 2px rgba(22,99,233,.12)}
-    .tag{display:inline-flex;align-items:center;min-height:22px;border:1px solid var(--line);border-radius:999px;background:#f7f9fc;padding:0 8px;color:var(--muted);font-size:12px}.tag.online{border-color:#98d7c7;background:#eefaf6;color:var(--green)}.tag.p1{border-color:#f2aaa6;background:#fff1f0;color:var(--red)}.tag.waiting{border-color:#ecc77e;background:#fff8e8;color:var(--amber)}
-    .role-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.role{border:1px solid var(--line);border-radius:8px;background:#fbfcfe;padding:12px}.chat-layout{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:16px}.timeline,.finding-list{display:grid;gap:10px}.message,.finding{border:1px solid var(--line);border-radius:8px;background:#fff;padding:12px}.message.owner{background:#edf4ff}.message.agent{background:#fbfcfe}.message-head,.finding-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px}.body{white-space:pre-wrap;line-height:1.55}.finding-title{font-weight:700}.finding-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}.empty{border:1px dashed var(--line);border-radius:8px;padding:24px 14px;text-align:center;color:var(--muted)}.notice{margin-top:10px;color:var(--muted);font-size:13px}.hidden{display:none}
-    @media(max-width:960px){.grid,.chat-layout,.form-grid,.role-row{grid-template-columns:1fr}.topbar{display:grid}}
+    :root{--bg:#05070b;--surface:#0b1118;--panel:#0f1720;--panel2:#131d27;--line:#263544;--line2:#334657;--text:#d7e2ea;--muted:#7f91a2;--cyan:#35d6ff;--lime:#8df26f;--amber:#ffbf45;--red:#ff5f63;--blue:#6aa8ff;--shadow:rgba(0,0,0,.45)}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:"Source Sans 3","Geist",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:0}
+    body:before{content:"";position:fixed;inset:0;pointer-events:none;background-image:linear-gradient(rgba(53,214,255,.045) 1px,transparent 1px),linear-gradient(90deg,rgba(53,214,255,.035) 1px,transparent 1px);background-size:32px 32px}
+    button,input,textarea{font:inherit}button{min-height:34px;border:1px solid var(--line2);border-radius:6px;background:#111b25;color:var(--text);padding:0 12px;cursor:pointer}
+    button.primary{border-color:var(--cyan);background:#062633;color:#dff8ff}button.success{border-color:var(--lime);background:#122a19;color:#eaffdf}button.danger{border-color:var(--red);background:#301318;color:#ffe5e5}
+    button:disabled{opacity:.48;cursor:not-allowed}input,textarea{width:100%;border:1px solid var(--line);border-radius:6px;background:#071018;color:var(--text);padding:9px 10px}textarea{min-height:88px;resize:vertical}
+    .mono,code,.tag,.metric,.event-type{font-family:"JetBrains Mono","IBM Plex Mono","SFMono-Regular",Consolas,monospace}code{border:1px solid var(--line);border-radius:4px;background:#08121a;padding:2px 6px;color:var(--cyan)}
+    header{position:sticky;top:0;z-index:4;border-bottom:1px solid var(--line);background:rgba(5,7,11,.94);backdrop-filter:blur(16px)}.shell{max-width:1440px;margin:0 auto;padding:16px}.topbar{display:flex;gap:16px;align-items:center;justify-content:space-between}
+    h1{margin:0;font-size:22px;line-height:1.15}h2{margin:0;font-size:15px}h3{margin:0;font-size:13px}p{margin:5px 0 0;color:var(--muted);line-height:1.45}.eyebrow{color:var(--cyan);font-size:12px;text-transform:uppercase}
+    .actions{display:flex;flex-wrap:wrap;gap:8px}.tabs{display:flex;gap:6px}.tab{border-color:var(--line);background:#071018;color:var(--muted)}.tab.active{border-color:var(--cyan);color:var(--cyan)}
+    .panel{border:1px solid var(--line);border-radius:8px;background:rgba(15,23,32,.96);box-shadow:0 18px 44px var(--shadow);min-width:0}.panel-head{display:flex;align-items:center;justify-content:space-between;gap:10px;border-bottom:1px solid var(--line);padding:12px 14px}.panel-body{padding:14px}
+    .hall-grid{display:grid;grid-template-columns:minmax(340px,420px) minmax(0,1fr);gap:14px}.form-grid{display:grid;grid-template-columns:1fr;gap:10px}.field{display:grid;gap:6px}.field label{font-size:12px;color:var(--muted);text-transform:uppercase}.template-line{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;border:1px solid var(--line);border-radius:8px;background:#071018;padding:12px}
+    .workbench-table{display:grid;gap:8px}.workbench-row{display:grid;grid-template-columns:minmax(220px,1.6fr) 120px repeat(4,minmax(74px,.5fr)) 120px;gap:8px;align-items:center;width:100%;min-height:58px;text-align:left;border:1px solid var(--line);border-radius:8px;background:#08121a;padding:10px}.workbench-row:hover,.workbench-row.active{border-color:var(--cyan)}
+    .tag{display:inline-flex;align-items:center;gap:6px;min-height:22px;border:1px solid var(--line);border-radius:999px;background:#071018;padding:0 8px;color:var(--muted);font-size:11px}.tag.online{border-color:#315f38;color:var(--lime)}.tag.waiting{border-color:#6a5120;color:var(--amber)}.tag.p1,.tag.danger{border-color:#713039;color:var(--red)}.tag.info{border-color:#2e4f78;color:var(--blue)}
+    .dot{width:7px;height:7px;border-radius:50%;background:var(--muted);display:inline-block}.dot.online{background:var(--lime)}.dot.waiting{background:var(--amber)}.dot.danger{background:var(--red)}.dot.info{background:var(--cyan)}
+    .detail-grid{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:14px}.command-bar{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;margin-bottom:14px}.workflow{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}.step{border:1px solid var(--line);border-radius:8px;background:#071018;padding:10px;min-height:72px}.step.active{border-color:var(--cyan)}.step.done{border-color:#315f38}.step.waiting{border-color:#6a5120}
+    .stream-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,420px);gap:14px;margin-top:14px}.timeline,.finding-list,.audit-list,.object-list{display:grid;gap:8px}.message,.finding,.object-row,.event-row{border:1px solid var(--line);border-radius:8px;background:#08121a;padding:10px}.message.owner{border-color:#244568}.message.agent{border-color:#315f38}.message-head,.finding-head,.event-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px}.body{white-space:pre-wrap;line-height:1.5;overflow-wrap:anywhere}.finding-title{font-weight:700}.finding-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+    .metric-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:10px}.metric{border:1px solid var(--line);border-radius:8px;background:#071018;padding:10px}.metric strong{display:block;color:var(--text);font-size:18px}.empty{border:1px dashed var(--line);border-radius:8px;padding:24px 14px;text-align:center;color:var(--muted)}.notice{margin-top:10px;color:var(--muted);font-size:12px}.hidden{display:none}
+    @media(max-width:1100px){.hall-grid,.detail-grid,.stream-layout,.command-bar{grid-template-columns:1fr}.workbench-row{grid-template-columns:1fr 1fr}.workflow,.metric-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media(max-width:640px){.topbar{display:grid}.workflow,.metric-grid,.workbench-row{grid-template-columns:1fr}.shell{padding:12px}}
   </style>
 </head>
 <body>
   <header>
     <div class="shell topbar">
       <div>
-        <h1>Lighthouse Agent Board</h1>
-        <p>给 Agent 共享上下文、任务、Finding 和 Decision 的可审计黑板；Remote MCP 是主接入路径，WebSocket Connector 保留为本地/兼容验证路径。</p>
+        <div class="eyebrow mono">终端作战台</div>
+        <h1>Lighthouse 工作台 / 智能体看板</h1>
+        <p>MR 评审工作台控制台。消息进入上下文流；执行必须通过任务、认领、运行和负责人决策。</p>
       </div>
       <div class="actions">
-        <button id="refreshRooms">刷新 Board</button>
-        <button class="primary" id="createRoom">创建真实 Board</button>
-        <button id="createDemo">创建体验 Board</button>
+        <button id="refreshRooms">刷新工作台</button>
+        <button class="primary" id="showHall">工作台大厅</button>
+        <button id="createDemo">创建体验看板</button>
       </div>
     </div>
   </header>
   <main class="shell">
-    <section class="panel">
-      <div class="panel-body">
-        <h2>代码评审 Agent Board</h2>
-        <div class="form-grid">
-          <div class="field"><label>Board 标题</label><input id="roomTitle" value="MR: Lighthouse Agent Board"></div>
-          <div class="field"><label>仓库</label><input id="roomRepo" value="lighthouse/review-room"></div>
-          <div class="field"><label>MR 地址</label><input id="roomMr" value="https://git.example.com/lighthouse/review-room/-/merge_requests/1"></div>
-        </div>
-        <p class="notice">MCP: <code>/mcp</code>、<code>POST /api/rooms/{roomId}/mcp-invites</code>。REST: <code>POST /api/rooms</code>、<code>POST /api/rooms/{roomId}/connectors</code>、<code>POST /api/connectors/{connectorId}/events</code>、<code>/api/demo/session</code>。Realtime: <code>/ws/rooms/{roomId}?token=...</code> via <code>new WebSocket</code>。</p>
+    <section id="hallView">
+      <div class="hall-grid">
+        <section class="panel">
+          <div class="panel-head"><h2>工作台大厅</h2><span class="tag info">仅 MR 评审</span></div>
+          <div class="panel-body">
+            <div class="template-line">
+              <div>
+                <h3>MR 评审工作台</h3>
+                <p>接入 -> 评审 -> 修复 -> 验证 -> 决策</p>
+              </div>
+              <span class="tag online"><span class="dot online"></span>已启用</span>
+            </div>
+            <div class="form-grid" style="margin-top:12px">
+              <div class="field"><label>工作台标题</label><input id="roomTitle" value="MR：Lighthouse 智能体看板"></div>
+              <div class="field"><label>仓库</label><input id="roomRepo" value="lighthouse/review-room"></div>
+              <div class="field"><label>MR URL</label><input id="roomMr" value="https://git.example.com/lighthouse/review-room/-/merge_requests/1"></div>
+              <div class="field"><label>负责人</label><input id="roomOwner" value="工作台负责人"></div>
+            </div>
+            <div class="actions" style="margin-top:12px"><button class="primary" id="createRoom">启动 MR 评审工作台</button></div>
+            <p class="notice">生命周期操作会写入审计事件。删除只会生成服务端工作台墓碑，不会清理远端智能体机器。</p>
+            <p class="notice mono">API: <code>/api/workbenches</code> · <code>/api/rooms/{roomId}/mcp-invites</code> · <code>/api/demo/session</code> · <code>/mcp</code></p>
+          </div>
+        </section>
+        <section class="panel">
+          <div class="panel-head"><h2>最近工作台</h2><span class="tag" id="roomCount">0</span></div>
+          <div class="panel-body">
+            <div class="workbench-row mono" style="min-height:34px;color:var(--muted)">
+              <span>工作台</span><span>状态</span><span>发现</span><span>任务</span><span>运行</span><span>负责人</span><span>MCP</span>
+            </div>
+            <div class="workbench-table" id="roomList"></div>
+          </div>
+        </section>
       </div>
     </section>
-    <div class="grid" style="margin-top:16px">
-      <aside class="panel">
-        <div class="panel-head"><h2>Agent Boards</h2><span class="tag" id="roomCount">0</span></div>
-        <div class="panel-body"><div class="room-list" id="roomList"></div></div>
-      </aside>
-      <section class="panel">
-        <div class="panel-head">
-          <div><h2 id="detailTitle">选择或创建 Board</h2><p id="detailMeta">owner token 会保存在本机浏览器 localStorage。</p></div>
-          <span class="tag" id="socketState">未连接</span>
+    <section id="detailView" class="hidden">
+      <div class="command-bar">
+        <div>
+          <div class="eyebrow mono">工作台详情 · 流程轨道</div>
+          <h1 id="detailTitle">选择或创建工作台</h1>
+          <p id="detailMeta">负责人令牌会保存在本机浏览器 localStorage。</p>
         </div>
-        <div class="panel-body" id="detailBody"><div class="empty">还没有可展示的 Board。</div></div>
-      </section>
-    </div>
+        <div class="actions"><span class="tag" id="socketState">未连接</span><button id="backToHall">返回大厅</button><button class="primary" id="detailCreateTask">创建任务</button><button id="detailInviteAgent">邀请智能体</button></div>
+      </div>
+      <div id="detailBody"><div class="empty">还没有可展示的工作台。</div></div>
+    </section>
   </main>
   <script>
     const state = { rooms: [], room: null, ws: null, copyFallback: null, tokens: JSON.parse(localStorage.getItem('reviewRoomOwnerTokens') || '{}') };
-    const statusText = { open: '进行中', completed: '已完成', needs_developer_response: '等待 Developer Agent', developer_responded: '等待 owner 确认', accepted: '已确认', rejected: '已驳回' };
+    const statusText = { open: '进行中', archived: '已归档', deleted: '已删除', completed: '已完成', assigned:'已分配', running:'运行中', started:'已开始', pending:'待处理', proposed:'已提议', failed:'失败', needs_developer_response: '等待开发智能体', developer_responded: '等待负责人确认', accepted: '已确认', rejected: '已驳回' };
+    const connectorStatusText = { connected:'已连接', disconnected:'已断开', invited:'已邀请', revoked:'已撤销', mcp_ready:'MCP 就绪', mcp_streaming:'MCP 在线' };
+    const connectorKindText = { connector:'MCP', 'mcp-agent':'MCP', 'mcp-remote':'远程 MCP' };
+    const workflowStages = ['接入','评审','修复','验证','决策'];
     function saveTokens(){ localStorage.setItem('reviewRoomOwnerTokens', JSON.stringify(state.tokens)); }
     function esc(v){ return String(v ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;'); }
     async function api(path, options={}){
@@ -2324,15 +2779,24 @@ def index_html() -> str:
       return data;
     }
     function authHeaders(roomId){ return { 'Content-Type':'application/json', Authorization:`Bearer ${state.tokens[roomId] || ''}` }; }
+    function showHall(){
+      document.getElementById('hallView').classList.remove('hidden');
+      document.getElementById('detailView').classList.add('hidden');
+      renderRooms();
+    }
+    function showDetail(){
+      document.getElementById('hallView').classList.add('hidden');
+      document.getElementById('detailView').classList.remove('hidden');
+    }
     function roleStatus(role){
       const found = ((state.room && state.room.connectors) || []).find(c => c.agentRole === role);
-      return found ? `${found.name} · ${found.status || 'connected'} · ${found.kind || 'connector'}` : '未注册';
+      return found ? `${found.name} · ${connectorStatusText[found.status] || found.status || '已连接'} · ${connectorKindText[found.kind] || 'MCP 连接'}` : '未接入 MCP';
     }
     function extractMentionNames(body){
       const normalized = (body || '').toLowerCase();
       const options = [
-        ['Reviewer Agent', ['@reviewer agent', '@reviewer', '@review']],
-        ['Developer Agent', ['@developer agent', '@developer', '@dev']]
+        ['评审智能体', ['@评审智能体', '@评审', '@reviewer agent', '@reviewer', '@review']],
+        ['开发智能体', ['@开发智能体', '@开发', '@developer agent', '@developer', '@dev']]
       ];
       return options
         .filter(([, aliases]) => aliases.some(alias => normalized.includes(alias)))
@@ -2359,27 +2823,35 @@ def index_html() -> str:
       sendSocket({ type:'message.create', body, mentions:extractMentionNames(body) });
     }
     async function loadRooms(){
-      const data = await api('/api/rooms');
-      state.rooms = data.rooms || [];
+      const data = await api('/api/workbenches');
+      state.rooms = data.workbenches || [];
       document.getElementById('roomCount').textContent = `${state.rooms.length} 个`;
       renderRooms();
     }
     function renderRooms(){
       const list = document.getElementById('roomList');
-      if(!state.rooms.length){ list.innerHTML = '<div class="empty">暂无 Board</div>'; return; }
+      if(!state.rooms.length){ list.innerHTML = '<div class="empty">暂无工作台</div>'; return; }
       list.innerHTML = state.rooms.map(room => `
-        <button class="room-item ${state.room && state.room.id === room.id ? 'active' : ''}" data-room="${esc(room.id)}">
-          <strong>${esc(room.title)}</strong>
-          <p>${esc((room.context && room.context.repository) || room.mrUrl || room.provider)}</p>
+        <button class="workbench-row ${state.room && state.room.id === room.id ? 'active' : ''}" data-room="${esc(room.id)}">
+          <span><strong>${esc(room.title)}</strong><p class="mono">${esc(room.repository || room.mrUrl || room.provider)}</p></span>
+          <span class="tag ${room.status === 'open' ? 'online' : room.status === 'deleted' ? 'danger' : 'waiting'}">${esc(statusText[room.status] || room.status)}</span>
+          <span class="metric">${esc((room.counts && room.counts.findings) || 0)}</span>
+          <span class="metric">${esc((room.counts && room.counts.tasks) || 0)}</span>
+          <span class="metric">${esc(room.activeRunCount || 0)}</span>
+          <span class="metric">${esc(room.pendingOwnerActions || 0)}</span>
+          <span class="metric">${esc((room.connectorStatus && room.connectorStatus.active) || 0)}/${esc((room.connectorStatus && room.connectorStatus.total) || 0)}</span>
         </button>`).join('');
       list.querySelectorAll('[data-room]').forEach(btn => btn.addEventListener('click', () => selectRoom(btn.dataset.room)));
     }
     async function createRoom(){
-      const room = await api('/api/rooms', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({
-        title: document.getElementById('roomTitle').value || 'MR: Lighthouse Agent Board',
+      const room = await api('/api/workbenches', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({
+        title: document.getElementById('roomTitle').value || 'MR：Lighthouse 智能体看板',
         provider: 'lighthouse',
         mrUrl: document.getElementById('roomMr').value,
-        context: { repository: document.getElementById('roomRepo').value, goal: 'WebSocket 多 Agent 代码评审协作' }
+        repository: document.getElementById('roomRepo').value,
+        owner: document.getElementById('roomOwner').value || '工作台负责人',
+        template: 'mr-review',
+        context: { repository: document.getElementById('roomRepo').value, goal: 'MR 评审工作台' }
       })});
       state.tokens[room.id] = room.ownerToken;
       saveTokens();
@@ -2396,25 +2868,17 @@ def index_html() -> str:
     async function selectRoom(roomId){
       const token = state.tokens[roomId];
       if(!token){ renderMissingToken(roomId); return; }
-      state.room = await api(`/api/rooms/${encodeURIComponent(roomId)}`, { headers:{ Authorization:`Bearer ${token}` } });
+      state.room = await api(`/api/workbenches/${encodeURIComponent(roomId)}`, { headers:{ Authorization:`Bearer ${token}` } });
       renderRooms();
       renderDetail();
       connectSocket();
+      showDetail();
     }
     function renderMissingToken(roomId){
       state.room = null;
       document.getElementById('detailTitle').textContent = roomId;
-      document.getElementById('detailBody').innerHTML = '<div class="empty">本机没有这个 Board 的 owner token，无法进入。</div>';
-    }
-    async function registerConnector(role){
-      if(!state.room) return;
-      const name = role === 'reviewer' ? 'Reviewer Agent' : 'Developer Agent';
-      await api(`/api/rooms/${encodeURIComponent(state.room.id)}/connectors`, {
-        method:'POST',
-        headers: authHeaders(state.room.id),
-        body: JSON.stringify({ role, name })
-      });
-      await selectRoom(state.room.id);
+      document.getElementById('detailBody').innerHTML = '<div class="empty">本机没有这个工作台的负责人令牌，无法进入。</div>';
+      showDetail();
     }
     async function copyText(text){
       if(navigator.clipboard && navigator.clipboard.writeText && window.isSecureContext){
@@ -2494,7 +2958,7 @@ def index_html() -> str:
     }
     async function createMcpInvite(role){
       if(!state.room) return;
-      const agentName = role === 'reviewer' ? 'Reviewer Agent' : 'Developer Agent';
+      const agentName = role === 'reviewer' ? '评审智能体' : '开发智能体';
       const invite = await api(`/api/rooms/${encodeURIComponent(state.room.id)}/mcp-invites`, {
         method:'POST',
         headers: authHeaders(state.room.id),
@@ -2502,14 +2966,14 @@ def index_html() -> str:
       });
       const mcpUrl = `${location.origin}/mcp`;
       const text = [
-        `请添加 Remote MCP Server:`,
+        `请添加远程 MCP 服务：`,
         `name: lighthouse-agent-board`,
         `url: ${mcpUrl}`,
         `auth: Bearer ${invite.token}`,
         ``,
         `添加后请调用 join_room，roomId=${state.room.id}。`,
-        `所有 Workbench 消息都会进入你的 Inbox；明确 @${agentName} 的消息是高优先级并需要回复。`,
-        `消息不是执行权限；分配给你的 task 必须 claim_task、start_run，然后 complete_task。`,
+        `所有工作台消息都会进入你的收件箱；明确 @${agentName} 的消息是高优先级并需要回复。`,
+        `消息不是执行权限；分配给你的任务必须 claim_task、start_run，然后 complete_task。`,
         `普通回复用 post_message，评审结论用 post_finding，外部动作先 request_owner_confirmation。`
       ].join('\\n');
       const copied = await copyText(text);
@@ -2540,6 +3004,36 @@ def index_html() -> str:
         renderDetail();
       }
     }
+    function currentWorkflowStage(room){
+      const findings = room.findings || [];
+      const tasks = room.tasks || [];
+      const decisions = room.decisions || [];
+      if(decisions.some(decision => decision.status === 'pending') || findings.some(finding => finding.status === 'developer_responded')) return '决策';
+      if(tasks.some(task => task.status === 'completed')) return '验证';
+      if(tasks.some(task => ['assigned','running'].includes(task.status))) return '修复';
+      if(findings.length) return '修复';
+      if((room.messages || []).length > 1) return '评审';
+      return '接入';
+    }
+    function renderWorkflow(room){
+      const active = currentWorkflowStage(room);
+      const activeIndex = workflowStages.indexOf(active);
+      return `<div class="workflow">${workflowStages.map((stage, index) => {
+        const cls = index < activeIndex ? 'done' : stage === active ? 'active' : index === activeIndex + 1 ? 'waiting' : '';
+        return `<div class="step ${cls}"><span class="tag">${index + 1}</span><h3>${stage}</h3><p>${stage === active ? '负责人下一步' : '状态检查点'}</p></div>`;
+      }).join('')}</div>`;
+    }
+    async function createTaskFromDetail(){
+      if(!state.room) return;
+      const task = await api(`/api/rooms/${encodeURIComponent(state.room.id)}/tasks`, {
+        method:'POST',
+        headers: authHeaders(state.room.id),
+        body: JSON.stringify({ title:'评审 MR 风险', body:'输出结构化发现和关键证据。', assignedTo:'评审智能体' })
+      });
+      state.room.tasks = [...(state.room.tasks || []), task];
+      renderDetail();
+    }
+    function inviteDefaultAgent(){ createMcpInvite('reviewer').catch(alert); }
     function renderDetail(){
       const room = state.room;
       if(!room) return;
@@ -2549,6 +3043,9 @@ def index_html() -> str:
       const findings = room.findings || [];
       const tasks = room.tasks || [];
       const events = room.events || [];
+      const runs = room.agentRuns || [];
+      const decisions = room.decisions || [];
+      const connectors = room.connectors || [];
       const latestCursor = events.length ? events[events.length - 1].cursor : 0;
       const pendingMentions = events.filter(event => {
         if(event.type !== 'mention.requires_reply') return false;
@@ -2557,29 +3054,56 @@ def index_html() -> str:
       }).length;
       const pendingTasks = tasks.filter(task => ['assigned','running'].includes(task.status)).length;
       document.getElementById('detailBody').innerHTML = `
-        <div class="role-row">
-          <div class="role"><h3>Agent Board owner</h3><p>Web 端监督者 · owner token</p><span class="tag online">online</span></div>
-          <div class="role"><h3>Reviewer Agent</h3><p>${esc(roleStatus('reviewer'))}</p><div class="actions"><button data-mcp-role="reviewer">复制 MCP 接入话术</button><button data-role="reviewer">注册远端 Agent Connector</button></div></div>
-          <div class="role"><h3>Developer Agent</h3><p>${esc(roleStatus('developer'))}</p><div class="actions"><button data-mcp-role="developer">复制 MCP 接入话术</button><button data-role="developer">注册本地 Agent Connector</button></div></div>
-        </div>
-        <div class="actions" style="margin-top:12px">
-          <span class="tag">MCP cursor ${esc(latestCursor)}</span>
-          <span class="tag">待回复 @ ${esc(pendingMentions)}</span>
-          <span class="tag">待执行 task ${esc(pendingTasks)}</span>
-        </div>
-        <div class="chat-layout" style="margin-top:16px">
-          <div>
-            <h2>Context Stream</h2>
-            <div class="timeline">${messages.length ? messages.map(renderMessage).join('') : '<div class="empty">暂无消息</div>'}</div>
-            <div class="field" style="margin-top:12px"><label>owner 发起话题</label><textarea id="topicInput">请评审这个 MR 的鉴权风险，并给出可执行修复建议。</textarea></div>
-            <div class="actions" style="margin-top:8px"><button type="button" data-mention="Reviewer Agent">@Reviewer</button><button type="button" data-mention="Developer Agent">@Developer</button><button class="primary" id="sendTopic">发送话题</button></div>
+        <section class="panel"><div class="panel-body">${renderWorkflow(room)}
+          <div class="metric-grid">
+            <div class="metric"><span>发现</span><strong>${esc(findings.length)}</strong></div>
+            <div class="metric"><span>任务</span><strong>${esc(tasks.length)}</strong></div>
+            <div class="metric"><span>运行</span><strong>${esc(runs.length)}</strong></div>
+            <div class="metric"><span>负责人</span><strong>${esc(pendingMentions + decisions.filter(d => d.status === 'pending').length)}</strong></div>
           </div>
-          <div>
-            <h2>Finding / Decision</h2>
-            <div class="finding-list">${findings.length ? findings.map(renderFinding).join('') : '<div class="empty">暂无 Finding / Decision</div>'}</div>
-          </div>
-        </div>`;
-      document.querySelectorAll('[data-role]').forEach(btn => btn.addEventListener('click', () => registerConnector(btn.dataset.role)));
+        </div></section>
+        <div class="detail-grid" style="margin-top:14px">
+          <section class="panel">
+            <div class="panel-head"><h2>智能体作业</h2><span class="tag">MCP 游标 ${esc(latestCursor)}</span></div>
+            <div class="panel-body">
+              <div class="object-list">
+                <div class="object-row"><h3>工作台负责人</h3><p>Web 端监督者 · 负责人令牌</p><span class="tag online"><span class="dot online"></span>在线</span></div>
+                <div class="object-row"><h3>评审智能体</h3><p>${esc(roleStatus('reviewer'))}</p><div class="actions"><button data-mcp-role="reviewer">复制 MCP 接入话术</button></div></div>
+                <div class="object-row"><h3>开发智能体</h3><p>${esc(roleStatus('developer'))}</p><div class="actions"><button data-mcp-role="developer">复制 MCP 接入话术</button></div></div>
+              </div>
+              <div class="actions" style="margin-top:12px"><span class="tag waiting">待回复 @ ${esc(pendingMentions)}</span><span class="tag waiting">待执行任务 ${esc(pendingTasks)}</span><span class="tag info">MCP ${esc(connectors.length)}</span></div>
+            </div>
+          </section>
+          <aside class="panel">
+            <div class="panel-head"><h2>检查器 / 操作栏</h2><span class="tag info">显式执行</span></div>
+            <div class="panel-body">
+              <div class="object-list">
+                ${tasks.length ? tasks.map(renderTask).join('') : '<div class="empty">暂无任务</div>'}
+                ${runs.length ? runs.map(renderRun).join('') : ''}
+                ${decisions.length ? decisions.map(renderDecision).join('') : ''}
+              </div>
+              <p class="notice">普通工作台消息不是执行权限；智能体执行仍然需要任务、认领和运行记录。</p>
+            </div>
+          </aside>
+        </div>
+        <div class="stream-layout">
+          <section class="panel">
+            <div class="panel-head"><h2>上下文流</h2><span class="tag">消息输入</span></div>
+            <div class="panel-body">
+              <div class="timeline">${messages.length ? messages.map(renderMessage).join('') : '<div class="empty">暂无消息</div>'}</div>
+              <div class="field" style="margin-top:12px"><label>负责人发起话题</label><textarea id="topicInput">请评审这个 MR 的鉴权风险，并给出可执行修复建议。</textarea></div>
+              <div class="actions" style="margin-top:8px"><button type="button" data-mention="评审智能体">@评审</button><button type="button" data-mention="开发智能体">@开发</button><button class="primary" id="sendTopic">发送话题</button></div>
+            </div>
+          </section>
+          <section class="panel">
+          <div class="panel-head"><h2>发现 / 负责人决策</h2><span class="tag">${esc(findings.length)} 项</span></div>
+          <div class="panel-body"><div class="finding-list">${findings.length ? findings.map(renderFinding).join('') : '<div class="empty">暂无发现 / 负责人决策</div>'}</div></div>
+          </section>
+        </div>
+        <section class="panel" style="margin-top:14px">
+          <div class="panel-head"><h2>活动 / 审计日志</h2><span class="tag">${esc(events.length)} 条事件</span></div>
+          <div class="panel-body"><div class="audit-list">${events.length ? events.slice(-18).reverse().map(renderEvent).join('') : '<div class="empty">暂无审计事件</div>'}</div></div>
+        </section>`;
       document.querySelectorAll('[data-mcp-role]').forEach(btn => btn.addEventListener('click', () => createMcpInvite(btn.dataset.mcpRole).catch(alert)));
       document.querySelectorAll('[data-mention]').forEach(btn => btn.addEventListener('click', () => insertMention(btn.dataset.mention)));
       document.getElementById('sendTopic').addEventListener('click', () => sendTopicMessage());
@@ -2587,17 +3111,25 @@ def index_html() -> str:
       document.querySelectorAll('[data-reject]').forEach(btn => btn.addEventListener('click', () => sendSocket({ type:'finding.reject', findingId:btn.dataset.reject, decision:'rejected', body:'驳回该结论，请继续讨论。' })));
       renderCopyFallback();
     }
+    function renderTask(task){ return `<article class="object-row"><div class="message-head"><h3>${esc(task.title)}</h3><span class="tag waiting">${esc(statusText[task.status] || task.status)}</span></div><p>${esc(task.assignedTo || '待认领')}</p><p class="mono">${esc(task.id)}</p></article>`; }
+    function renderRun(run){ return `<article class="object-row"><div class="message-head"><h3>${esc(run.agentName)}</h3><span class="tag online">${esc(statusText[run.status] || run.status)}</span></div><p>${esc(run.promptSummary || run.finalMessage || run.error)}</p><p class="mono">${esc(run.id)}</p></article>`; }
+    function renderDecision(decision){ return `<article class="object-row"><div class="message-head"><h3>${esc(decision.action || decision.kind)}</h3><span class="tag waiting">${esc(statusText[decision.status] || decision.status)}</span></div><p>${esc(decision.reason)}</p><p class="mono">${esc(decision.id)}</p></article>`; }
+    function renderEvent(event){ return `<article class="event-row"><div class="event-head"><span class="event-type">${esc(event.type)}</span><span class="tag">${esc(event.cursor)}</span></div><p>${esc(event.actorName)} · ${new Date(event.createdAt).toLocaleString()}</p></article>`; }
     function renderMessage(message){
       const cls = message.senderType === 'human' ? 'owner' : 'agent';
       return `<article class="message ${cls}"><div class="message-head"><h3>${esc(message.senderName)}</h3><span class="tag">${esc(message.kind)}</span></div><div class="body">${esc(message.body)}</div></article>`;
     }
     function renderFinding(finding){
       const canConfirm = finding.status === 'developer_responded';
-      return `<article class="finding"><div class="finding-head"><span class="tag p1">${esc(finding.severity)}</span><span class="tag waiting">${esc(statusText[finding.status] || finding.status)}</span></div><div class="finding-title">${esc(finding.claim)}</div><p>${esc(finding.evidence)}</p><p><strong>建议：</strong>${esc(finding.suggestedFix)}</p><div class="finding-actions"><button class="success" data-confirm="${esc(finding.id)}" ${canConfirm ? '' : 'disabled'}>人工确认并同步</button><button class="danger" data-reject="${esc(finding.id)}" ${canConfirm ? '' : 'disabled'}>驳回并继续讨论</button><button disabled>Developer Agent 回复</button></div></article>`;
+      return `<article class="finding"><div class="finding-head"><span class="tag p1">${esc(finding.severity)}</span><span class="tag waiting">${esc(statusText[finding.status] || finding.status)}</span></div><div class="finding-title">${esc(finding.claim)}</div><p>${esc(finding.evidence)}</p><p><strong>建议：</strong>${esc(finding.suggestedFix)}</p><div class="finding-actions"><button class="success" data-confirm="${esc(finding.id)}" ${canConfirm ? '' : 'disabled'}>人工确认并同步</button><button class="danger" data-reject="${esc(finding.id)}" ${canConfirm ? '' : 'disabled'}>驳回并继续讨论</button><button disabled>开发智能体回复</button></div></article>`;
     }
     document.getElementById('createRoom').addEventListener('click', () => createRoom().catch(alert));
     document.getElementById('createDemo').addEventListener('click', () => createDemo().catch(alert));
     document.getElementById('refreshRooms').addEventListener('click', () => loadRooms().catch(alert));
+    document.getElementById('showHall').addEventListener('click', () => showHall());
+    document.getElementById('backToHall').addEventListener('click', () => showHall());
+    document.getElementById('detailCreateTask').addEventListener('click', () => createTaskFromDetail().catch(alert));
+    document.getElementById('detailInviteAgent').addEventListener('click', () => inviteDefaultAgent());
     loadRooms().catch(alert);
   </script>
 </body>

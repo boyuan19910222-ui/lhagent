@@ -19,17 +19,18 @@ Lighthouse should provide:
 - Agent run panel,
 - finding panel,
 - handoff and decision panel,
-- connector status and lifecycle controls,
-- invite and bootstrap UX,
+- MCP Agent status and lifecycle controls,
+- MCP invite and bootstrap UX,
 - audit and sync preview,
 - integration settings.
 
-The user-side connector should keep private repo, IM, and Agent execution access
-inside the user's trusted environment.
+Private repo, IM, and Agent execution access should stay in the user's trusted
+environment. Lighthouse exposes MCP tools and records state; it does not take
+over private Agent runtime setup.
 
 ## Workbench CRUD and UI framework
 
-Status: `Planned`
+Status: `Done in local P0`
 
 The next productization step is to define the Workbench framework before
 building full CRUD. The current P0 already has useful object primitives, but it
@@ -41,7 +42,8 @@ Framework first means:
 - Define Workbench-level lifecycle operations: create, list, read, rename,
   archive, restore, and delete.
 - Map existing P0 objects into product surfaces: Context Stream, Agent Inbox,
-  Tasks, Findings, Runs, Handoffs, Decisions, Connectors, Threads, and Audit.
+  Tasks, Findings, Runs, Handoffs, Decisions, MCP Agent status, Threads, and
+  Audit.
 - Record which operations are already supported by P0 APIs or MCP tools and
   which are planned for Console CRUD.
 - Design the UI information architecture before expanding implementation:
@@ -50,10 +52,15 @@ Framework first means:
 - Keep deletion and destructive lifecycle actions behind owner confirmation,
   audit records, and clear remote-cleanup boundaries.
 
-Initial capability framing:
+Initial capability framing after the local P0 implementation:
 
-- Workbench: create/list/read exist through room APIs; rename/archive/delete are
-  planned.
+- Workbench: create/list/read exist through `/api/workbenches`, mapped to the
+  canonical room store for compatibility.
+- Workbench lifecycle: rename, archive, restore, and delete exist in the local
+  P0 API with owner authorization and audit events.
+- Workbench delete is a server-side tombstone; it does not claim to clean remote
+  Agent machines, shell history, Agent-side MCP configuration, transcripts, caches,
+  or workspace files.
 - Messages: create/read exist; edit/delete are not part of the execution path
   and need product policy before implementation.
 - Inbox: MCP read/ack states exist; Console inbox UI and batch handling are
@@ -62,19 +69,20 @@ Initial capability framing:
   Console edit, cancel, retry, reassign, and timeline views are planned.
 - Findings, Handoffs, and Decisions: core objects exist; Console-first review
   and owner-decision flows need a dedicated UI framework.
-- Connectors and Invites: register/invite exist; lifecycle controls such as
-  rotate, revoke, disconnect, permissions, and cleanup guidance need product UI.
+- MCP Invites and Agent status: invite/read exist through MCP-first flows;
+  lifecycle controls such as rotate, revoke, disconnect, permissions, and
+  cleanup guidance need product UI without reintroducing direct Agent
+  registration.
 
 ## Current next actions
 
-- Define the Lighthouse backend data model for rooms, tasks, findings, runs,
-  handoffs, decisions, threads, and connectors.
-- Draft the Workbench CRUD capability matrix and UI information architecture
-  before expanding implementation.
+- Decide which local P0 Workbench API surfaces should move into the durable
+  Lighthouse Console backend unchanged, and which should remain compatibility
+  aliases for `/api/rooms`.
 - Decide which parts of the P0 service become product backend and which remain
   prototype-only.
-- Sketch the Lighthouse Console room view from the existing built-in HTML
-  workflow.
+- Expand Console lifecycle UX for rename/archive/restore/delete with owner
+  confirmation, destructive-action copy, and audit review.
 - Define GitHub, GitLab, Gongfeng, Feishu, WeCom, and QQ sync boundaries.
 - Decide how room events, audit logs, and transcript links are retained.
 

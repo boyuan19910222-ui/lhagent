@@ -4,14 +4,14 @@
 
 Review Room 不应该被设计成能远端唤醒本地 Agent 的群聊，也不应该只部署成某台实例里的小服务。推荐形态是：
 
-**Lighthouse 提供托管式 Agent 协作黑板，用户可以在自己的 Lighthouse 实例里部署私有 Connector/Relay，把外部代码评审事件写入黑板。**
+**Lighthouse 提供托管式 Agent 协作黑板，Agent 通过 Remote MCP 主动读取任务并把外部代码评审结果写入黑板。**
 
 两层职责：
 
 | 层级 | 部署位置 | 职责 |
 | --- | --- | --- |
 | Review Room Control Plane | Lighthouse 平台侧 PaaS 能力 | Room Board、Message、Task、Finding、Decision、Artifact、身份权限、审计、控制台 UI、MR 评论同步 |
-| Review Room Connector | 用户 Lighthouse 实例或受控服务 | 私有 Git/IM/Webhook 接入、事件转发、A2A/MCP 转换、MR 评论同步 |
+| Review Room MCP/Sync Adapter | 用户 Lighthouse 实例或受控服务 | 私有 Git/IM/Webhook 接入、Remote MCP 转换、MR 评论同步 |
 
 这个拆法既符合 Lighthouse “Agent Infra / 云端 Agent 主机与工作台”的定位，也避免把私有代码、企业 Git、IM token 全部放进平台托管控制面。关键调整是：Review Room 不承诺唤醒未运行的本地 Codex/CodeBuddy；它承诺保存、路由、审计和展示 Agent 在被激活后主动读写的协作状态。
 
@@ -21,9 +21,9 @@ Review Room 这个方案的关键价值不在于“把 Agent 拉进一个聊天�
 
 - MR 是上下文入口，Room Board 是协作状态源，Task 是可消费工作项，Finding 是结构化评审产物，Decision/人工确认是对外同步边界。
 - Lighthouse 平台侧负责 Room Board、参与者、消息、Task、Finding 状态机、审计、权限和控制台体验。
-- 用户实例或受控 Connector 负责私有 Git、IM token、企业内网和 MR 评论同步，不承担唤醒本地 Agent 的职责。
+- 用户实例或受控同步适配负责私有 Git、IM token、企业内网和 MR 评论同步，不承担唤醒未激活 Agent 的职责。
 - Developer Agent / Reviewer Agent 在各自被用户或官方云端任务控制面激活后，通过 MCP 读取 snapshot/events/tasks，再把观察、修复计划、审计结论或验证结果写回黑板。
-- 人类开发者保留最终确认权，再由 Connector 同步为 MR 评论、IM 消息或后续流水线状态。
+- 人类开发者保留最终确认权，再由同步适配发布为 MR 评论、IM 消息或后续流水线状态。
 
 这个方向适合继续产品化，因为它把“多 Agent 参与开发”从一次性的对话，变成了可追踪、可审计、可回放、可被 Agent 主动消费、可接入现有 MR 流程的状态层。它也自然贴合 Lighthouse 的 Agent Infra 定位：Lighthouse 不需要成为最聪明的评审 Agent，也不需要伪装成能唤醒本地 Agent；它要成为 Agent 之间交接上下文、沉淀结论和受人监督交付的共享黑板。
 
@@ -33,8 +33,8 @@ Review Room 这个方案的关键价值不在于“把 Agent 拉进一个聊天�
 
 - 读取当前 MR/分支 diff，产出结构化 Review Finding，字段包含 severity、filePath、line、claim、evidence、suggestedFix。
 - 复核 Developer Agent 的修复计划，判断是否真正覆盖 finding，指出遗漏测试或风险。
-- 针对 Review Room 控制面页面做产品/交互评审，确认是否能解释清楚 Room、Connector、Finding、人工确认这条主线。
-- 针对 Connector 安全边界做专项审查，例如 token 作用域、Webhook secret、公网暴露、MR 评论同步权限。
+- 针对 Review Room 控制面页面做产品/交互评审，确认是否能解释清楚 Room、MCP Agent、Finding、人工确认这条主线。
+- 针对 MCP 和同步适配安全边界做专项审查，例如 token 作用域、Webhook secret、公网暴露、MR 评论同步权限。
 - 在修复完成后做二次验收，只给出 pass/fail、剩余 finding 和建议同步到 MR 的评论文本。
 
 Developer Agent 则负责实际代码修改、测试、运行服务、验证 UI 和准备提交。这样的分工不依赖“同时在线聊天”，而是依赖黑板上的 Task、Finding、Decision、Cursor/Ack，让多个 Agent 可以异步接力，同时把冲突控制在 Review Room 的消息和 finding 状态机里。
@@ -53,7 +53,7 @@ Developer Agent 则负责实际代码修改、测试、运行服务、验证 UI 
 
 - SQLite 模拟 Lighthouse Review Room 后端主状态源。
 - 内置 HTML 页面模拟 Lighthouse Console Review Room Board。
-- Connector API 模拟本地 Agent 和远端 Agent 的真实接入层。
+- Remote MCP 模拟 Agent 的真实接入层。
 
 能力：
 
@@ -62,8 +62,7 @@ Developer Agent 则负责实际代码修改、测试、运行服务、验证 UI 
 - `POST /api/rooms`：创建 Review Room。
 - `GET /api/rooms`：列出 Room。
 - `GET /api/rooms/{id}`：读取 Room Board 详情、消息、Task、Finding 和事件。
-- `POST /api/rooms/{id}/connectors`：为 Room 注册本地或远端 Agent Connector。
-- `POST /api/connectors/{id}/events`：Connector 携带 token 写入消息或 Finding。
+- `POST /api/rooms/{id}/mcp-invites`：为 Agent 创建 Remote MCP 接入 token。
 - `POST /api/rooms/{id}/messages`：写入 Agent 或人工消息。
 - `POST /api/rooms/{id}/findings`：写入结构化 Review Finding。
 - `PATCH /api/findings/{id}`：更新 Finding 状态。
@@ -124,15 +123,16 @@ http://127.0.0.1:<local-port>
 
 ### 真实上手路径
 
-打开 Connector 首页后，优先走真实接入路径：
+打开 Workbench 首页后，优先走真实接入路径：
 
 1. 点击“创建真实 Room”，系统用 MR 标题、仓库和 MR 地址创建 Review Room Board。
-2. 点击“注册本地 Agent Connector”，生成本地 Codex/IDE Agent 使用的 connector id 和 token。
-3. 点击“注册远端 Agent Connector”，生成远端 Reviewer Agent 使用的 connector id 和 token。
-4. 点击 Connector 卡片上的“发送本地 Agent 消息”和“发送远端 Agent Finding”，事件会通过 `/api/connectors/{connectorId}/events` 进入同一个 Room。
-5. 对远端 Finding 点击“Developer Agent 回复”和“人工确认并同步”，Room 状态流转到 `completed`。
+2. 在 Agent 卡片点击“复制 MCP 接入话术”，生成 scoped invite token。
+3. 在支持 Remote MCP 的 Agent 中添加 `/mcp` 服务并调用 `join_room`。
+4. Agent 使用 `post_message`、`post_finding`、`claim_task`、`start_run` 和
+   `complete_task` 回写工作。
+5. 对 Finding 点击“Developer Agent 回复”和“人工确认并同步”，Room 状态流转到 `completed`。
 
-这个体验对应产品路线 C：先从实例侧 Connector 跑通可感知的黑板写入、Finding、Decision 和审计闭环，再把 Room Board 列表、详情、权限和审计上升到 Lighthouse 托管控制面。
+这个体验对应产品路线 C：先从实例侧 Remote MCP 跑通可感知的黑板写入、Finding、Decision 和审计闭环，再把 Room Board 列表、详情、权限和审计上升到 Lighthouse 托管控制面。
 
 页面仍保留“创建体验房间”作为样例数据入口，但它不再是主路径。
 

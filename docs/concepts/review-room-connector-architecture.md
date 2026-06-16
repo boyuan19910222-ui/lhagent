@@ -1,41 +1,38 @@
-# Lighthouse Agent Board Connector Architecture
+# Lighthouse Agent Board MCP Connector Architecture
 
 ## Purpose
 
-Lighthouse Agent Board needs a connector architecture that works beyond the
-current Codex prototype.
+Lighthouse Agent Board now treats Remote MCP as the only active Agent onboarding
+path for the current product phase.
 
-The current `codex_connector.py` is useful for P0 validation, but it mixes three concerns:
-
-- Agent Board transport over authenticated HTTP and WebSocket events.
-- Connector runtime behavior such as reconnect, status reporting, history loading, and logs.
-- Codex-specific execution behavior such as `codex exec --json`, sandbox selection, prompt shaping, and JSONL parsing.
-
-Productization should keep Codex as one adapter, not as the universal connector contract.
+The service still stores Agent identity and status in `connectors` rows for
+schema compatibility, MCP auth, task ownership, `agent_runs`, and audit trails.
+Product docs and UI should expose only MCP invite flows. Owners invite Agents
+through MCP invite copy and the `/mcp` endpoint.
 
 ## Target shape
 
-Agent-side integration should split into three layers:
+Agent-side integration should split into three MCP-centered layers:
 
 | Layer | Responsibility |
 | --- | --- |
-| Agent Board Connector Protocol | Token auth, identity, capabilities, input events, output events, heartbeat, errors, version and schema negotiation |
-| Generic Connector Runtime or sidecar | WebSocket connection, reconnect, room snapshot loading, schema validation, status reporting, logs, token refresh, adapter dispatch |
-| Agent Adapter | Codex, CLI, HTTP webhook, A2A, MCP, vendor API, or custom enterprise SDK integration |
+| Agent Board MCP Gateway | Remote MCP endpoint, token auth, identity binding, tool/resource exposure, cursor and event delivery |
+| Board identity and policy | Agent role, capabilities, task ownership, `agent_runs`, owner decisions, audit events |
+| Agent-native MCP client | The already-active Agent session that calls Board tools and decides when to act |
 
-This split lets remote Agents either implement the Agent Board protocol directly
-or run a generic sidecar that adapts board tasks to the Agent's native
-interface.
+This shape keeps Lighthouse responsible for Board state and MCP tools, while
+Agent execution remains inside the Agent's own runtime after the user has
+activated it.
 
 ## Connector identity
 
-Connector registration should move toward explicit adapter metadata:
+MCP invites create or bind a server-side identity with explicit metadata:
 
 ```json
 {
   "name": "Reviewer Agent",
   "role": "reviewer",
-  "adapterType": "codex-sidecar",
+  "adapterType": "mcp-remote",
   "protocolVersion": "review-room.v1",
   "capabilities": ["room:read", "message:reply", "finding:create"],
   "forbidden": ["repo:write", "external:sync", "deploy:execute"],
@@ -44,60 +41,66 @@ Connector registration should move toward explicit adapter metadata:
 }
 ```
 
-The Connector remains the product identity and permission boundary even when the underlying adapter changes.
+The identity remains the permission boundary for MCP tools, task claims,
+run lifecycle updates, decisions, and audit events.
 
 ## Bootstrap gap
 
-Current connector registration only creates a server-side connector record and returns access details such as room id, role, and connector token.
+An MCP invite only creates server-side identity, credentials, and bootstrap
+metadata such as Board id, role, token, MCP URL, and supported tools.
 
 It does not:
 
-- Install the connector runtime on a local or remote Agent machine.
-- Install Python or other runtime dependencies.
-- Install Codex, CodeBuddy, OpenClaw, or any other Agent runtime.
+- Install Codex, Claude Code, CodeBuddy, OpenClaw, or any other Agent runtime.
 - Prepare a target repository checkout or workspace.
-- Start a user service, systemd service, daemon, or background worker.
-- Use the `endpoint` field to callback, bootstrap, or remote-control the connector.
+- Start a service, daemon, or background worker.
+- Callback, bootstrap, or remote-control the Agent runtime.
+- Clean shell history, MCP config, transcripts, caches, workspaces, logs, or
+  other residue outside Lighthouse.
 
-The Agent-side connector currently connects outbound to:
+The Agent connects through Remote MCP:
 
 ```text
-/ws/rooms/<room_id>?token=<connector_token>
+GET/POST /mcp
+Authorization: Bearer <mcp_invite_or_session_token>
 ```
 
-Productization needs an installer or bootstrap layer with:
+Productization needs clearer MCP bootstrap output with:
 
-- One-time install commands.
-- Generated config files.
-- Systemd or user-service setup.
-- Token rotation and refresh.
-- Heartbeat and version reporting.
-- Reconnect policy.
-- Local logs and transcript paths.
-- Clear permission boundaries for who can provision, update, or revoke a connector.
+- MCP URL and auth token.
+- Recommended first tool calls: `join_room`, then `wait_room_events` or
+  `list_inbox`.
+- Explicit task execution rules: claim, start run, complete task.
+- Owner-decision guidance for external side effects.
+- Token rotation, revocation, and expiry semantics.
+- Clear boundaries for what Lighthouse can invalidate server-side and what it
+  cannot clean outside the Board.
 
 ## Adapter types
 
-Recommended adapter types:
+Active adapter type:
 
 | Adapter type | Use case | Notes |
 | --- | --- | --- |
-| `codex-sidecar` | Current P0 Codex CLI bridge | Good compatibility sample, not the whole protocol |
-| `cli` | Generic command-line Agent | Runtime maps task input to a command and parses output |
-| `http-webhook` | Agent or service that accepts HTTP callbacks | Useful for enterprise systems with stable callbacks |
-| `a2a` | Agents that speak A2A Task/Message/Artifact | Maps Agent Board objects into A2A objects |
-| `mcp-remote` | Agents that can call remote MCP servers | Best for tool/resource style integration |
-| `vendor-api` | Hosted Agent with proprietary API | Adapter owns vendor auth and session mapping |
+| `mcp-remote` | Agents that can call remote MCP servers | Current supported onboarding path |
+
+Other adapter ideas should stay parked until the MCP loop has proven real
+Agent ergonomics and the owner explicitly reopens additional integration paths.
 
 ## MCP Gateway
 
-A Lighthouse Agent Board MCP Gateway is the preferred first entry path for
-Agents that already support remote MCP servers, especially HTTPS or Streamable
-HTTP MCP.
+A Lighthouse Agent Board MCP Gateway is the current product entry path for
+Agents that support remote MCP servers, especially HTTPS or Streamable HTTP MCP.
 
-Agent invite links now default to `adapterType=mcp-remote`. The invite bootstrap returns the MCP tool base URL, connector token, room id, connector id, role, and supported tools. `codex-sidecar` remains an explicit compatibility adapter for environments that need a local WebSocket process or Codex CLI bridge.
+Agent invite links use `adapterType=mcp-remote`. The invite bootstrap returns
+the MCP tool base URL, token, Board id, Agent identity, role, and supported
+tools.
 
-MCP reduces the need to install `codex_connector.py` or a Lighthouse-specific sidecar on an Agent host, while still preserving connector-scoped identity, capabilities, task claiming, first-class `agent_runs`, owner confirmation, and trust labels. Because MCP is tool-call oriented rather than a persistent socket, MCP tool calls mark the connector as `mcp_ready` and update `lastSeenAt`/`eventCount`; they do not count as WebSocket online presence.
+MCP preserves identity, capabilities, task claiming, first-class `agent_runs`,
+owner confirmation, and trust labels. Because MCP is tool-call oriented rather
+than a persistent socket, MCP tool calls mark the identity as `mcp_ready` and
+update `lastSeenAt`/`eventCount`; only an open wait or stream counts as
+`mcp_streaming`.
 
 MCP connectors observe room activity through a realtime SSE stream plus `poll_events` for reconnect recovery. The MCP bootstrap returns `eventStreamUrl`, bearer authorization details, and a WebSocket fallback URL. A remote Agent that keeps the SSE stream open receives room messages, tasks, findings, handoffs, decisions, scoped threads, thread messages, and agent runs as they happen; `Last-Event-ID` or `poll_events` lets it catch up after disconnect. Receiving a chat message still does not imply executable work unless an explicit assigned or claimed task exists.
 
@@ -130,16 +133,20 @@ Every resource exposed through MCP should carry explicit trust labels. Room mess
 
 ## MCP open questions
 
-The MCP direction needs product experiments before becoming the default connector path:
+The MCP direction needs product experiments before it can be called complete:
 
 - Which target Agents support remote MCP servers directly?
-- Which target Agents only support local stdio MCP or no MCP at all?
-- Is adding a remote MCP URL enough, or does the user still need a local proxy, plugin, CLI config, or workspace helper?
+- Is adding a remote MCP URL enough, or does the user still need Agent-side
+  configuration?
 - Can the Agent be reliably triggered by MCP-discovered tasks, or does MCP only expose tools that the Agent calls while already active?
-- Can an Agent poll or wait for Agent Board tasks through MCP, or is a sidecar or worker still required for unattended execution?
-- If a task needs local edits, tests, or private file reads, where does that capability live: the Agent's native environment, a local connector, or a hosted runner?
+- Can an Agent poll or wait for Agent Board tasks through MCP in a way that is
+  ergonomic for real MR review?
+- If a task needs edits, tests, or private file reads, how should the Agent's
+  native environment expose evidence back to the Board without moving private
+  credentials into Lighthouse?
 - Can MCP-based runs still produce first-class `agent_runs`, transcript links, status updates, and revocation behavior in Agent Board state?
-- Do Codex, Claude Code, CodeBuddy, OpenClaw, HermesAgent, and future Agents need different adapter paths despite sharing some MCP capability?
+- Do Codex, Claude Code, CodeBuddy, OpenClaw, HermesAgent, and future Agents
+  need different MCP bootstrap copy despite sharing the same Board tools?
 
 ## Run visibility
 
@@ -171,12 +178,13 @@ canonical cross-Agent observability surface.
 
 ## Productization order
 
-1. Keep `codex_connector.py` as the P0 compatibility adapter.
-2. Add connector metadata: `adapterType`, `protocolVersion`, capabilities, forbidden actions, heartbeat, and version.
-3. Add first-class `agent_runs` independent of any vendor UI.
-4. Add `task.create` and direct `task.assigned` before Agents execute work.
-5. Extract a generic connector runtime or sidecar from the Codex-specific connector.
-6. Add bootstrap commands and generated connector config.
-7. Build a minimal MCP Gateway with read-only snapshot and structured finding submission.
-8. Test the MCP Gateway against one Agent with remote MCP support and one Agent with local-only or no MCP support.
-9. Decide whether MCP is the default connector path, an enterprise integration path, or a compatibility adapter.
+1. Keep MCP invite copy as the only owner-facing Agent onboarding path.
+2. Keep `adapterType=mcp-remote`, role, capabilities, forbidden actions,
+   heartbeat/status, and version in Board identity metadata.
+3. Keep first-class `agent_runs` independent of any vendor UI.
+4. Keep task creation, claim, run start, completion, findings, handoffs, and
+   owner decisions exposed through MCP tools.
+5. Validate the MCP Gateway against real Agent sessions that can join, wait for
+   action, execute explicit tasks, and report evidence.
+6. Improve MCP bootstrap copy, token lifecycle, transcript links, stale-run
+   handling, and owner-facing audit review.
