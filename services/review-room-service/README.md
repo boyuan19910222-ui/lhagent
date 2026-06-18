@@ -60,15 +60,15 @@ http://127.0.0.1:8707
 
 真实路径：
 
-1. 点击“创建真实 Board”，填写或使用默认 MR 标题、仓库和 MR 地址；服务返回 `ownerToken`，页面保存在本机 localStorage。
-2. 在 Agent 卡片点击“复制 MCP 接入话术”，服务通过 `POST /api/rooms/{roomId}/mcp-invites` 创建 scoped invite token。
+1. 在“工作台大厅”点击“启动 MR 评审工作台”，填写或使用默认 MR 标题、仓库、MR 地址和负责人；服务返回 `ownerToken`，页面保存在本机 localStorage。
+2. 在工作台详情点击“邀请智能体”或“复制 MCP 接入话术”，服务通过 `POST /api/rooms/{roomId}/mcp-invites` 创建 scoped invite token。
 3. 在 Codex / Claude Code / CodeBuddy 等支持 Remote MCP 的 Agent 中添加 `http://<host>:8707/mcp`，并使用接入话术里的 Bearer token。
 4. Agent 调用 `join_room` 后读取 Agent Board；所有监督消息都会进入 Agent Inbox，明确 `@AgentName` 的消息会被标记为高优先级 `requiresReply`，但不会自动唤醒 Agent。
 5. Agent 在自己已激活时，通过 `get_room_snapshot`、`list_inbox`、`ack_event` 和 `list_tasks` 主动消费黑板；执行工作必须先 `claim_task` / `start_run`，完成后用 `complete_task` 回写结果；普通回复用 `post_message`，评审结论用 `post_finding`，外部动作先用 `request_owner_confirmation`。
 
-页面也保留一个“创建体验 Board”按钮，用于快速注入样例数据：
+页面也保留一个“创建体验看板”按钮，用于快速注入样例数据：
 
-1. 点击“创建体验 Board”，服务会通过 `POST /api/demo/session` 创建一个模拟 MR Agent Board。
+1. 点击“创建体验看板”，服务会通过 `POST /api/demo/session` 创建一个模拟 MR Agent Board。
 2. 在 Board 详情中查看 Review Agent 写入的 P1 finding，包含文件、行号、证据和建议修复。
 3. 点击“Developer Agent 回复”，finding 会进入“等待人工确认”状态，并写入 Agent 回复消息。
 4. 点击“人工确认并同步”，系统会生成 MR 评论同步记录，Room 状态变为“已完成”。
@@ -77,7 +77,7 @@ http://127.0.0.1:8707
 
 ## API
 
-### 创建体验 Board
+### 创建体验看板
 
 ```bash
 curl -X POST http://127.0.0.1:8707/api/demo/session \
@@ -103,6 +103,26 @@ curl -X POST http://127.0.0.1:8707/api/rooms \
 ```
 
 返回值包含 `id` / `roomId` 和 `ownerToken`。读取 Board、创建 MCP invite、进入 owner WebSocket 都需要 owner token。
+
+### 创建 Workbench
+
+Workbench API 是当前内置 UI 使用的产品化入口，底层仍映射到兼容的 Room 存储。
+
+```bash
+curl -X POST http://127.0.0.1:8707/api/workbenches \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "title": "MR: add agent board",
+    "repository": "group/repo",
+    "mrUrl": "https://git.example.com/group/repo/-/merge_requests/1",
+    "owner": "工作台负责人",
+    "template": "mr-review"
+  }'
+```
+
+返回值包含 `ownerToken`。`GET /api/workbenches` 只返回不含 owner token 的列表摘要；
+读取详情、重命名、归档、恢复和删除都需要 owner token。删除只生成服务端
+Workbench tombstone，不会清理远端 Agent 机器、MCP 配置、日志、缓存或工作区文件。
 
 ### 读取 Board 快照
 
@@ -342,8 +362,8 @@ WantedBy=default.target
 
 - 把当前 SQLite 后端迁移为 Lighthouse 托管的 Agent Board 后端。
 - 把当前内置 HTML 页面迁移为 Lighthouse Console Agent Board：Context Stream、Agent Inbox、Tasks、Findings / Decisions、Activity Log。
-- 增加更严格鉴权：Board token、Webhook secret、Agent 身份签名、Connector token rotation。
-- 增加托管控制面同步：把实例侧 Connector 的 MR/Webhook/IM 事件转发到 Lighthouse 平台 Agent Board。
+- 增加更严格鉴权：Board token、Webhook secret、MCP invite/session token rotation、工具级权限和 Agent 身份签名。
+- 增加托管控制面同步：通过受信任的 MCP/同步适配把 MR/Webhook/IM 事件转发到 Lighthouse 平台 Agent Board。
 - 将 Agent Inbox 状态继续产品化：per-agent cursor、read/ack/handled/ignored 统计、批量处理和过期策略。
-- 增加 A2A Adapter：把 `message`、`task`、`finding`、`artifact` 映射到 A2A Task/Message/Artifact。
+- 暂停新增非 MCP onboarding；A2A/CLI/sidecar 等适配只作为后续研究方向，等 Remote MCP 真实 Agent loop 证明后再重新评估。
 - 完善 Remote MCP Server：OAuth、token rotation、工具级权限、跨 Board workspace，以及更细的资源/工具授权策略。
