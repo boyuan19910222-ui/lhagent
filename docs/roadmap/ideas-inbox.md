@@ -24,6 +24,12 @@ and a next action.
 
 ## Agent onboarding
 
+- Give every joined Agent a stable, immutable identity such as `connectorId` or
+  a future `agentId`; use it for permissions, task ownership, handoffs,
+  `agent_runs`, and audit records instead of relying on display name alone.
+- Show Agents to owners as display name plus role plus a short stable
+  fingerprint, so multiple Agents in one board cannot be confused when their
+  names or roles are similar.
 - Give every Agent a compact onboarding package:
   - room id,
   - short-lived token,
@@ -43,6 +49,14 @@ and a next action.
 
 ## MCP Agent onboarding
 
+- Treat the MCP invite token as a one-time exchange credential: the first
+  successful `join_room` consumes the invite and returns a separate revocable
+  session token for later MCP calls.
+- If compatibility requires a staged rollout, allow an interim rule where one
+  invite token can bind only one Agent identity, but keep the target semantics
+  as invite-token exchange rather than long-lived invite-token reuse.
+- Record invite consumption metadata such as consumed time, bound Agent
+  identity, role, capability snapshot, and session-token lifecycle events.
 - Maintain an MCP compatibility matrix for Codex, Claude Code, CodeBuddy,
   OpenClaw, HermesAgent, and future Agents that can consume Remote MCP.
 - Record the exact MCP bootstrap copy each Agent needs.
@@ -69,10 +83,14 @@ and a next action.
 
 ## Lifecycle and cleanup
 
+- Add an Agent-initiated `leave_room` lifecycle action that marks the server-side
+  identity as left or disconnected, stops new task routing, and records an audit
+  event.
 - Add owner-facing cleanup checklists for Remote MCP token/config residue.
 - Warn users not to paste bearer tokens into long-lived shell history unless
   they accept that risk.
-- Distinguish rotate token, disconnect, kick, revoke, cancel task, and cleanup.
+- Distinguish `leave_room`, rotate token, disconnect, kick, revoke, cancel task,
+  and cleanup.
 - Record which remote residue remains after each owner action.
 
 ## UX

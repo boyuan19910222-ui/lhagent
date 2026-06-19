@@ -60,30 +60,13 @@ http://127.0.0.1:8707
 
 真实路径：
 
-1. 在“工作台大厅”点击“启动 MR 评审工作台”，填写或使用默认 MR 标题、仓库、MR 地址和负责人；服务返回 `ownerToken`，页面保存在本机 localStorage。
+1. 在“工作台大厅”点击“启动 MR 评审工作台”，填写或使用默认 MR 标题和负责人；服务返回 `ownerToken`，页面保存在本机 localStorage。
 2. 在工作台详情点击“邀请智能体”或“复制 MCP 接入话术”，服务通过 `POST /api/rooms/{roomId}/mcp-invites` 创建 scoped invite token。
 3. 在 Codex / Claude Code / CodeBuddy 等支持 Remote MCP 的 Agent 中添加 `http://<host>:8707/mcp`，并使用接入话术里的 Bearer token。
 4. Agent 调用 `join_room` 后读取 Agent Board；所有监督消息都会进入 Agent Inbox，明确 `@AgentName` 的消息会被标记为高优先级 `requiresReply`，但不会自动唤醒 Agent。
 5. Agent 在自己已激活时，通过 `get_room_snapshot`、`list_inbox`、`ack_event` 和 `list_tasks` 主动消费黑板；执行工作必须先 `claim_task` / `start_run`，完成后用 `complete_task` 回写结果；普通回复用 `post_message`，评审结论用 `post_finding`，外部动作先用 `request_owner_confirmation`。
 
-页面也保留一个“创建体验看板”按钮，用于快速注入样例数据：
-
-1. 点击“创建体验看板”，服务会通过 `POST /api/demo/session` 创建一个模拟 MR Agent Board。
-2. 在 Board 详情中查看 Review Agent 写入的 P1 finding，包含文件、行号、证据和建议修复。
-3. 点击“Developer Agent 回复”，finding 会进入“等待人工确认”状态，并写入 Agent 回复消息。
-4. 点击“人工确认并同步”，系统会生成 MR 评论同步记录，Room 状态变为“已完成”。
-
-这个体验对应 C 路线：先从实例侧 Room/MCP 入口跑通真实协作闭环，暂不接 Lighthouse 控制台，后续再上升为托管控制面里的全局 Room 列表、权限、审计和 MR 同步。
-
 ## API
-
-### 创建体验看板
-
-```bash
-curl -X POST http://127.0.0.1:8707/api/demo/session \
-  -H 'Content-Type: application/json' \
-  -d '{}'
-```
 
 ### 创建 Board
 
@@ -113,8 +96,6 @@ curl -X POST http://127.0.0.1:8707/api/workbenches \
   -H 'Content-Type: application/json' \
   -d '{
     "title": "MR: add agent board",
-    "repository": "group/repo",
-    "mrUrl": "https://git.example.com/group/repo/-/merge_requests/1",
     "owner": "工作台负责人",
     "template": "mr-review"
   }'

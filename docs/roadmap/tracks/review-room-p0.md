@@ -75,6 +75,10 @@ P0 should prove:
   records the first real remote MCP Agent Board scenario with activated
   Reviewer and Developer Agents exchanging visible board messages while chat
   remained non-executable without tasks.
+- [done.md](../done.md#workbench-detail-collaboration-surface-and-audit-log-cleanup)
+  records the 2026-06-19 Workbench detail cleanup: dynamic Agent mentions,
+  compact composer send control, collapsed/paginated audit log, removed
+  duplicate decision panel, and cross-platform root `npm test`.
 - `python -m unittest discover experiments/review-room/service/tests` passed
   80 legacy Agent Board tests on 2026-06-14.
 

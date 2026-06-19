@@ -145,6 +145,94 @@ Notes:
 - Remote smoke data created for this verification was removed from the remote
   database.
 
+### Workbench human supervisor one-time invite URL
+
+Status: `Verified preview on 2026-06-19`
+
+Evidence:
+
+- [services/review-room-service/review_room_service.py](../../services/review-room-service/review_room_service.py)
+- [services/review-room-service/tests/test_review_room_service.py](../../services/review-room-service/tests/test_review_room_service.py)
+- [services/review-room-service/tests/test_review_room_p0.py](../../services/review-room-service/tests/test_review_room_p0.py)
+- `python -m py_compile services/review-room-service/review_room_service.py`
+- `python -m unittest discover -s services/review-room-service/tests -v`: 60
+  Python unittest tests passed.
+- `npm run test:openclaw-billing-guardian`: 16 Node tests passed.
+- Remote deployment to `lighthouse-review-room.service` on
+  `ubuntu@124.222.24.34`; `http://124.222.24.34/health` returned HTTP 200.
+- Remote HTML smoke showed `detailInviteSupervisor`,
+  `supervisorInviteModal`, and `/api/rooms/{roomId}/supervisor-invites`.
+- Remote API smoke created a temporary workbench, generated a supervisor URL,
+  consumed it once into an `rrs_` access token, read the workbench as a human
+  supervisor, rejected second consume with HTTP 403, rejected supervisor
+  archive with HTTP 403, and confirmed the public snapshot did not include
+  `ownerToken`.
+- The temporary remote smoke workbench was removed from the remote SQLite
+  database by exact room id.
+
+Notes:
+
+- Supervisor now means a human collaborator. It is invited through a named,
+  one-time authorized URL, not through MCP Agent role selection.
+- MCP Agent invites keep reviewer, developer, and general Agent roles.
+- Public room snapshots strip owner and connector bearer tokens before being
+  returned to browser or WebSocket clients.
+
+### Workbench detail collaboration surface and audit log cleanup
+
+Status: `Verified preview on 2026-06-19`
+
+Evidence:
+
+- [services/review-room-service/review_room_service.py](../../services/review-room-service/review_room_service.py)
+- [services/review-room-service/tests/test_review_room_service.py](../../services/review-room-service/tests/test_review_room_service.py)
+- [services/review-room-service/tests/test_review_room_p0.py](../../services/review-room-service/tests/test_review_room_p0.py)
+- [package.json](../../package.json)
+- [scripts/test-review-room.mjs](../../scripts/test-review-room.mjs)
+- `python -m py_compile services/review-room-service/review_room_service.py`
+- `python -m unittest discover -s services/review-room-service/tests -v`: 65
+  Python unittest tests passed.
+- `npm test`: OpenClaw Billing Guardian 16 Node tests passed; Agent Board
+  canonical service 65 Python unittest tests passed.
+- Remote deployment to `lighthouse-review-room.service` on
+  `ubuntu@124.222.24.34`; `http://127.0.0.1/health` on the host returned
+  `{"ok": true}` after restart.
+- Remote HTML/API smoke on `http://124.222.24.34`: page contained
+  `AUDIT_PAGE_SIZE = 20`, `composer-box`, and `supervisorTokens`; it did not
+  contain `????? Agent` or the removed `发现 / 负责人决策` panel.
+- Remote API smoke created a temporary workbench, connected Reviewer and
+  Developer Agents, created a finding, consumed a supervisor invite, confirmed
+  the supervisor could read without `ownerToken` or connector token leakage,
+  rejected supervisor message write with HTTP 403, accepted Developer response
+  and owner confirmation, and rejected Reviewer confirmation with HTTP 403.
+- Remote WebSocket smoke confirmed a Developer connector and owner token from
+  room A cannot mutate a finding from room B; both received
+  `finding must belong to the same room`.
+- Remote smoke data was removed from the remote SQLite database by exact room
+  ids after verification.
+
+Notes:
+
+- The message composer now renders `@` buttons from successfully connected
+  `room.connectors` instead of hard-coded Reviewer/Developer aliases; when no
+  Agent is connected, it renders no placeholder button.
+- The send action is a compact `发送` button positioned inside the lower-right
+  of the message input.
+- The separate right-side `发现 / 负责人决策` panel was removed from the detail
+  page. Decisions still remain board state and render with tasks/runs in the
+  inspector when present.
+- The Activity / Audit Log is collapsed by default, expands on demand, and
+  paginates newest-first at 20 events per page.
+- Supervisor sessions are read-only for board writes: REST message/finding/task
+  writes and WebSocket write events are rejected.
+- Finding mutation routes are role-gated: Developer responses require a
+  Developer connector, and owner confirmation or generic finding updates
+  require the owner token.
+- WebSocket finding response and confirmation events are scoped to the socket
+  room so a token from one room cannot mutate another room's finding.
+- Root `npm test` now invokes the canonical Agent Board Python tests through a
+  cross-platform Node wrapper instead of a POSIX-only `sh -c` command.
+
 ### Real remote MCP Agent Board inbox and messaging scenario
 
 Status: `Verified partial real-Agent scenario on 2026-06-16`

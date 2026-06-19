@@ -196,6 +196,206 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(deleted["status"], "deleted")
         self.assertIn("does not clean remote Agent machines", deleted["cleanupBoundary"])
 
+    async def test_supervisor_invite_consumes_once_and_reads_workbench_without_owner_rights(self):
+        _, workbench = await self.post_json("/api/workbenches", {"title": "MR: supervised"})
+        _, connector = await self.post_json(
+            "/api/rooms/{}/connectors".format(workbench["id"]),
+            {"role": "reviewer", "name": "Reviewer Agent"},
+            workbench["ownerToken"],
+        )
+
+        invite_response, invite = await self.post_json(
+            "/api/rooms/{}/supervisor-invites".format(workbench["id"]),
+            {"name": "Alice"},
+            workbench["ownerToken"],
+        )
+        consume_response, consumed = await self.post_json(
+            "/api/rooms/{}/supervisor-invites/consume".format(workbench["id"]),
+            {"token": invite["token"]},
+        )
+        supervisor_read = await self.client.get(
+            "/api/workbenches/{}".format(workbench["id"]),
+            headers={"Authorization": "Bearer {}".format(consumed["accessToken"])},
+        )
+        supervisor_detail = await supervisor_read.json()
+        second_consume_response, _ = await self.post_json(
+            "/api/rooms/{}/supervisor-invites/consume".format(workbench["id"]),
+            {"token": invite["token"]},
+        )
+        archive_response, _ = await self.post_json(
+            "/api/workbenches/{}/archive".format(workbench["id"]),
+            {},
+            consumed["accessToken"],
+        )
+
+        self.assertEqual(invite_response.status, 201)
+        self.assertIn("supervisorInvite=", invite["url"])
+        self.assertEqual(consume_response.status, 201)
+        self.assertTrue(consumed["accessToken"].startswith("rrs_"))
+        self.assertEqual(supervisor_read.status, 200)
+        self.assertIn({"type": "human", "name": "Alice", "role": "supervisor"}, supervisor_detail["participants"])
+        self.assertNotIn("ownerToken", supervisor_detail)
+        self.assertNotIn("connectorToken", supervisor_detail["connectors"][0])
+        self.assertNotIn("token", supervisor_detail["connectors"][0])
+        self.assertEqual(second_consume_response.status, 403)
+        self.assertEqual(archive_response.status, 403)
+        self.assertTrue(connector["connectorToken"].startswith("rrc_"))
+
+    async def test_supervisor_session_cannot_write_room_content(self):
+        _, workbench = await self.post_json("/api/workbenches", {"title": "MR: supervised read only"})
+        _, invite = await self.post_json(
+            "/api/rooms/{}/supervisor-invites".format(workbench["id"]),
+            {"name": "Read Only"},
+            workbench["ownerToken"],
+        )
+        _, consumed = await self.post_json(
+            "/api/rooms/{}/supervisor-invites/consume".format(workbench["id"]),
+            {"token": invite["token"]},
+        )
+        token = consumed["accessToken"]
+
+        message_response, _ = await self.post_json(
+            "/api/rooms/{}/messages".format(workbench["id"]),
+            {"body": "should not write"},
+            token,
+        )
+        finding_response, _ = await self.post_json(
+            "/api/rooms/{}/findings".format(workbench["id"]),
+            {"claim": "should not write"},
+            token,
+        )
+        task_response, _ = await self.post_json(
+            "/api/rooms/{}/tasks".format(workbench["id"]),
+            {"title": "should not write"},
+            token,
+        )
+        ws = await self.client.ws_connect("/ws/rooms/{}?token={}".format(workbench["id"], token))
+        await ws.receive_json()
+        await ws.receive_json()
+        await ws.send_json({"type": "message.create", "body": "should not write"})
+        ws_error = await ws.receive_json()
+        await ws.close()
+
+        self.assertEqual(message_response.status, 403)
+        self.assertEqual(finding_response.status, 403)
+        self.assertEqual(task_response.status, 403)
+        self.assertEqual(ws_error["type"], "error")
+        self.assertIn("read-only", ws_error["error"])
+
+    async def test_finding_mutation_routes_require_matching_role(self):
+        _, workbench = await self.post_json("/api/workbenches", {"title": "MR: guarded findings"})
+        _, reviewer = await self.post_json(
+            "/api/rooms/{}/connectors".format(workbench["id"]),
+            {"role": "reviewer", "name": "Reviewer Agent"},
+            workbench["ownerToken"],
+        )
+        _, developer = await self.post_json(
+            "/api/rooms/{}/connectors".format(workbench["id"]),
+            {"role": "developer", "name": "Developer Agent"},
+            workbench["ownerToken"],
+        )
+        _, invite = await self.post_json(
+            "/api/rooms/{}/supervisor-invites".format(workbench["id"]),
+            {"name": "Read Only"},
+            workbench["ownerToken"],
+        )
+        _, consumed = await self.post_json(
+            "/api/rooms/{}/supervisor-invites/consume".format(workbench["id"]),
+            {"token": invite["token"]},
+        )
+        _, finding = await self.post_json(
+            "/api/rooms/{}/findings".format(workbench["id"]),
+            {"claim": "review finding"},
+            reviewer["connectorToken"],
+        )
+
+        anonymous_patch, _ = await self.patch_json("/api/findings/{}".format(finding["id"]), {"status": "accepted"})
+        supervisor_patch, _ = await self.patch_json(
+            "/api/findings/{}".format(finding["id"]),
+            {"status": "accepted"},
+            consumed["accessToken"],
+        )
+        reviewer_confirm, _ = await self.post_json(
+            "/api/findings/{}/confirm".format(finding["id"]),
+            {"decision": "accepted"},
+            reviewer["connectorToken"],
+        )
+        supervisor_confirm, _ = await self.post_json(
+            "/api/findings/{}/confirm".format(finding["id"]),
+            {"decision": "accepted"},
+            consumed["accessToken"],
+        )
+        supervisor_response, _ = await self.post_json(
+            "/api/findings/{}/developer-response".format(finding["id"]),
+            {"body": "not allowed"},
+            consumed["accessToken"],
+        )
+        reviewer_response, _ = await self.post_json(
+            "/api/findings/{}/developer-response".format(finding["id"]),
+            {"body": "not allowed"},
+            reviewer["connectorToken"],
+        )
+        developer_response, _ = await self.post_json(
+            "/api/findings/{}/developer-response".format(finding["id"]),
+            {"body": "fix prepared"},
+            developer["connectorToken"],
+        )
+        owner_confirm, _ = await self.post_json(
+            "/api/findings/{}/confirm".format(finding["id"]),
+            {"decision": "accepted"},
+            workbench["ownerToken"],
+        )
+
+        self.assertEqual(anonymous_patch.status, 403)
+        self.assertEqual(supervisor_patch.status, 403)
+        self.assertEqual(reviewer_confirm.status, 403)
+        self.assertEqual(supervisor_confirm.status, 403)
+        self.assertEqual(supervisor_response.status, 403)
+        self.assertEqual(reviewer_response.status, 403)
+        self.assertEqual(developer_response.status, 201)
+        self.assertEqual(owner_confirm.status, 201)
+
+    async def test_websocket_finding_mutations_are_scoped_to_socket_room(self):
+        _, room_a = await self.post_json("/api/workbenches", {"title": "MR: room A"})
+        _, room_b = await self.post_json("/api/workbenches", {"title": "MR: room B"})
+        _, developer_a = await self.post_json(
+            "/api/rooms/{}/connectors".format(room_a["id"]),
+            {"role": "developer", "name": "Developer A"},
+            room_a["ownerToken"],
+        )
+        _, reviewer_b = await self.post_json(
+            "/api/rooms/{}/connectors".format(room_b["id"]),
+            {"role": "reviewer", "name": "Reviewer B"},
+            room_b["ownerToken"],
+        )
+        _, finding_b = await self.post_json(
+            "/api/rooms/{}/findings".format(room_b["id"]),
+            {"claim": "room B finding"},
+            reviewer_b["connectorToken"],
+        )
+
+        developer_ws = await self.client.ws_connect("/ws/rooms/{}?token={}".format(room_a["id"], developer_a["connectorToken"]))
+        await developer_ws.receive_json()
+        await developer_ws.receive_json()
+        await developer_ws.send_json({"type": "finding.respond", "findingId": finding_b["id"], "body": "wrong room"})
+        developer_error = await developer_ws.receive_json()
+        await developer_ws.close()
+
+        owner_ws = await self.client.ws_connect("/ws/rooms/{}?token={}".format(room_a["id"], room_a["ownerToken"]))
+        await owner_ws.receive_json()
+        await owner_ws.receive_json()
+        await owner_ws.send_json({"type": "finding.confirm", "findingId": finding_b["id"], "decision": "accepted"})
+        owner_error = await owner_ws.receive_json()
+        await owner_ws.close()
+
+        loaded_b = self.store.get_finding(finding_b["id"])
+
+        self.assertEqual(developer_error["type"], "error")
+        self.assertIn("same room", developer_error["error"])
+        self.assertEqual(owner_error["type"], "error")
+        self.assertIn("same room", owner_error["error"])
+        self.assertEqual(loaded_b["status"], "needs_developer_response")
+
     async def test_workbench_lifecycle_api_requires_owner_token_and_confirmation(self):
         _, workbench = await self.post_json("/api/workbenches", {"title": "MR: guarded"})
 
@@ -329,7 +529,8 @@ class CodexConnectorClientTest(unittest.TestCase):
         self.assertIn("工作台负责人", html)
         self.assertIn("评审智能体", html)
         self.assertIn("开发智能体", html)
-        self.assertIn("发现 / 负责人决策", html)
+        self.assertNotIn("发现 / 负责人决策", html)
+        self.assertNotIn("暂无发现 / 负责人决策", html)
 
     def test_parse_room_url_converts_http_to_websocket_path(self):
         ws_url = parse_room_url("http://127.0.0.1:8707", "room_123", "token_abc")

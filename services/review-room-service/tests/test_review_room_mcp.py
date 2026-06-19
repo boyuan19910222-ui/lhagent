@@ -5,6 +5,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -236,7 +237,7 @@ class ReviewRoomMcpStoreTest(unittest.TestCase):
         self.tmp.cleanup()
         self.tmp = tempfile.TemporaryDirectory()
         db_path = os.path.join(self.tmp.name, "test.sqlite3")
-        with sqlite3.connect(db_path) as conn:
+        with closing(sqlite3.connect(db_path)) as conn:
             conn.execute(
                 """
                 CREATE TABLE tasks (
@@ -255,6 +256,7 @@ class ReviewRoomMcpStoreTest(unittest.TestCase):
                 )
                 """
             )
+            conn.commit()
 
         self.store = ReviewRoomStore(db_path)
         room = self.store.create_room({"title": "MR"})

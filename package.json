@@ -9,6 +9,6 @@
     "verify:openclaw-billing": "node experiments/openclaw-billing-guardian/scripts/verify-openclaw-billing-message.mjs",
     "test": "npm run test:openclaw-billing-guardian && npm run test:review-room",
     "test:openclaw-billing-guardian": "node --test experiments/openclaw-billing-guardian/test/*.test.js",
-    "test:review-room": "sh -c 'PY=.venv/bin/python; [ -x \"$PY\" ] || PY=python3; \"$PY\" -m unittest discover -s services/review-room-service/tests -v'"
+    "test:review-room": "node scripts/test-review-room.mjs"
   }
 }

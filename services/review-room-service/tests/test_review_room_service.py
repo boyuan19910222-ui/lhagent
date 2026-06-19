@@ -6,6 +6,7 @@ import tempfile
 import unittest
 import urllib.error
 import urllib.request
+from contextlib import closing
 
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
@@ -129,18 +130,30 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertIn("工作台大厅", html)
         self.assertIn("MR 评审工作台", html)
         self.assertIn("终端作战台", html)
-        self.assertIn("流程轨道", html)
-        self.assertIn("接入", html)
-        self.assertIn("评审", html)
-        self.assertIn("修复", html)
-        self.assertIn("验证", html)
-        self.assertIn("决策", html)
+        self.assertNotIn("流程轨道", html)
+        self.assertNotIn("workflowStages", html)
+        self.assertNotIn("renderWorkflow(room)", html)
+        self.assertNotIn("负责人下一步", html)
+        self.assertNotIn("状态检查点", html)
+        self.assertNotIn("metric-grid", html)
         self.assertIn("活动 / 审计日志", html)
-        self.assertIn("创建任务", html)
+        self.assertIn("创建目标", html)
+        self.assertIn("暂无目标", html)
+        self.assertNotIn("创建任务", html)
+        self.assertNotIn("暂无任务", html)
         self.assertIn("邀请智能体", html)
+        self.assertIn("id=\"detailInviteSupervisor\"", html)
+        self.assertNotIn("createMcpInvite('supervisor')", html)
+        self.assertIn("监督者", html)
+        self.assertIn("创建时间", html)
+        self.assertIn("formatDateTime(room.createdAt)", html)
         self.assertIn("/api/workbenches", html)
+        self.assertIn("/api/rooms/{roomId}/supervisor-invites", html)
         self.assertIn("/mcp", html)
-        self.assertIn("复制 MCP 接入话术", html)
+        self.assertNotIn("复制 MCP 接入话术", html)
+        self.assertNotIn("data-mcp-role", html)
+        self.assertNotIn("roleStatus('reviewer')", html)
+        self.assertNotIn("roleStatus('developer')", html)
         self.assertIn("/api/rooms/{roomId}/mcp-invites", html)
         self.assertNotIn("注册本地智能体连接器", html)
         self.assertNotIn("注册远端智能体连接器", html)
@@ -151,20 +164,101 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertNotIn("local-agent", html)
         self.assertNotIn("remote-agent", html)
         self.assertNotIn("codex-sidecar", html)
-        self.assertIn("创建体验看板", html)
         self.assertIn("开发智能体回复", html)
         self.assertIn("人工确认并同步", html)
-        self.assertIn("/api/demo/session", html)
+        self.assertNotIn("创建体验看板", html)
+        self.assertNotIn("id=\"createDemo\"", html)
+        self.assertNotIn("id=\"roomRepo\"", html)
+        self.assertNotIn("id=\"roomMr\"", html)
+        self.assertNotIn("MR URL", html)
+        self.assertNotIn("/api/demo/session", html)
         self.assertNotIn("Terminal Operations Console", html)
         self.assertNotIn("Workbench Hall", html)
         self.assertNotIn("MR Review Workbench", html)
         self.assertNotIn("Launch MR Review Workbench", html)
         self.assertNotIn("Activity / Audit Log", html)
+        self.assertNotIn("发现 / 负责人决策", html)
+        self.assertNotIn("暂无发现 / 负责人决策", html)
         self.assertNotIn("Create Task", html)
         self.assertNotIn("Invite Agent", html)
+
+    def test_home_page_invite_modal_collects_agent_identity(self):
+        html = index_html()
+
+        self.assertIn("id=\"inviteModal\"", html)
+        self.assertIn("id=\"inviteForm\"", html)
+        self.assertIn("id=\"inviteAgentName\"", html)
+        self.assertIn("id=\"inviteAgentRole\"", html)
+        self.assertIn("<option value=\"reviewer\" selected>", html)
+        self.assertNotIn("<option value=\"supervisor\">", html)
+        self.assertIn("<option value=\"developer\">", html)
+        self.assertIn("<option value=\"agent\">", html)
+        self.assertIn("function defaultAgentName", html)
+        self.assertIn("Agent-${randomAgentSuffix()}", html)
+        self.assertIn("function openInviteModal", html)
+        self.assertIn("function submitInviteForm", html)
+        self.assertIn("JSON.stringify({ agentName, agentRole: role", html)
+        self.assertIn("@${agentName}", html)
+        self.assertIn("inviteCopyText", html)
+        self.assertIn("复制邀请话术", html)
+
+    def test_home_page_supervisor_invite_modal_creates_one_time_url(self):
+        html = index_html()
+
+        self.assertIn("id=\"supervisorInviteModal\"", html)
+        self.assertIn("id=\"supervisorInviteForm\"", html)
+        self.assertIn("id=\"supervisorInviteName\"", html)
+        self.assertIn("id=\"supervisorInviteUrl\"", html)
+        self.assertIn("function defaultSupervisorName", html)
+        self.assertIn("function openSupervisorInviteModal", html)
+        self.assertIn("function submitSupervisorInviteForm", html)
+        self.assertIn("function consumeSupervisorInviteFromUrl", html)
+        self.assertIn("/api/rooms/${encodeURIComponent(state.room.id)}/supervisor-invites", html)
+        self.assertIn("/supervisor-invites/consume", html)
+        self.assertIn("supervisorInvite", html)
+        self.assertIn("accessToken", html)
+        self.assertIn("supervisorTokens", html)
+        self.assertIn("function accessTokenForRoom", html)
+        self.assertIn("function canManageCurrentRoom", html)
+        self.assertIn("saveSupervisorTokens()", html)
+        self.assertIn("state.supervisorTokens[roomId] = result.accessToken", html)
+        self.assertIn("detailCreateTask.hidden", html)
+        self.assertNotIn("state.tokens[roomId] = result.accessToken", html)
+
+    def test_home_page_renders_dynamic_member_status_from_room_state(self):
+        html = index_html()
+
+        self.assertIn("pendingInvites", html)
+        self.assertIn("function renderMembers(room", html)
+        self.assertIn("function memberRows(room", html)
+        self.assertIn("function memberWorkStatus", html)
+        self.assertIn("function shortConnectorId", html)
+        self.assertIn("member-status-list", html)
+        self.assertIn("connector.id", html)
+        self.assertIn("room.participants", html)
+        self.assertIn("room.connectors", html)
+        self.assertIn("room.agentRuns", html)
+        self.assertIn("待接入", html)
+        self.assertIn("暂无已邀请或已接入的 Agent", html)
         self.assertNotIn("Finding / Owner Decision", html)
         self.assertNotIn("Agent Operations", html)
         self.assertNotIn("Inspector / Action Rail", html)
+
+    def test_home_page_collapses_and_paginates_audit_log(self):
+        html = index_html()
+
+        self.assertIn("const AUDIT_PAGE_SIZE = 20", html)
+        self.assertIn("audit: { expanded: false, page: 0 }", html)
+        self.assertIn("function auditPageEvents(events)", html)
+        self.assertIn("function renderAuditPanel(events)", html)
+        self.assertIn('data-audit-toggle', html)
+        self.assertIn('data-audit-page="prev"', html)
+        self.assertIn('data-audit-page="next"', html)
+        self.assertIn("renderAuditControls()", html)
+        self.assertIn("state.audit.expanded", html)
+        self.assertIn("state.audit.page", html)
+        self.assertIn("AUDIT_PAGE_SIZE", html)
+        self.assertNotIn("events.slice(-18)", html)
 
     def test_workbench_summary_has_counts_without_owner_token(self):
         room = self.store.create_room(
@@ -190,12 +284,31 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertEqual(summary["activeRunCount"], 0)
         self.assertEqual(summary["connectorStatus"]["total"], 1)
 
+    def test_workbenches_are_sorted_by_created_at_desc(self):
+        older = self.store.create_workbench({"title": "MR: older"})
+        newer = self.store.create_workbench({"title": "MR: newer"})
+        with closing(sqlite3.connect(self.store.db_path)) as conn:
+            conn.execute(
+                "UPDATE rooms SET created_at = ?, updated_at = ? WHERE id = ?",
+                (1000, 9000, older["id"]),
+            )
+            conn.execute(
+                "UPDATE rooms SET created_at = ?, updated_at = ? WHERE id = ?",
+                (2000, 2000, newer["id"]),
+            )
+            conn.commit()
+
+        summaries = self.store.list_workbenches()
+
+        self.assertEqual([summary["title"] for summary in summaries[:2]], ["MR: newer", "MR: older"])
+        self.assertEqual(summaries[0]["createdAt"], 2000)
+
     def test_init_schema_migrates_legacy_agent_runs_without_agent_name(self):
         room = self.store.create_room({"title": "MR: legacy runs"})
         connector = self.store.register_connector(room["id"], {"role": "reviewer", "name": "Reviewer Agent"})
         task = self.store.create_task(room["id"], {"title": "legacy task", "assignedTo": "Reviewer Agent"})
         timestamp = 1700000000000
-        with sqlite3.connect(self.store.db_path) as conn:
+        with closing(sqlite3.connect(self.store.db_path)) as conn:
             conn.execute("DROP TABLE agent_runs")
             conn.execute(
                 """
@@ -252,6 +365,7 @@ class ReviewRoomStoreTest(unittest.TestCase):
                     timestamp,
                 ),
             )
+            conn.commit()
 
         migrated = ReviewRoomStore(self.store.db_path)
         loaded = migrated.get_room(room["id"])
@@ -264,7 +378,7 @@ class ReviewRoomStoreTest(unittest.TestCase):
         room = self.store.create_room({"title": "MR: legacy objects"})
         connector = self.store.register_connector(room["id"], {"role": "reviewer", "name": "Reviewer Agent"})
         timestamp = 1700000000000
-        with sqlite3.connect(self.store.db_path) as conn:
+        with closing(sqlite3.connect(self.store.db_path)) as conn:
             conn.execute("DROP TABLE decisions")
             conn.execute(
                 """
@@ -404,6 +518,7 @@ class ReviewRoomStoreTest(unittest.TestCase):
                     timestamp,
                 ),
             )
+            conn.commit()
 
         migrated = ReviewRoomStore(self.store.db_path)
         loaded = migrated.get_room(room["id"])
@@ -458,6 +573,27 @@ class ReviewRoomStoreTest(unittest.TestCase):
         with self.assertRaises(PermissionError):
             self.store.delete_workbench(room["id"], {"confirm": True}, "wrong-token")
 
+    def test_supervisor_invite_is_one_time_and_creates_read_only_human_session(self):
+        room = self.store.create_workbench({"title": "MR: supervised"})
+
+        invite = self.store.create_supervisor_invite(room["id"], {"name": "Alice"})
+        consumed = self.store.consume_supervisor_invite(invite["token"], {"roomId": room["id"]})
+        identity = self.store.authenticate_room_token(room["id"], consumed["accessToken"])
+        loaded = self.store.get_room(room["id"])
+
+        self.assertEqual(invite["name"], "Alice")
+        self.assertEqual(invite["role"], "supervisor")
+        self.assertTrue(invite["token"].startswith("sup_"))
+        self.assertTrue(consumed["accessToken"].startswith("rrs_"))
+        self.assertEqual(identity["type"], "supervisor")
+        self.assertEqual(identity["name"], "Alice")
+        self.assertEqual(identity["role"], "supervisor")
+        self.assertIn({"type": "human", "name": "Alice", "role": "supervisor"}, loaded["participants"])
+        with self.assertRaises(PermissionError):
+            self.store.consume_supervisor_invite(invite["token"], {"roomId": room["id"]})
+        with self.assertRaises(PermissionError):
+            self.store.update_workbench(room["id"], {"title": "bad"}, consumed["accessToken"])
+
     def test_mcp_invite_copy_has_http_fallback(self):
         html = index_html()
 
@@ -474,10 +610,21 @@ class ReviewRoomStoreTest(unittest.TestCase):
     def test_home_page_exposes_agent_mention_controls(self):
         html = index_html()
 
-        self.assertIn('data-mention="评审智能体"', html)
-        self.assertIn('data-mention="开发智能体"', html)
+        self.assertIn("function mentionableAgents(room)", html)
+        self.assertIn("function renderMentionControls(room)", html)
+        self.assertIn("successfulAgentStatuses", html)
+        self.assertIn('data-mention="${esc(name)}"', html)
+        self.assertIn("function renderMentionBar(room)", html)
+        self.assertIn("renderMentionBar(room)", html)
+        self.assertIn("if(!names.length) return ''", html)
+        self.assertNotIn("????? Agent", html)
         self.assertIn("extractMentionNames", html)
         self.assertIn("sendTopicMessage", html)
+        self.assertIn("composer-box", html)
+        self.assertIn('<div class="composer-box"><textarea id="topicInput"', html)
+        self.assertNotIn("composer-row", html)
+        self.assertIn('id="sendTopic">发送</button>', html)
+        self.assertNotIn('id="sendTopic">发送话题</button>', html)
 
     def test_registers_local_and_remote_agent_connectors_for_room(self):
         room = self.store.create_room(
@@ -585,9 +732,122 @@ class ReviewRoomHttpTest(unittest.TestCase):
         with urllib.request.urlopen(request, timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))
 
-    def get_json(self, path):
-        with urllib.request.urlopen(self.base_url + path, timeout=5) as response:
+    def get_json(self, path, headers=None):
+        request = urllib.request.Request(self.base_url + path, headers=headers or {}, method="GET")
+        with urllib.request.urlopen(request, timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))
+
+    def patch_json(self, path, payload, headers=None):
+        request = urllib.request.Request(
+            self.base_url + path,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json", **(headers or {})},
+            method="PATCH",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def test_http_supervisor_invite_url_is_one_time_and_read_only(self):
+        room = self.post_json("/api/workbenches", {"title": "MR: supervised"})
+        owner_header = {"Authorization": "Bearer {}".format(room["ownerToken"])}
+
+        invite = self.post_json(
+            "/api/rooms/{}/supervisor-invites".format(room["id"]),
+            {"name": "Alice"},
+            owner_header,
+        )
+        consumed = self.post_json(
+            "/api/rooms/{}/supervisor-invites/consume".format(room["id"]),
+            {"token": invite["token"]},
+        )
+        loaded = self.get_json(
+            "/api/workbenches/{}".format(room["id"]),
+            {"Authorization": "Bearer {}".format(consumed["accessToken"])},
+        )
+
+        self.assertIn("supervisorInvite=", invite["url"])
+        self.assertEqual(invite["name"], "Alice")
+        self.assertEqual(consumed["role"], "supervisor")
+        self.assertIn({"type": "human", "name": "Alice", "role": "supervisor"}, loaded["participants"])
+        self.assertNotIn("ownerToken", loaded)
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            self.post_json(
+                "/api/rooms/{}/supervisor-invites/consume".format(room["id"]),
+                {"token": invite["token"]},
+            )
+        self.assertEqual(raised.exception.code, 403)
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            self.post_json(
+                "/api/workbenches/{}/archive".format(room["id"]),
+                {},
+                {"Authorization": "Bearer {}".format(consumed["accessToken"])},
+            )
+        self.assertEqual(raised.exception.code, 403)
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            self.post_json(
+                "/api/rooms/{}/messages".format(room["id"]),
+                {"body": "not allowed"},
+                {"Authorization": "Bearer {}".format(consumed["accessToken"])},
+            )
+        self.assertEqual(raised.exception.code, 403)
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            self.post_json(
+                "/api/rooms/{}/findings".format(room["id"]),
+                {"claim": "not allowed"},
+                {"Authorization": "Bearer {}".format(consumed["accessToken"])},
+            )
+        self.assertEqual(raised.exception.code, 403)
+
+    def test_http_finding_mutations_require_matching_role(self):
+        room = self.post_json("/api/workbenches", {"title": "MR: finding auth"})
+        owner_header = {"Authorization": "Bearer {}".format(room["ownerToken"])}
+        reviewer = self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"name": "Reviewer Agent", "role": "reviewer"},
+            owner_header,
+        )
+        developer = self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"name": "Developer Agent", "role": "developer"},
+            owner_header,
+        )
+        finding = self.post_json(
+            "/api/rooms/{}/findings".format(room["id"]),
+            {"claim": "auth finding"},
+            {"Authorization": "Bearer {}".format(reviewer["connectorToken"])},
+        )
+
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            self.patch_json("/api/findings/{}".format(finding["id"]), {"status": "accepted"})
+        self.assertEqual(raised.exception.code, 403)
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            self.post_json(
+                "/api/findings/{}/confirm".format(finding["id"]),
+                {"decision": "accepted"},
+                {"Authorization": "Bearer {}".format(reviewer["connectorToken"])},
+            )
+        self.assertEqual(raised.exception.code, 403)
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            self.post_json(
+                "/api/findings/{}/developer-response".format(finding["id"]),
+                {"body": "not allowed"},
+                {"Authorization": "Bearer {}".format(reviewer["connectorToken"])},
+            )
+        self.assertEqual(raised.exception.code, 403)
+
+        responded = self.post_json(
+            "/api/findings/{}/developer-response".format(finding["id"]),
+            {"body": "fix prepared"},
+            {"Authorization": "Bearer {}".format(developer["connectorToken"])},
+        )
+        confirmed = self.post_json(
+            "/api/findings/{}/confirm".format(finding["id"]),
+            {"decision": "accepted"},
+            owner_header,
+        )
+
+        self.assertEqual(responded["status"], "developer_responded")
+        self.assertEqual(confirmed["status"], "accepted")
 
     def test_http_registers_connector_and_accepts_tokened_events(self):
         room = self.post_json(
@@ -598,9 +858,16 @@ class ReviewRoomHttpTest(unittest.TestCase):
                 "mrUrl": "https://git.example.com/a/b/-/merge_requests/10",
             },
         )
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            self.post_json(
+                "/api/rooms/{}/connectors".format(room["id"]),
+                {"name": "No Auth Agent", "kind": "remote-agent", "agentRole": "reviewer"},
+            )
+        self.assertEqual(raised.exception.code, 403)
         connector = self.post_json(
             "/api/rooms/{}/connectors".format(room["id"]),
             {"name": "远端 Reviewer Agent", "kind": "remote-agent", "agentRole": "reviewer"},
+            {"Authorization": "Bearer {}".format(room["ownerToken"])},
         )
         event = self.post_json(
             "/api/connectors/{}/events".format(connector["id"]),
@@ -622,7 +889,11 @@ class ReviewRoomHttpTest(unittest.TestCase):
 
     def test_http_rejects_connector_event_without_valid_token(self):
         room = self.post_json("/api/rooms", {"title": "MR"})
-        connector = self.post_json("/api/rooms/{}/connectors".format(room["id"]), {"name": "本地 Codex"})
+        connector = self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"name": "本地 Codex"},
+            {"Authorization": "Bearer {}".format(room["ownerToken"])},
+        )
 
         with self.assertRaises(urllib.error.HTTPError) as raised:
             self.post_json(
