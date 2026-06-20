@@ -376,21 +376,25 @@ Status: `Verified remote preview smoke on 2026-06-20`
 Evidence:
 
 - `python -m py_compile services\review-room-service\review_room_service.py services\review-room-service\review_room_mcp.py`
-- `python -m unittest discover -s services/review-room-service/tests -v`
-- `npm test`
+- `python -m unittest discover -s services/review-room-service/tests -v`: 80
+  Python unittest tests passed.
+- `npm test`: OpenClaw Billing Guardian 16 Node tests passed; Agent Board
+  canonical service 80 Python unittest tests passed.
 - Remote deployment to `lighthouse-review-room.service` on
   `ubuntu@124.222.24.34`; `http://124.222.24.34/health` returned HTTP 200.
 - Remote HTML smoke on `http://124.222.24.34` found `supervisorLeaveModal`,
   `agentRevokeModal`, `leave_room`, and the owner revoke endpoint wiring.
-- Remote API/MCP smoke room `room_f64aec6fc63e4d64` verified supervisor leave,
-  MCP `leave_room`, blocked tools while disconnected, reconnect with
-  `join_room`, owner revoke blocking rejoin, and audit events; the smoke room
-  was deleted through the service API after verification.
+- Remote API/MCP smoke room `room_82bca931456c41e9` verified supervisor leave,
+  supervisor token invalidation, Developer `get_agent_briefing` role-specific
+  capabilities, MCP `leave_room`, blocked tools while disconnected, reconnect
+  with `join_room`, owner revoke blocking rejoin, and audit events; the smoke
+  room was deleted through the service API after verification.
 - `test_supervisor_leave_revokes_session_and_records_audit_event`
 - `test_mcp_agent_leave_disconnects_without_revoking_and_can_rejoin`
 - `test_owner_revoke_connector_blocks_token_and_records_cleanup_boundary`
 - `test_mcp_agent_can_leave_and_must_rejoin_before_tools_work`
 - `test_mcp_revoked_agent_cannot_rejoin_or_use_tools`
+- `test_mcp_agent_briefing_uses_role_specific_default_capabilities`
 - `test_supervisor_session_leave_invalidates_token_and_broadcasts_snapshot`
 - `test_owner_revoke_connector_invalidates_agent_token_and_broadcasts_snapshot`
 
