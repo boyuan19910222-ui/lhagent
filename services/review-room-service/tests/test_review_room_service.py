@@ -182,6 +182,75 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertNotIn("Create Task", html)
         self.assertNotIn("Invite Agent", html)
 
+    def test_home_page_exposes_workbench_archive_lifecycle_controls(self):
+        html = index_html()
+
+        self.assertIn("\u5df2\u5f52\u6863\u5de5\u4f5c\u53f0", html)
+        self.assertIn("\u6062\u590d", html)
+        self.assertIn("\u5f7b\u5e95\u5220\u9664", html)
+        self.assertIn("id=\"showArchivedRooms\"", html)
+        self.assertIn("id=\"archiveModeLabel\"", html)
+        self.assertIn("id=\"archivedRoomCount\"", html)
+        self.assertIn("function activeRooms()", html)
+        self.assertIn("function archivedRooms()", html)
+        self.assertIn("function visibleRooms()", html)
+        self.assertIn("function showArchivedRooms()", html)
+        self.assertIn("function archiveCurrentRoom()", html)
+        self.assertIn("function restoreCurrentRoom()", html)
+        self.assertIn("function deleteCurrentRoom()", html)
+        self.assertIn("data-room-action=\"archive\"", html)
+        self.assertIn("data-room-action=\"restore\"", html)
+        self.assertIn("data-room-action=\"delete\"", html)
+        self.assertIn("function archiveRoomFromHall(roomId)", html)
+        self.assertIn("function restoreRoomFromHall(roomId)", html)
+        self.assertIn("function deleteRoomFromHall(roomId)", html)
+        self.assertIn("function bindRoomLifecycleControls()", html)
+        self.assertIn("event.target.closest('[data-room-action]')", html)
+        self.assertIn("/api/workbenches/${encodeURIComponent(roomId)}/archive", html)
+        self.assertIn("/api/workbenches/${encodeURIComponent(roomId)}/restore", html)
+        self.assertIn("method:'DELETE'", html)
+        self.assertIn("delete state.tokens[roomId]", html)
+        self.assertIn("delete state.supervisorTokens[roomId]", html)
+        self.assertIn("grid-template-columns:minmax(160px,1.2fr)", html)
+        self.assertIn("minmax(86px,.55fr)", html)
+
+    def test_home_page_exposes_lightweight_permission_cues(self):
+        html = index_html()
+
+        self.assertIn("function isSupervisorCurrentRoom()", html)
+        self.assertIn("function canPostMessagesCurrentRoom()", html)
+        self.assertIn("function commandPermissionReason", html)
+        self.assertIn("function applyCommandPermission", html)
+        self.assertIn("function memberCapabilityBadges(member)", html)
+        self.assertIn("function renderCapabilityBadges(member)", html)
+        self.assertIn("permission-locked", html)
+        self.assertIn("capability-badges", html)
+        self.assertIn("data-capability", html)
+        self.assertIn("supervisor_message", html)
+        self.assertIn("message.create", html)
+
+    def test_home_page_exposes_supervisor_leave_and_agent_revoke_controls(self):
+        html = index_html()
+
+        self.assertIn("id=\"detailLeaveSupervisor\"", html)
+        self.assertIn("id=\"supervisorLeaveModal\"", html)
+        self.assertIn("退出监督者会话", html)
+        self.assertIn("退出后，本设备将不再访问此看板。看板内容、任务和 Agent 运行不会受到影响。", html)
+        self.assertIn("function openSupervisorLeaveModal()", html)
+        self.assertIn("function leaveSupervisorSession()", html)
+        self.assertIn("/api/rooms/${encodeURIComponent(roomId)}/supervisor-session/leave", html)
+        self.assertIn("delete state.supervisorTokens[roomId]", html)
+        self.assertIn("id=\"agentRevokeModal\"", html)
+        self.assertIn("撤销 Agent 访问", html)
+        self.assertIn("不会清理远端机器上的 MCP 配置、日志、shell history、缓存或工作区文件", html)
+        self.assertIn("function openAgentRevokeModal", html)
+        self.assertIn("function revokeAgentAccess()", html)
+        self.assertIn("data-revoke-connector", html)
+        self.assertIn("/connectors/${encodeURIComponent(state.pendingRevokeConnector.id)}/revoke", html)
+        self.assertIn("leave_room", html)
+        self.assertIn("停止 wait_room_events", html)
+        self.assertIn("successfulAgentStatuses = new Set(['connected', 'mcp_ready', 'mcp_streaming'])", html)
+
     def test_home_page_invite_modal_collects_agent_identity(self):
         html = index_html()
 
@@ -198,7 +267,8 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertIn("function openInviteModal", html)
         self.assertIn("function submitInviteForm", html)
         self.assertIn("JSON.stringify({ agentName, agentRole: role", html)
-        self.assertIn("@${agentName}", html)
+        self.assertIn("get_agent_briefing", html)
+        self.assertIn("roomId=${state.room.id}", html)
         self.assertIn("inviteCopyText", html)
         self.assertIn("复制邀请话术", html)
 
@@ -594,6 +664,85 @@ class ReviewRoomStoreTest(unittest.TestCase):
         with self.assertRaises(PermissionError):
             self.store.update_workbench(room["id"], {"title": "bad"}, consumed["accessToken"])
 
+    def test_supervisor_leave_revokes_session_and_records_audit_event(self):
+        room = self.store.create_workbench({"title": "MR: supervised leave"})
+        invite = self.store.create_supervisor_invite(room["id"], {"name": "Alice"})
+        consumed = self.store.consume_supervisor_invite(invite["token"], {"roomId": room["id"]})
+
+        left = self.store.leave_supervisor_session(
+            room["id"],
+            consumed["accessToken"],
+            {"reason": "done observing"},
+        )
+        loaded = self.store.get_room(room["id"])
+        leave_events = [event for event in loaded["events"] if event["type"] == "supervisor.left"]
+
+        self.assertEqual(left["status"], "left")
+        self.assertEqual(left["name"], "Alice")
+        self.assertNotIn({"type": "human", "name": "Alice", "role": "supervisor"}, loaded["participants"])
+        self.assertEqual(len(leave_events), 1)
+        self.assertEqual(leave_events[0]["actorType"], "human")
+        self.assertEqual(leave_events[0]["actorName"], "Alice")
+        self.assertEqual(leave_events[0]["payload"]["reason"], "done observing")
+        self.assertEqual(leave_events[0]["payload"]["sessionId"], invite["id"])
+        self.assertIn("does not clean remote Agent machines", leave_events[0]["payload"]["cleanupBoundary"])
+        with self.assertRaises(PermissionError):
+            self.store.authenticate_room_token(room["id"], consumed["accessToken"])
+
+    def test_mcp_agent_leave_disconnects_without_revoking_and_can_rejoin(self):
+        room = self.store.create_workbench({"title": "MR: agent leave"})
+        invite = self.store.create_mcp_invite(room["id"], {"agentName": "Reviewer Agent", "agentRole": "reviewer"})
+        session = self.store.join_mcp_room(invite["token"], {"roomId": room["id"]})
+        task = self.store.create_task(room["id"], {"title": "Review auth", "assignedTo": "Reviewer Agent"})
+        self.store.start_run(task["id"], {"agentName": "Reviewer Agent", "connectorId": session["connectorId"]})
+
+        left = self.store.leave_connector(
+            session["connectorId"],
+            invite["token"],
+            {"reason": "agent completed observation"},
+        )
+        loaded_after_leave = self.store.get_room(room["id"])
+        leave_events = [event for event in loaded_after_leave["events"] if event["type"] == "mcp.agent_left"]
+        rejoined = self.store.join_mcp_room(invite["token"], {"roomId": room["id"]})
+        loaded_after_rejoin = self.store.get_room(room["id"])
+
+        self.assertEqual(left["status"], "disconnected")
+        self.assertEqual(loaded_after_leave["connectors"][0]["status"], "disconnected")
+        self.assertEqual(leave_events[0]["payload"]["connectorId"], session["connectorId"])
+        self.assertEqual(leave_events[0]["payload"]["activeTaskCount"], 1)
+        self.assertEqual(leave_events[0]["payload"]["activeRunCount"], 1)
+        self.assertIn("does not clean remote Agent machines", leave_events[0]["payload"]["cleanupBoundary"])
+        self.assertEqual(rejoined["connectorId"], session["connectorId"])
+        self.assertEqual(loaded_after_rejoin["connectors"][0]["status"], "connected")
+
+    def test_owner_revoke_connector_blocks_token_and_records_cleanup_boundary(self):
+        room = self.store.create_workbench({"title": "MR: revoke agent"})
+        invite = self.store.create_mcp_invite(room["id"], {"agentName": "Reviewer Agent", "agentRole": "reviewer"})
+        session = self.store.join_mcp_room(invite["token"], {"roomId": room["id"]})
+        task = self.store.create_task(room["id"], {"title": "Review auth", "assignedTo": "Reviewer Agent"})
+        self.store.start_run(task["id"], {"agentName": "Reviewer Agent", "connectorId": session["connectorId"]})
+
+        revoked = self.store.revoke_connector(
+            room["id"],
+            session["connectorId"],
+            room["ownerToken"],
+            {"reason": "owner removed agent"},
+        )
+        loaded = self.store.get_room(room["id"])
+        revoke_events = [event for event in loaded["events"] if event["type"] == "mcp.agent_revoked"]
+
+        self.assertEqual(revoked["status"], "revoked")
+        self.assertEqual(loaded["connectors"][0]["status"], "revoked")
+        self.assertEqual(revoke_events[0]["actorType"], "human")
+        self.assertEqual(revoke_events[0]["payload"]["connectorId"], session["connectorId"])
+        self.assertEqual(revoke_events[0]["payload"]["activeTaskCount"], 1)
+        self.assertEqual(revoke_events[0]["payload"]["activeRunCount"], 1)
+        self.assertIn("does not clean remote Agent machines", revoke_events[0]["payload"]["cleanupBoundary"])
+        with self.assertRaises(PermissionError):
+            self.store.join_mcp_room(invite["token"], {"roomId": room["id"]})
+        with self.assertRaises(PermissionError):
+            self.store.authenticate_room_token(room["id"], invite["token"])
+
     def test_mcp_invite_copy_has_http_fallback(self):
         html = index_html()
 
@@ -747,9 +896,14 @@ class ReviewRoomHttpTest(unittest.TestCase):
         with urllib.request.urlopen(request, timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))
 
-    def test_http_supervisor_invite_url_is_one_time_and_read_only(self):
+    def test_http_supervisor_invite_url_is_one_time_and_message_only(self):
         room = self.post_json("/api/workbenches", {"title": "MR: supervised"})
         owner_header = {"Authorization": "Bearer {}".format(room["ownerToken"])}
+        self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"name": "Reviewer Agent", "role": "reviewer"},
+            owner_header,
+        )
 
         invite = self.post_json(
             "/api/rooms/{}/supervisor-invites".format(room["id"]),
@@ -764,12 +918,20 @@ class ReviewRoomHttpTest(unittest.TestCase):
             "/api/workbenches/{}".format(room["id"]),
             {"Authorization": "Bearer {}".format(consumed["accessToken"])},
         )
+        message = self.post_json(
+            "/api/rooms/{}/messages".format(room["id"]),
+            {"body": "@Reviewer Agent please review this context.", "payload": {"mentions": ["Reviewer Agent"]}},
+            {"Authorization": "Bearer {}".format(consumed["accessToken"])},
+        )
 
         self.assertIn("supervisorInvite=", invite["url"])
         self.assertEqual(invite["name"], "Alice")
         self.assertEqual(consumed["role"], "supervisor")
         self.assertIn({"type": "human", "name": "Alice", "role": "supervisor"}, loaded["participants"])
         self.assertNotIn("ownerToken", loaded)
+        self.assertEqual(message["senderType"], "human")
+        self.assertEqual(message["senderName"], "Alice")
+        self.assertEqual(message["kind"], "supervisor_message")
         with self.assertRaises(urllib.error.HTTPError) as raised:
             self.post_json(
                 "/api/rooms/{}/supervisor-invites/consume".format(room["id"]),
@@ -785,8 +947,8 @@ class ReviewRoomHttpTest(unittest.TestCase):
         self.assertEqual(raised.exception.code, 403)
         with self.assertRaises(urllib.error.HTTPError) as raised:
             self.post_json(
-                "/api/rooms/{}/messages".format(room["id"]),
-                {"body": "not allowed"},
+                "/api/rooms/{}/supervisor-invites".format(room["id"]),
+                {"name": "Bob"},
                 {"Authorization": "Bearer {}".format(consumed["accessToken"])},
             )
         self.assertEqual(raised.exception.code, 403)
@@ -795,6 +957,70 @@ class ReviewRoomHttpTest(unittest.TestCase):
                 "/api/rooms/{}/findings".format(room["id"]),
                 {"claim": "not allowed"},
                 {"Authorization": "Bearer {}".format(consumed["accessToken"])},
+            )
+        self.assertEqual(raised.exception.code, 403)
+
+    def test_http_supervisor_can_leave_and_token_stops_working(self):
+        room = self.post_json("/api/workbenches", {"title": "MR: supervisor leave"})
+        owner_header = {"Authorization": "Bearer {}".format(room["ownerToken"])}
+        invite = self.post_json(
+            "/api/rooms/{}/supervisor-invites".format(room["id"]),
+            {"name": "Alice"},
+            owner_header,
+        )
+        consumed = self.post_json(
+            "/api/rooms/{}/supervisor-invites/consume".format(room["id"]),
+            {"token": invite["token"]},
+        )
+
+        left = self.post_json(
+            "/api/rooms/{}/supervisor-session/leave".format(room["id"]),
+            {"reason": "done observing"},
+            {"Authorization": "Bearer {}".format(consumed["accessToken"])},
+        )
+        owner_view = self.get_json("/api/workbenches/{}".format(room["id"]), owner_header)
+
+        self.assertEqual(left["status"], "left")
+        self.assertNotIn({"type": "human", "name": "Alice", "role": "supervisor"}, owner_view["participants"])
+        self.assertIn("supervisor.left", [event["type"] for event in owner_view["events"]])
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            self.get_json(
+                "/api/workbenches/{}".format(room["id"]),
+                {"Authorization": "Bearer {}".format(consumed["accessToken"])},
+            )
+        self.assertEqual(raised.exception.code, 403)
+
+    def test_http_owner_can_revoke_connector_access(self):
+        room = self.post_json("/api/workbenches", {"title": "MR: revoke connector"})
+        owner_header = {"Authorization": "Bearer {}".format(room["ownerToken"])}
+        connector = self.post_json(
+            "/api/rooms/{}/connectors".format(room["id"]),
+            {"name": "Reviewer Agent", "role": "reviewer"},
+            owner_header,
+        )
+
+        revoked = self.post_json(
+            "/api/rooms/{}/connectors/{}/revoke".format(room["id"], connector["id"]),
+            {"reason": "owner removed agent"},
+            owner_header,
+        )
+        owner_view = self.get_json("/api/workbenches/{}".format(room["id"]), owner_header)
+
+        self.assertEqual(revoked["status"], "revoked")
+        self.assertIn("does not clean remote Agent machines", revoked["cleanupBoundary"])
+        self.assertEqual(owner_view["connectors"][0]["status"], "revoked")
+        self.assertIn("mcp.agent_revoked", [event["type"] for event in owner_view["events"]])
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            self.get_json(
+                "/api/workbenches/{}".format(room["id"]),
+                {"Authorization": "Bearer {}".format(connector["connectorToken"])},
+            )
+        self.assertEqual(raised.exception.code, 403)
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            self.post_json(
+                "/api/rooms/{}/connectors/{}/revoke".format(room["id"], connector["id"]),
+                {"reason": "agent cannot revoke itself"},
+                {"Authorization": "Bearer {}".format(connector["connectorToken"])},
             )
         self.assertEqual(raised.exception.code, 403)
 

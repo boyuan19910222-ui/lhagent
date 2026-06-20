@@ -342,7 +342,11 @@ class ReviewRoomMcpAioHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("start_run", tool_names)
         self.assertIn("complete_task", tool_names)
         self.assertIn("request_owner_confirmation", tool_names)
+        self.assertIn("get_agent_briefing", tool_names)
+        self.assertIn("leave_room", tool_names)
         self.assertIn("review_room.list_inbox", tool_names)
+        self.assertIn("review_room.get_agent_briefing", tool_names)
+        self.assertIn("review_room.leave_room", tool_names)
         self.assertIn("post_finding", tool_names)
         self.assertIn("review-room://current/snapshot", resource_uris)
         self.assertIn("review-room-onboarding", prompt_names)
@@ -352,6 +356,106 @@ class ReviewRoomMcpAioHttpTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(tools["error"]["code"], -32001)
         self.assertIn("missing bearer token", tools["error"]["message"])
+
+    async def test_mcp_agent_briefing_requires_joined_session(self):
+        room = self.store.create_room({"title": "MR"})
+        invite = self.store.create_mcp_invite(room["id"], {"agentName": "Reviewer Agent", "agentRole": "reviewer"})
+
+        _, briefing = await self.call_tool(invite["token"], "get_agent_briefing", {}, rpc_id=1)
+
+        self.assertEqual(briefing["error"]["code"], -32001)
+        self.assertIn("mcp session has not joined a room", briefing["error"]["message"])
+
+    async def test_mcp_agent_briefing_returns_policy_state_and_next_actions_without_side_effects(self):
+        room = self.store.create_room({"title": "MR", "context": {"repository": "lighthouse/review-room"}})
+        invite = self.store.create_mcp_invite(
+            room["id"],
+            {
+                "agentName": "Reviewer Agent",
+                "agentRole": "reviewer",
+                "permissions": ["room:read", "message:write", "finding:write"],
+            },
+        )
+        self.store.add_message(
+            room["id"],
+            {
+                "senderType": "human",
+                "senderName": "Agent Board owner",
+                "kind": "owner_topic",
+                "body": "@Reviewer Agent please review the auth risk.",
+            },
+        )
+        task = self.store.create_task(
+            room["id"],
+            {"title": "Review auth risk", "body": "Check whether owner-token paths are safe.", "assignedTo": "Reviewer Agent"},
+        )
+        finding = self.store.add_finding(
+            room["id"],
+            {
+                "severity": "P2",
+                "claim": "Potential auth gap",
+                "evidence": "Owner-token path needs review",
+                "suggestedFix": "Verify role checks",
+                "createdBy": "Reviewer Agent",
+            },
+        )
+        decision = self.store.request_owner_confirmation(
+            room["id"],
+            {
+                "requester": "Reviewer Agent",
+                "action": "sync finding externally",
+                "reason": "Owner approval is required before external sync.",
+                "targetType": "finding",
+                "targetId": finding["id"],
+            },
+        )
+        await self.call_tool(invite["token"], "join_room", {"roomId": room["id"]}, rpc_id=1)
+        before_room = self.store.get_room(room["id"])
+        before_inbox = self.store.list_inbox(room["id"], "Reviewer Agent")
+
+        _, briefing_response = await self.call_tool(invite["token"], "get_agent_briefing", {}, rpc_id=2)
+        briefing = briefing_response["result"]["structuredContent"]
+        after_room = self.store.get_room(room["id"])
+        after_inbox = self.store.list_inbox(room["id"], "Reviewer Agent")
+        serialized = json.dumps(briefing)
+
+        self.assertEqual(briefing["briefingVersion"], "agent-board.briefing.v1")
+        self.assertEqual(briefing["identity"]["roomId"], room["id"])
+        self.assertEqual(briefing["identity"]["agentName"], "Reviewer Agent")
+        self.assertEqual(briefing["identity"]["role"], "reviewer")
+        self.assertEqual(briefing["identity"]["adapterType"], "mcp-remote")
+        self.assertEqual(briefing["identity"]["declaredCapabilities"], ["room:read", "message:write", "finding:write"])
+        self.assertIn("chatIsNotExecution", briefing["policy"])
+        self.assertIn("taskExecutionLoop", briefing["policy"])
+        self.assertIn("externalEffects", briefing["policy"])
+        self.assertIn("ownerTask", briefing["trustBoundaries"]["trusted"])
+        self.assertIn("roomMessages", briefing["trustBoundaries"]["untrusted"])
+        self.assertEqual(briefing["currentState"]["inbox"]["unhandledCount"], len(before_inbox))
+        self.assertEqual(briefing["currentState"]["tasks"]["items"][0]["id"], task["id"])
+        self.assertEqual(briefing["currentState"]["findings"]["items"][0]["id"], finding["id"])
+        self.assertEqual(briefing["currentState"]["decisions"]["items"][0]["id"], decision["id"])
+        self.assertEqual(briefing["currentState"]["agentRuns"]["relatedCount"], 0)
+        self.assertIn("list_inbox", [action["tool"] for action in briefing["recommendedNextActions"]])
+        self.assertIn("request_owner_confirmation", [action["tool"] for action in briefing["recommendedNextActions"]])
+        self.assertNotIn(room["ownerToken"], serialized)
+        self.assertNotIn(invite["token"], serialized)
+        self.assertNotIn("connectorToken", serialized)
+        self.assertEqual(before_room["agentRuns"], after_room["agentRuns"])
+        self.assertEqual([item["status"] for item in before_inbox], [item["status"] for item in after_inbox])
+
+    async def test_mcp_agent_briefing_uses_role_specific_default_capabilities(self):
+        room = self.store.create_room({"title": "MR"})
+        invite = self.store.create_mcp_invite(
+            room["id"],
+            {"agentName": "Developer Agent", "agentRole": "developer"},
+        )
+
+        await self.call_tool(invite["token"], "join_room", {"roomId": room["id"]}, rpc_id=1)
+        _, briefing_response = await self.call_tool(invite["token"], "get_agent_briefing", {}, rpc_id=2)
+        capabilities = briefing_response["result"]["structuredContent"]["identity"]["declaredCapabilities"]
+
+        self.assertIn("finding:respond", capabilities)
+        self.assertNotIn("finding:write", capabilities)
 
     async def test_mcp_agent_can_join_read_context_reply_and_create_finding(self):
         room = self.store.create_room({"title": "MR", "context": {"repository": "lighthouse/review-room"}})
@@ -392,10 +496,51 @@ class ReviewRoomMcpAioHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reply_response.status, 200)
         self.assertEqual(finding_response.status, 200)
         self.assertEqual(join["result"]["structuredContent"]["name"], "Reviewer Agent")
+        self.assertEqual(join["result"]["structuredContent"]["next"]["recommendedTool"], "get_agent_briefing")
         self.assertEqual(snapshot["result"]["structuredContent"]["context"]["repository"], "lighthouse/review-room")
         self.assertEqual(reply["result"]["structuredContent"]["senderName"], "Reviewer Agent")
         self.assertEqual(finding["result"]["structuredContent"]["createdBy"], "Reviewer Agent")
         self.assertIn("mention.requires_reply", [event["type"] for event in events["result"]["structuredContent"]["events"]])
+
+    async def test_mcp_agent_can_leave_and_must_rejoin_before_tools_work(self):
+        room = self.store.create_room({"title": "MR"})
+        invite = self.store.create_mcp_invite(room["id"], {"agentName": "Reviewer Agent", "agentRole": "reviewer"})
+        await self.call_tool(invite["token"], "join_room", {"roomId": room["id"]}, rpc_id=1)
+
+        _, left = await self.call_tool(invite["token"], "leave_room", {"reason": "done observing"}, rpc_id=2)
+        _, blocked = await self.call_tool(invite["token"], "post_message", {"body": "should fail"}, rpc_id=3)
+        _, rejoined = await self.call_tool(invite["token"], "join_room", {"roomId": room["id"]}, rpc_id=4)
+        _, posted = await self.call_tool(invite["token"], "post_message", {"body": "back online"}, rpc_id=5)
+        loaded = self.store.get_room(room["id"])
+
+        self.assertEqual(left["result"]["structuredContent"]["status"], "disconnected")
+        self.assertEqual(blocked["error"]["code"], -32001)
+        self.assertIn("left the room", blocked["error"]["message"])
+        self.assertIn("join_room", blocked["error"]["message"])
+        self.assertEqual(rejoined["result"]["structuredContent"]["name"], "Reviewer Agent")
+        self.assertEqual(posted["result"]["structuredContent"]["body"], "back online")
+        self.assertEqual(loaded["connectors"][0]["status"], "connected")
+        self.assertIn("mcp.agent_left", [event["type"] for event in loaded["events"]])
+
+    async def test_mcp_revoked_agent_cannot_rejoin_or_use_tools(self):
+        room = self.store.create_room({"title": "MR"})
+        invite = self.store.create_mcp_invite(room["id"], {"agentName": "Reviewer Agent", "agentRole": "reviewer"})
+        _, joined = await self.call_tool(invite["token"], "join_room", {"roomId": room["id"]}, rpc_id=1)
+        connector_id = joined["result"]["structuredContent"]["connectorId"]
+        self.store.revoke_connector(
+            room["id"],
+            connector_id,
+            room["ownerToken"],
+            {"reason": "owner removed agent"},
+        )
+
+        _, rejoin = await self.call_tool(invite["token"], "join_room", {"roomId": room["id"]}, rpc_id=2)
+        _, listed = await self.call_tool(invite["token"], "list_tasks", {}, rpc_id=3)
+
+        self.assertEqual(rejoin["error"]["code"], -32001)
+        self.assertIn("revoked", rejoin["error"]["message"])
+        self.assertEqual(listed["error"]["code"], -32001)
+        self.assertIn("revoked", listed["error"]["message"])
 
     async def test_mcp_agent_consumes_inbox_and_ack_without_starting_run(self):
         room = self.store.create_room({"title": "MR"})

@@ -83,8 +83,9 @@ Possible residue includes:
 - Label token rotation and disconnect as server-side invalidation, not remote
   cleanup.
 - Make bearer-token handling guidance visible in bootstrap output.
-- Add context-pack rules that separate trusted task data from untrusted room and
-  code content.
+- Keep `get_agent_briefing` and future context packs explicit about trusted
+  policy/task data versus untrusted room, MR, code, link, attachment, and Agent
+  output content.
 - Add guardrails for obvious prompt injection and external side-effect requests.
 - Bring `request_owner_confirmation` into the deployed MCP tool surface so
   external-effect requests can create first-class decision records instead of
@@ -92,6 +93,14 @@ Possible residue includes:
 
 ## Recent evidence
 
+- [done.md](../done.md#agent-and-supervisor-room-exit-lifecycle)
+  records remote preview/API smoke coverage for supervisor leave, Agent
+  `leave_room`, owner revoke, audit events, and UI copy that states server-side
+  invalidation does not clean remote MCP config, logs, shell history, caches,
+  or workspaces.
+- [services/review-room-service/README.md](../../../services/review-room-service/README.md)
+  records the current MCP guidance that `get_agent_briefing` is read-only rule
+  and state discovery, not execution authorization.
 - [review-room-remote-mcp-debugging-2026-06-13-14.md](../review-room-remote-mcp-debugging-2026-06-13-14.md)
   records repeated stale-token failures from local scratch loops and preserves
   the rule that bearer tokens must not be committed to docs, scripts, or logs.

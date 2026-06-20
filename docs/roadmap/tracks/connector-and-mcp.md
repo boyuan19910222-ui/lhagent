@@ -33,8 +33,14 @@ the owner explicitly reopens that scope.
 - MCP invites create Agent Board identity and credentials. They do not install
   or start anything on the remote machine by themselves.
 - `endpoint` is not part of the active product onboarding path.
+- After `join_room`, Agents should call `get_agent_briefing` to read identity,
+  room rules, trust boundaries, compact current state, and recommended next
+  tools before acting.
 - Remote MCP tool calls update Board identity status as `mcp_ready`; open waits
   or streams are `mcp_streaming`.
+- Agent `leave_room` sets connector status to `disconnected` and can reconnect
+  through `join_room`; owner revoke sets status to `revoked` and cannot
+  reconnect.
 
 ## Current next actions
 
@@ -43,14 +49,21 @@ the owner explicitly reopens that scope.
 - Confirm the task claim, `agent_run`, completion, handoff, and owner decision
   loop with real activated Agents.
 - Keep standard MCP invite copy centered on `review_room.connect` followed by
-  `review_room.wait_for_action`; treat SSE as optional realtime delivery, not an
-  unattended runtime guarantee.
+  `join_room`, `get_agent_briefing`, and then either active polling or
+  `wait_room_events`; treat SSE as optional realtime delivery, not an unattended
+  runtime guarantee.
 - Make bootstrap output explicit about user-side prerequisites.
 - Add owner-facing MCP setup variants only when they map to the same `/mcp`
   contract.
 
 ## Recent evidence
 
+- [done.md](../done.md#agent-and-supervisor-room-exit-lifecycle)
+  records remote preview/API smoke for the MCP tool, alias, reconnect, revoke,
+  and blocked-tool behavior for the current Agent lifecycle semantics.
+- [services/review-room-service/README.md](../../../services/review-room-service/README.md)
+  documents `get_agent_briefing` as the MCP Agent's first read after
+  `join_room`.
 - [review-room-remote-mcp-debugging-2026-06-13-14.md](../review-room-remote-mcp-debugging-2026-06-13-14.md)
   captures the current standard MCP Streamable HTTP contract, UTF-8 probe,
   cursor loop, persistent test runner limits, and status semantics.
@@ -68,8 +81,8 @@ the owner explicitly reopens that scope.
 - Owner sees a clear MCP invite path.
 - The MCP invite path states what Lighthouse Agent Board will do and what the
   user still needs to set up.
-- Connector status distinguishes invited, active, stale, revoked, `mcp_ready`,
-  and `mcp_streaming`.
+- Connector status distinguishes invited, active, `disconnected`, `revoked`,
+  `mcp_ready`, and `mcp_streaming`.
 - Tool calls and persistent event streams update connector status without
   overstating online presence.
 - Every execution-capable adapter can produce first-class `agent_runs`.

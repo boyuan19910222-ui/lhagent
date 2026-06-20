@@ -53,14 +53,14 @@ P0 should prove:
 
 ## Current next actions
 
-- Run the full local test suite and update [done.md](../done.md) with verified
-  status.
+- Keep the full local test suite and remote preview smoke evidence current
+  before marking additional P0 behavior verified.
 - Keep the service README current with the MCP Remote action loop, status
   semantics, SSE events, and scoped thread workflow.
 - Add a compact manual scenario script for owner -> reviewer -> developer ->
   verification -> owner decision.
-- Keep Workbench CRUD/UI work framework-first: define the capability matrix and
-  Console information architecture before expanding full CRUD implementation.
+- Keep Workbench UI framework-first: use local P0 controls to prove semantics,
+  then decide what belongs in durable Lighthouse Console/backend.
 - Add a "known limitations" section for local P0, remote MCP, encoding, and
   cleanup boundaries.
 - Keep root `npm run test:review-room` pointed at the canonical service tests.
@@ -79,6 +79,10 @@ P0 should prove:
   records the 2026-06-19 Workbench detail cleanup: dynamic Agent mentions,
   compact composer send control, collapsed/paginated audit log, removed
   duplicate decision panel, and cross-platform root `npm test`.
+- [done.md](../done.md#agent-and-supervisor-room-exit-lifecycle)
+  records the 2026-06-20 Agent/supervisor leave and revoke lifecycle: supervisor
+  session leave, MCP `leave_room`, reconnect, owner revoke, blocked tools after
+  revoke, audit events, and explicit remote-cleanup boundaries.
 - `python -m unittest discover experiments/review-room/service/tests` passed
   80 legacy Agent Board tests on 2026-06-14.
 
