@@ -61,10 +61,10 @@ http://127.0.0.1:8707
 真实路径：
 
 1. 在“工作台大厅”点击“启动 MR 评审工作台”，填写或使用默认 MR 标题和负责人；服务返回 `ownerToken`，页面保存在本机 localStorage。
-2. 在工作台详情点击“邀请智能体”或“复制 MCP 接入话术”，服务通过 `POST /api/rooms/{roomId}/mcp-invites` 创建 scoped invite token。
+2. 在工作台详情点击“邀请智能体”或复制 MCP 接入信息，服务通过 `POST /api/rooms/{roomId}/mcp-invites` 创建 scoped invite token。
 3. 在 Codex / Claude Code / CodeBuddy 等支持 Remote MCP 的 Agent 中添加 `http://<host>:8707/mcp`，并使用接入话术里的 Bearer token。
-4. Agent 调用 `join_room` 后读取 Agent Board；所有监督消息都会进入 Agent Inbox，明确 `@AgentName` 的消息会被标记为高优先级 `requiresReply`，但不会自动唤醒 Agent。
-5. Agent 在自己已激活时，通过 `get_room_snapshot`、`list_inbox`、`ack_event` 和 `list_tasks` 主动消费黑板；执行工作必须先 `claim_task` / `start_run`，完成后用 `complete_task` 回写结果；普通回复用 `post_message`，评审结论用 `post_finding`，外部动作先用 `request_owner_confirmation`。
+4. Agent 先调用 `join_room`，再调用 `get_agent_briefing` 读取本房间规则、信任边界、当前状态和推荐下一步。
+5. `get_agent_briefing` 是只读规则/状态发现工具，不授权执行；Agent 仍需通过 `list_inbox`、`list_tasks`、`claim_task`、`start_run`、`complete_task`、`post_message`、`post_finding` 和 `request_owner_confirmation` 推进实际协作。
 
 ## API
 
@@ -153,6 +153,7 @@ MCP tools：
 
 - `join_room`
 - `get_room_snapshot`
+- `get_agent_briefing`
 - `list_room_events`
 - `wait_room_events`
 - `list_inbox`
@@ -216,10 +217,11 @@ curl -X POST http://127.0.0.1:8707/api/rooms/<room_id>/mcp-invites \
   }'
 ```
 
-Agent 添加 MCP 后应先调用 `join_room`，再通过 `list_inbox`、
-`wait_room_events`、`list_tasks`、`claim_task`、`start_run`、
-`complete_task`、`post_message`、`post_finding` 和
-`request_owner_confirmation` 推进工作。普通消息只进入上下文流，不自动授权执行。
+Agent 添加 MCP 后应先调用 `join_room`，再调用 `get_agent_briefing`。briefing
+会返回 Agent identity、role/capabilities、房间规则、信任边界、compact 当前状态和推荐下一步。
+普通消息只进入上下文流，不自动授权执行；可执行工作仍必须通过 `list_tasks`、
+`claim_task`、`start_run` 和 `complete_task`，普通回复用 `post_message`，
+评审结论用 `post_finding`，外部动作先用 `request_owner_confirmation`。
 
 ### WebSocket Board 协议
 

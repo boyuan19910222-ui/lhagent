@@ -1,6 +1,6 @@
 # Track: Lighthouse Productization
 
-Status: `Planned`
+Status: `In progress`
 
 ## Purpose
 
@@ -81,10 +81,29 @@ Initial capability framing after the local P0 implementation:
   aliases for `/api/rooms`.
 - Decide which parts of the P0 service become product backend and which remain
   prototype-only.
-- Expand Console lifecycle UX for rename/archive/restore/delete with owner
-  confirmation, destructive-action copy, and audit review.
+- Translate the local P0 Workbench lifecycle UX into Console-grade flows for
+  rename/archive/restore/delete with owner confirmation, destructive-action
+  copy, and audit review.
+- Turn the local role-permission cues into a durable capability matrix before
+  expanding supervisor, invite, Agent-management, or task-routing flows.
 - Define GitHub, GitLab, Gongfeng, Feishu, WeCom, and QQ sync boundaries.
 - Decide how room events, audit logs, and transcript links are retained.
+
+## Recent evidence
+
+- [done.md](../done.md#workbench-crud-and-terminal-operations-ui-framework)
+  records the local P0 Workbench Hall, create/list/read APIs, owner-gated
+  archive/restore/delete semantics, and deletion cleanup boundary.
+- [done.md](../done.md#workbench-human-supervisor-one-time-invite-url)
+  records named one-time human supervisor invite URLs and read-scoped
+  supervisor access without token leakage.
+- [done.md](../done.md#workbench-detail-collaboration-surface-and-audit-log-cleanup)
+  records dynamic Agent mention buttons, compact composer, collapsed/paginated
+  audit log, and role-gated finding mutation in local and remote preview.
+- [done.md](../done.md#agent-and-supervisor-room-exit-lifecycle)
+  records local and remote preview evidence for supervisor leave, Agent
+  `leave_room`, owner revoke, audit events, and explicit server-side cleanup
+  boundaries.
 
 ## Acceptance criteria
 

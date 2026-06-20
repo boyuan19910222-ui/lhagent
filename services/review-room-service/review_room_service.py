@@ -29,6 +29,10 @@ from review_room_mcp import handle_mcp_get, handle_mcp_post
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8707
 DEFAULT_DB_PATH = os.path.join(os.path.dirname(__file__), "review-room.sqlite3")
+REMOTE_CLEANUP_BOUNDARY = (
+    "Server-side access state only; this does not clean remote Agent machines, "
+    "shell history, MCP config, transcripts, logs, caches, or workspace files."
+)
 
 
 def now_ms() -> int:
@@ -707,10 +711,7 @@ class ReviewRoomStore:
         identity = self.require_owner_token(room_id, token)
         if not payload.get("confirm"):
             raise ValueError("delete requires owner confirmation")
-        cleanup_boundary = (
-            "Server-side Workbench tombstone only; this does not clean remote Agent machines, "
-            "shell history, MCP config, transcripts, logs, caches, or workspace files."
-        )
+        cleanup_boundary = REMOTE_CLEANUP_BOUNDARY
         room = self._set_workbench_status(room_id, "deleted")
         self.record_event(
             room_id,
@@ -1360,13 +1361,19 @@ class ReviewRoomStore:
         self.require_room(room_id)
         timestamp = now_ms()
         ttl_ms = int(payload.get("ttlMs") or payload.get("ttl_ms") or 24 * 60 * 60 * 1000)
+        agent_role = payload.get("agentRole") or payload.get("agent_role") or payload.get("role") or "reviewer"
+        permissions = (
+            payload["permissions"]
+            if "permissions" in payload and payload.get("permissions") is not None
+            else self.default_mcp_permissions(agent_role)
+        )
         invite = {
             "id": make_id("mcpi"),
             "roomId": room_id,
             "agentName": payload.get("agentName") or payload.get("agent_name") or "Remote Agent",
-            "agentRole": payload.get("agentRole") or payload.get("agent_role") or payload.get("role") or "reviewer",
+            "agentRole": agent_role,
             "token": payload.get("token") or make_id("mcp"),
-            "permissions": payload.get("permissions") or ["room:read", "message:write", "finding:write", "task:update"],
+            "permissions": permissions,
             "status": "provisioned",
             "connectorId": "",
             "expiresAt": timestamp + ttl_ms,
@@ -1510,6 +1517,91 @@ class ReviewRoomStore:
                 (json_dumps(participants), timestamp, room_id),
             )
 
+    def remove_human_participant(self, room_id: str, name: str, role: str) -> None:
+        timestamp = now_ms()
+        with self.connect() as conn:
+            row = conn.execute("SELECT participants_json FROM rooms WHERE id = ?", (room_id,)).fetchone()
+            if not row:
+                raise KeyError("room not found")
+            participants = json_loads(row["participants_json"], [])
+            filtered = [
+                item
+                for item in participants
+                if not (
+                    item.get("type") == "human"
+                    and item.get("name") == name
+                    and item.get("role") == role
+                )
+            ]
+            conn.execute(
+                "UPDATE rooms SET participants_json = ?, updated_at = ? WHERE id = ?",
+                (json_dumps(filtered), timestamp, room_id),
+            )
+
+    def active_lifecycle_counts(self, room_id: str, connector: Optional[Dict[str, Any]] = None) -> Dict[str, int]:
+        connector_id = (connector or {}).get("id") or ""
+        agent_name = (connector or {}).get("name") or ""
+        active_task_statuses = {"assigned", "running", "started"}
+        active_run_statuses = {"running", "started"}
+        room = self.get_room(room_id)
+        if not room:
+            raise KeyError("room not found")
+        tasks = room.get("tasks") or []
+        runs = room.get("agentRuns") or []
+        if agent_name:
+            tasks = [
+                task
+                for task in tasks
+                if task.get("assignedTo") == agent_name or task.get("claimedBy") == agent_name
+            ]
+            runs = [
+                run
+                for run in runs
+                if run.get("connectorId") == connector_id or run.get("agentName") == agent_name
+            ]
+        return {
+            "activeTaskCount": sum(1 for task in tasks if task.get("status") in active_task_statuses),
+            "activeRunCount": sum(1 for run in runs if run.get("status") in active_run_statuses),
+        }
+
+    def leave_supervisor_session(self, room_id: str, token: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if not token:
+            raise PermissionError("missing supervisor token")
+        timestamp = now_ms()
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM supervisor_invites WHERE room_id = ? AND session_token = ? AND status = ?",
+                (room_id, token, "used"),
+            ).fetchone()
+            if not row:
+                raise PermissionError("invalid supervisor session")
+            invite = self._supervisor_invite_from_row(row)
+            conn.execute(
+                "UPDATE supervisor_invites SET status = ?, updated_at = ? WHERE id = ?",
+                ("left", timestamp, invite["id"]),
+            )
+        self.remove_human_participant(room_id, invite["name"], "supervisor")
+        counts = self.active_lifecycle_counts(room_id)
+        reason = payload.get("reason") or ""
+        self.record_event(
+            room_id,
+            "supervisor.left",
+            {
+                "sessionId": invite["id"],
+                "name": invite["name"],
+                "reason": reason,
+                **counts,
+                "cleanupBoundary": REMOTE_CLEANUP_BOUNDARY,
+            },
+            actor_type="human",
+            actor_name=invite["name"],
+        )
+        invite["status"] = "left"
+        invite["updatedAt"] = timestamp
+        invite["reason"] = reason
+        invite["cleanupBoundary"] = REMOTE_CLEANUP_BOUNDARY
+        return invite
+
     def get_mcp_invite_by_token(self, token: str) -> Dict[str, Any]:
         with self.connect() as conn:
             row = conn.execute("SELECT * FROM mcp_invites WHERE token = ?", (token,)).fetchone()
@@ -1522,6 +1614,8 @@ class ReviewRoomStore:
         room_id = payload.get("roomId") or payload.get("room_id") or invite["roomId"]
         if room_id != invite["roomId"]:
             raise PermissionError("mcp token is scoped to another room")
+        if invite["status"] == "revoked":
+            raise PermissionError("mcp invite revoked")
         if invite["expiresAt"] < now_ms():
             raise PermissionError("mcp invite expired")
         connector_id = invite["connectorId"]
@@ -1547,6 +1641,10 @@ class ReviewRoomStore:
                     """,
                     ("joined", connector_id, timestamp, invite["id"]),
                 )
+        else:
+            connector = self.get_connector(connector_id)
+            if connector["status"] == "revoked":
+                raise PermissionError("mcp connector revoked")
         self.mark_connector_seen(connector_id)
         identity = self.authenticate_mcp_token(token)
         self.record_event(room_id, "mcp.agent_joined", {"agentName": identity["name"], "agentRole": identity["role"]})
@@ -1560,6 +1658,10 @@ class ReviewRoomStore:
         if not connector:
             raise PermissionError("mcp session has not joined a room")
         data = self._connector_from_row(connector)
+        if data["status"] == "revoked":
+            raise PermissionError("mcp connector revoked")
+        if data["status"] == "disconnected":
+            raise PermissionError("mcp agent left the room; call join_room before using tools")
         return {
             "type": "mcp-agent",
             "roomId": data["roomId"],
@@ -1851,6 +1953,10 @@ class ReviewRoomStore:
         connector = self.get_connector(connector_id)
         if not token or token != connector["token"]:
             raise PermissionError("invalid connector token")
+        if connector["status"] == "revoked":
+            raise PermissionError("mcp connector revoked")
+        if connector["status"] == "disconnected":
+            raise PermissionError("mcp agent left the room; call join_room before using tools")
         event_type = payload.get("type") or "message"
         self.mark_connector_seen(connector_id)
         if event_type == "finding":
@@ -1932,6 +2038,79 @@ class ReviewRoomStore:
             raise KeyError("connector not found")
         return self._connector_from_row(row)
 
+    def update_connector_status(self, connector_id: str, status: str) -> Dict[str, Any]:
+        timestamp = now_ms()
+        with self.connect() as conn:
+            row = conn.execute("SELECT room_id FROM connectors WHERE id = ?", (connector_id,)).fetchone()
+            if not row:
+                raise KeyError("connector not found")
+            conn.execute(
+                "UPDATE connectors SET status = ?, updated_at = ? WHERE id = ?",
+                (status, timestamp, connector_id),
+            )
+            conn.execute("UPDATE rooms SET updated_at = ? WHERE id = ?", (timestamp, row["room_id"]))
+            updated = conn.execute("SELECT * FROM connectors WHERE id = ?", (connector_id,)).fetchone()
+        return self._connector_from_row(updated)
+
+    def leave_connector(self, connector_id: str, token: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        connector = self.get_connector(connector_id)
+        if not token or token != connector["token"]:
+            raise PermissionError("invalid connector token")
+        if connector["status"] == "revoked":
+            raise PermissionError("mcp connector revoked")
+        updated = self.update_connector_status(connector_id, "disconnected")
+        counts = self.active_lifecycle_counts(connector["roomId"], connector)
+        reason = payload.get("reason") or ""
+        self.record_event(
+            connector["roomId"],
+            "mcp.agent_left",
+            {
+                "connectorId": connector_id,
+                "agentName": connector["name"],
+                "agentRole": connector["agentRole"],
+                "reason": reason,
+                **counts,
+                "cleanupBoundary": REMOTE_CLEANUP_BOUNDARY,
+            },
+            actor_type="agent",
+            actor_name=connector["name"],
+        )
+        updated["reason"] = reason
+        updated["cleanupBoundary"] = REMOTE_CLEANUP_BOUNDARY
+        return updated
+
+    def revoke_connector(self, room_id: str, connector_id: str, token: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        identity = self.require_owner_token(room_id, token)
+        connector = self.get_connector(connector_id)
+        if connector["roomId"] != room_id:
+            raise PermissionError("connector is scoped to another room")
+        updated = self.update_connector_status(connector_id, "revoked")
+        timestamp = now_ms()
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE mcp_invites SET status = ?, updated_at = ? WHERE connector_id = ?",
+                ("revoked", timestamp, connector_id),
+            )
+        counts = self.active_lifecycle_counts(room_id, connector)
+        reason = payload.get("reason") or ""
+        self.record_event(
+            room_id,
+            "mcp.agent_revoked",
+            {
+                "connectorId": connector_id,
+                "agentName": connector["name"],
+                "agentRole": connector["agentRole"],
+                "reason": reason,
+                **counts,
+                "cleanupBoundary": REMOTE_CLEANUP_BOUNDARY,
+            },
+            actor_type="human",
+            actor_name=identity["name"],
+        )
+        updated["reason"] = reason
+        updated["cleanupBoundary"] = REMOTE_CLEANUP_BOUNDARY
+        return updated
+
     def authenticate_room_token(self, room_id: str, token: str) -> Dict[str, Any]:
         if not token:
             raise PermissionError("missing room token")
@@ -1957,6 +2136,10 @@ class ReviewRoomStore:
             ).fetchone()
         if connector:
             data = self._connector_from_row(connector)
+            if data["status"] == "revoked":
+                raise PermissionError("mcp connector revoked")
+            if data["status"] == "disconnected":
+                raise PermissionError("mcp agent left the room; call join_room before using tools")
             return {
                 "type": "connector",
                 "roomId": room_id,
@@ -1983,6 +2166,9 @@ class ReviewRoomStore:
             row = conn.execute("SELECT room_id FROM connectors WHERE id = ?", (connector_id,)).fetchone()
             if not row:
                 raise KeyError("connector not found")
+            connector = conn.execute("SELECT status FROM connectors WHERE id = ?", (connector_id,)).fetchone()
+            if connector and connector["status"] == "revoked":
+                raise PermissionError("mcp connector revoked")
             conn.execute(
                 """
                 UPDATE connectors
@@ -2029,6 +2215,14 @@ class ReviewRoomStore:
         if kind == "git":
             return "source"
         return "developer"
+
+    @staticmethod
+    def default_mcp_permissions(role: str) -> List[str]:
+        if role == "reviewer":
+            return ["room:read", "message:write", "finding:write", "task:update"]
+        if role == "developer":
+            return ["room:read", "message:write", "finding:respond", "task:update"]
+        return ["room:read", "message:write", "task:update"]
 
     @staticmethod
     def _room_from_row(row: sqlite3.Row) -> Dict[str, Any]:
@@ -2313,7 +2507,10 @@ class ReviewRoomHandler(BaseHTTPRequestHandler):
             if match:
                 identity = self.read_identity(match.group(1), body)
                 self.require_room_writer(identity)
-                self.send_json(self.store.add_message(match.group(1), body), HTTPStatus.CREATED)
+                self.send_json(
+                    self.store.add_message(match.group(1), message_payload_for_identity(identity, body)),
+                    HTTPStatus.CREATED,
+                )
                 return
             match = re.match(r"^/api/rooms/([^/]+)/findings$", parsed.path)
             if match:
@@ -2338,11 +2535,32 @@ class ReviewRoomHandler(BaseHTTPRequestHandler):
                 result["room"] = public_room(result["room"]) if result.get("room") else None
                 self.send_json(result, HTTPStatus.CREATED)
                 return
+            match = re.match(r"^/api/rooms/([^/]+)/supervisor-session/leave$", parsed.path)
+            if match:
+                room_id = match.group(1)
+                identity = self.read_identity(room_id, body)
+                if identity["type"] != "supervisor":
+                    raise PermissionError("supervisor token required")
+                self.send_json(
+                    self.store.leave_supervisor_session(room_id, self.read_bearer_token(body), body)
+                )
+                return
             match = re.match(r"^/api/rooms/([^/]+)/connectors$", parsed.path)
             if match:
                 room_id = match.group(1)
                 self.store.require_owner_token(room_id, self.read_bearer_token(body))
                 self.send_json(self.store.register_connector(room_id, body), HTTPStatus.CREATED)
+                return
+            match = re.match(r"^/api/rooms/([^/]+)/connectors/([^/]+)/revoke$", parsed.path)
+            if match:
+                self.send_json(
+                    self.store.revoke_connector(
+                        match.group(1),
+                        match.group(2),
+                        self.read_bearer_token(body),
+                        body,
+                    )
+                )
                 return
             match = re.match(r"^/api/connectors/([^/]+)/events$", parsed.path)
             if match:
@@ -2453,8 +2671,8 @@ class ReviewRoomHandler(BaseHTTPRequestHandler):
 
     @staticmethod
     def require_room_writer(identity: Dict[str, Any]) -> None:
-        if identity["type"] == "supervisor":
-            raise PermissionError("supervisor session is read-only")
+        if identity["type"] not in {"owner", "supervisor", "connector"}:
+            raise PermissionError("room message writer token required")
 
     def require_reviewer_or_owner(self, identity: Dict[str, Any]) -> None:
         self.require_room_writer(identity)
@@ -2598,6 +2816,31 @@ def supervisor_invite_url(origin: str, room_id: str, token: str) -> str:
     )
 
 
+def message_payload_for_identity(identity: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
+    message = dict(payload)
+    identity_type = identity.get("type")
+    message["senderType"] = "human" if identity_type in {"owner", "supervisor"} else "agent"
+    message["senderName"] = identity.get("name") or "unknown"
+
+    if identity_type == "owner":
+        message["kind"] = payload.get("kind") or "owner_topic"
+    elif identity_type == "supervisor":
+        message["kind"] = "supervisor_message"
+    elif identity_type == "connector":
+        message["kind"] = payload.get("kind") or "connector_message"
+    else:
+        message["kind"] = payload.get("kind") or "message"
+
+    message_context = dict(payload.get("payload") or {})
+    if "mentions" in payload:
+        message_context["mentions"] = payload.get("mentions") or []
+    if "mentionedAgents" in payload:
+        message_context["mentionedAgents"] = payload.get("mentionedAgents") or []
+    message_context.setdefault("role", identity.get("role") or "")
+    message["payload"] = message_context
+    return message
+
+
 def require_identity(store: ReviewRoomStore, room_id: str, token: str) -> Dict[str, Any]:
     try:
         return store.authenticate_room_token(room_id, token)
@@ -2621,8 +2864,11 @@ def ensure_human_room_reader(identity: Dict[str, Any]) -> None:
 
 
 def ensure_room_writer(identity: Dict[str, Any]) -> None:
-    if identity["type"] == "supervisor":
-        raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": "supervisor session is read-only"}), content_type="application/json")
+    if identity["type"] not in {"owner", "supervisor", "connector"}:
+        raise web.HTTPForbidden(
+            text=json_dumps({"ok": False, "error": "room message writer token required"}),
+            content_type="application/json",
+        )
 
 
 def ensure_reviewer_or_owner(identity: Dict[str, Any]) -> None:
@@ -2656,27 +2902,26 @@ async def handle_ws_event(
 ) -> None:
     event_type = payload.get("type")
     if identity["type"] == "supervisor" and event_type in {
-        "message.create",
-        "topic.continue",
         "finding.create",
         "finding.respond",
         "decision.propose",
         "finding.confirm",
         "finding.reject",
     }:
-        await websocket.send_json({"type": "error", "error": "supervisor session is read-only"})
+        await websocket.send_json({"type": "error", "error": "supervisor session can only post messages"})
         return
     if event_type in {"message.create", "topic.continue"}:
         mentions = payload.get("mentions") or payload.get("mentionedAgents") or []
         message = store.add_message(
             room_id,
-            {
-                "senderType": "human" if identity["type"] in {"owner", "supervisor"} else "agent",
-                "senderName": identity["name"],
-                "kind": payload.get("kind") or ("owner_topic" if identity["type"] == "owner" else "supervisor_message" if identity["type"] == "supervisor" else "connector_message"),
-                "body": payload.get("body") or "",
-                "payload": {"eventType": event_type, "role": identity["role"], "mentions": mentions},
-            },
+            message_payload_for_identity(
+                identity,
+                {
+                    "kind": payload.get("kind"),
+                    "body": payload.get("body") or "",
+                    "payload": {"eventType": event_type, "mentions": mentions},
+                },
+            ),
         )
         await hub.broadcast(room_id, {"type": "message.created", "message": message})
         return
@@ -2869,6 +3114,24 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
         await app[HUB_KEY].broadcast(room_id, {"type": "room.snapshot", "room": result["room"]})
         return json_response(result, 201)
 
+    async def leave_supervisor_session(request: web.Request) -> web.Response:
+        room_id = request.match_info["room_id"]
+        token = bearer_token_from_request(request)
+        identity = require_identity(app[STORE_KEY], room_id, token)
+        if identity["type"] != "supervisor":
+            raise web.HTTPForbidden(
+                text=json_dumps({"ok": False, "error": "supervisor token required"}),
+                content_type="application/json",
+            )
+        try:
+            result = app[STORE_KEY].leave_supervisor_session(room_id, token, await request_json(request))
+        except PermissionError as exc:
+            raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        room = app[STORE_KEY].get_room(room_id)
+        if room:
+            await app[HUB_KEY].broadcast(room_id, {"type": "room.snapshot", "room": public_room(room)})
+        return json_response(result)
+
     async def list_tasks(request: web.Request) -> web.Response:
         room_id = request.match_info["room_id"]
         require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
@@ -2900,11 +3163,28 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
             await app[HUB_KEY].broadcast(result["roomId"], {"type": "room.snapshot", "room": public_room(room)})
         return json_response(result, 201)
 
+    async def revoke_connector(request: web.Request) -> web.Response:
+        room_id = request.match_info["room_id"]
+        connector_id = request.match_info["connector_id"]
+        try:
+            result = app[STORE_KEY].revoke_connector(
+                room_id,
+                connector_id,
+                bearer_token_from_request(request),
+                await request_json(request),
+            )
+        except PermissionError as exc:
+            raise web.HTTPForbidden(text=json_dumps({"ok": False, "error": str(exc)}), content_type="application/json")
+        room = app[STORE_KEY].get_room(room_id)
+        if room:
+            await app[HUB_KEY].broadcast(room_id, {"type": "room.snapshot", "room": public_room(room)})
+        return json_response(result)
+
     async def add_message(request: web.Request) -> web.Response:
         room_id = request.match_info["room_id"]
         identity = require_identity(app[STORE_KEY], room_id, bearer_token_from_request(request))
         ensure_room_writer(identity)
-        message = app[STORE_KEY].add_message(room_id, await request_json(request))
+        message = app[STORE_KEY].add_message(room_id, message_payload_for_identity(identity, await request_json(request)))
         await app[HUB_KEY].broadcast(room_id, {"type": "message.created", "message": message})
         return json_response(message, 201)
 
@@ -2989,6 +3269,8 @@ def build_app(store: Optional[ReviewRoomStore] = None) -> web.Application:
     app.router.add_post("/api/rooms/{room_id}/mcp-invites", create_mcp_invite)
     app.router.add_post("/api/rooms/{room_id}/supervisor-invites", create_supervisor_invite)
     app.router.add_post("/api/rooms/{room_id}/supervisor-invites/consume", consume_supervisor_invite)
+    app.router.add_post("/api/rooms/{room_id}/supervisor-session/leave", leave_supervisor_session)
+    app.router.add_post("/api/rooms/{room_id}/connectors/{connector_id}/revoke", revoke_connector)
     app.router.add_get("/api/rooms/{room_id}/tasks", list_tasks)
     app.router.add_post("/api/rooms/{room_id}/tasks", create_task)
     app.router.add_post("/api/connectors/{connector_id}/events", connector_event)
@@ -3022,11 +3304,11 @@ def index_html() -> str:
     .actions{display:flex;flex-wrap:wrap;gap:8px}.tabs{display:flex;gap:6px}.tab{border-color:var(--line);background:#071018;color:var(--muted)}.tab.active{border-color:var(--cyan);color:var(--cyan)}
     .panel{border:1px solid var(--line);border-radius:8px;background:rgba(15,23,32,.96);box-shadow:0 18px 44px var(--shadow);min-width:0}.panel-head{display:flex;align-items:center;justify-content:space-between;gap:10px;border-bottom:1px solid var(--line);padding:12px 14px}.panel-body{padding:14px}
     .hall-grid{display:grid;grid-template-columns:minmax(340px,420px) minmax(0,1fr);gap:14px}.form-grid{display:grid;grid-template-columns:1fr;gap:10px}.field{display:grid;gap:6px}.field label{font-size:12px;color:var(--muted);text-transform:uppercase}.template-line{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;border:1px solid var(--line);border-radius:8px;background:#071018;padding:12px}
-    .workbench-table{display:grid;gap:8px}.workbench-row{display:grid;grid-template-columns:minmax(220px,1.5fr) 136px 100px repeat(4,minmax(68px,.45fr)) 112px;gap:8px;align-items:center;width:100%;min-height:58px;text-align:left;border:1px solid var(--line);border-radius:8px;background:#08121a;padding:10px}.workbench-row:hover,.workbench-row.active{border-color:var(--cyan)}
-    .tag{display:inline-flex;align-items:center;gap:6px;min-height:22px;border:1px solid var(--line);border-radius:999px;background:#071018;padding:0 8px;color:var(--muted);font-size:11px}.tag.online{border-color:#315f38;color:var(--lime)}.tag.waiting{border-color:#6a5120;color:var(--amber)}.tag.p1,.tag.danger{border-color:#713039;color:var(--red)}.tag.info{border-color:#2e4f78;color:var(--blue)}
+    .workbench-table{display:grid;gap:8px}.workbench-row{display:grid;grid-template-columns:minmax(160px,1.2fr) minmax(96px,.58fr) minmax(68px,.4fr) repeat(4,minmax(44px,.28fr)) minmax(64px,.42fr) minmax(86px,.55fr);gap:8px;align-items:center;width:100%;min-height:58px;text-align:left;border:1px solid var(--line);border-radius:8px;background:#08121a;padding:10px}.workbench-row[role="button"]{cursor:pointer}.workbench-row:hover,.workbench-row.active{border-color:var(--cyan)}.room-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.room-actions button{min-height:30px;padding:0 9px}
+    .tag{display:inline-flex;align-items:center;gap:6px;min-height:22px;border:1px solid var(--line);border-radius:999px;background:#071018;padding:0 8px;color:var(--muted);font-size:11px}.tag.online{border-color:#315f38;color:var(--lime)}.tag.waiting{border-color:#6a5120;color:var(--amber)}.tag.p1,.tag.danger{border-color:#713039;color:var(--red)}.tag.info{border-color:#2e4f78;color:var(--blue)}.tag.permission-locked{border-color:#485766;color:#96a4b2}
     .dot{width:7px;height:7px;border-radius:50%;background:var(--muted);display:inline-block}.dot.online{background:var(--lime)}.dot.waiting{background:var(--amber)}.dot.danger{background:var(--red)}.dot.info{background:var(--cyan)}
     .detail-grid{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:14px}.command-bar{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;margin-bottom:14px}
-    .stream-layout{display:grid;grid-template-columns:minmax(0,1fr);gap:14px;margin-top:14px}.timeline,.finding-list,.audit-list,.object-list,.member-status-list{display:grid;gap:8px}.message,.finding,.object-row,.event-row,.member-row{border:1px solid var(--line);border-radius:8px;background:#08121a;padding:10px}.message.owner,.member-row.owner{border-color:#244568}.message.agent,.member-row.agent{border-color:#315f38}.member-head,.message-head,.finding-head,.event-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px}.member-meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.body{white-space:pre-wrap;line-height:1.5;overflow-wrap:anywhere}.finding-title{font-weight:700}.finding-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+    .stream-layout{display:grid;grid-template-columns:minmax(0,1fr);gap:14px;margin-top:14px}.timeline,.finding-list,.audit-list,.object-list,.member-status-list{display:grid;gap:8px}.message,.finding,.object-row,.event-row,.member-row{border:1px solid var(--line);border-radius:8px;background:#08121a;padding:10px}.message.owner,.member-row.owner{border-color:#244568}.message.agent,.member-row.agent{border-color:#315f38}.member-head,.message-head,.finding-head,.event-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px}.member-meta,.capability-badges{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.permission-locked{opacity:.58;cursor:not-allowed}.body{white-space:pre-wrap;line-height:1.5;overflow-wrap:anywhere}.finding-title{font-weight:700}.finding-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
     .metric{border:1px solid var(--line);border-radius:8px;background:#071018;padding:10px}.metric strong{display:block;color:var(--text);font-size:18px}.empty{border:1px dashed var(--line);border-radius:8px;padding:24px 14px;text-align:center;color:var(--muted)}.notice{margin-top:10px;color:var(--muted);font-size:12px}.hidden{display:none}
     .audit-head-actions,.audit-controls{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}.audit-controls{margin-top:10px}
     .composer-box{position:relative}.composer-box textarea{min-height:112px;padding-right:112px;padding-bottom:54px}.composer-box button{position:absolute;right:10px;bottom:10px;min-height:38px;width:88px}
@@ -3045,6 +3327,7 @@ def index_html() -> str:
       </div>
       <div class="actions">
         <button id="refreshRooms">刷新工作台</button>
+        <button id="showArchivedRooms">已归档工作台 <span id="archivedRoomCount">0</span></button>
         <button class="primary" id="showHall">工作台大厅</button>
       </div>
     </div>
@@ -3072,10 +3355,11 @@ def index_html() -> str:
           </div>
         </section>
         <section class="panel">
-          <div class="panel-head"><h2>最近工作台</h2><span class="tag" id="roomCount">0</span></div>
+          <div class="panel-head"><h2 id="archiveModeLabel">最近工作台</h2><span class="tag" id="roomCount">0</span></div>
           <div class="panel-body">
+            <div id="hallNotice" class="notice hidden"></div>
             <div class="workbench-row mono" style="min-height:34px;color:var(--muted)">
-              <span>工作台</span><span>创建时间</span><span>状态</span><span>发现</span><span>任务</span><span>运行</span><span>负责人</span><span>MCP</span>
+              <span>工作台</span><span>创建时间</span><span>状态</span><span>发现</span><span>任务</span><span>运行</span><span>负责人</span><span>MCP</span><span>&#25805;&#20316;</span>
             </div>
             <div class="workbench-table" id="roomList"></div>
           </div>
@@ -3089,7 +3373,7 @@ def index_html() -> str:
           <h1 id="detailTitle">选择或创建工作台</h1>
           <p id="detailMeta">负责人令牌会保存在本机浏览器 localStorage。</p>
         </div>
-        <div class="actions"><span class="tag" id="socketState">未连接</span><button id="backToHall">返回大厅</button><button class="primary" id="detailCreateTask">创建目标</button><button id="detailInviteSupervisor">邀请监督者</button><button id="detailInviteAgent">邀请智能体</button></div>
+        <div class="actions"><span class="tag" id="socketState">未连接</span><button id="backToHall">返回大厅</button><button id="detailLeaveSupervisor" class="danger">退出看板</button><button id="detailArchiveWorkbench">归档</button><button id="detailRestoreWorkbench" class="success">恢复</button><button id="detailDeleteWorkbench" class="danger">彻底删除</button><button class="primary" id="detailCreateTask">创建目标</button><button id="detailInviteSupervisor">邀请监督者</button><button id="detailInviteAgent">邀请智能体</button></div>
       </div>
       <div id="detailBody"><div class="empty">还没有可展示的工作台。</div></div>
     </section>
@@ -3150,9 +3434,39 @@ def index_html() -> str:
       </div>
     </form>
   </div>
+  <div class="modal hidden" id="supervisorLeaveModal" role="dialog" aria-modal="true" aria-labelledby="supervisorLeaveModalTitle">
+    <form class="modal-card" id="supervisorLeaveForm">
+      <div class="modal-head">
+        <div>
+          <h2 id="supervisorLeaveModalTitle">退出监督者会话</h2>
+          <p>退出后，本设备将不再访问此看板。看板内容、任务和 Agent 运行不会受到影响。</p>
+        </div>
+        <button type="button" id="supervisorLeaveClose">关闭</button>
+      </div>
+      <div class="actions" style="margin-top:12px">
+        <button class="danger" type="submit">退出看板</button>
+        <button type="button" id="supervisorLeaveCancel">取消</button>
+      </div>
+    </form>
+  </div>
+  <div class="modal hidden" id="agentRevokeModal" role="dialog" aria-modal="true" aria-labelledby="agentRevokeModalTitle">
+    <form class="modal-card" id="agentRevokeForm">
+      <div class="modal-head">
+        <div>
+          <h2 id="agentRevokeModalTitle">撤销 Agent 访问</h2>
+          <p>这会使 <span id="agentRevokeName">Agent</span> 的服务端访问失效，但不会清理远端机器上的 MCP 配置、日志、shell history、缓存或工作区文件。</p>
+        </div>
+        <button type="button" id="agentRevokeClose">关闭</button>
+      </div>
+      <div class="actions" style="margin-top:12px">
+        <button class="danger" type="submit">撤销访问</button>
+        <button type="button" id="agentRevokeCancel">取消</button>
+      </div>
+    </form>
+  </div>
   <script>
     const AUDIT_PAGE_SIZE = 20;
-    const state = { rooms: [], room: null, ws: null, copyFallback: null, pendingInvites: {}, audit: { expanded: false, page: 0 }, tokens: JSON.parse(localStorage.getItem('reviewRoomAccessTokens') || localStorage.getItem('reviewRoomOwnerTokens') || '{}'), supervisorTokens: JSON.parse(localStorage.getItem('reviewRoomSupervisorTokens') || '{}') };
+    const state = { rooms: [], room: null, viewMode: 'active', ws: null, copyFallback: null, pendingInvites: {}, pendingRevokeConnector: null, hallNotice: '', audit: { expanded: false, page: 0 }, tokens: JSON.parse(localStorage.getItem('reviewRoomAccessTokens') || localStorage.getItem('reviewRoomOwnerTokens') || '{}'), supervisorTokens: JSON.parse(localStorage.getItem('reviewRoomSupervisorTokens') || '{}') };
     const statusText = { open: '进行中', archived: '已归档', deleted: '已删除', completed: '已完成', assigned:'已分配', running:'运行中', started:'已开始', pending:'待处理', proposed:'已提议', failed:'失败', needs_developer_response: '等待开发智能体', developer_responded: '等待负责人确认', accepted: '已确认', rejected: '已驳回' };
     const connectorStatusText = { connected:'已连接', disconnected:'已断开', invited:'已邀请', revoked:'已撤销', mcp_ready:'MCP 就绪', mcp_streaming:'MCP 在线' };
     const connectorKindText = { connector:'MCP', 'mcp-agent':'MCP', 'mcp-remote':'远程 MCP' };
@@ -3170,6 +3484,40 @@ def index_html() -> str:
     function canManageCurrentRoom(){
       return !!(state.room && state.tokens[state.room.id]);
     }
+    function isSupervisorCurrentRoom(){
+      return !!(state.room && !state.tokens[state.room.id] && state.supervisorTokens[state.room.id]);
+    }
+    function canPostMessagesCurrentRoom(){
+      return !!(state.room && accessTokenForRoom(state.room.id) && !['archived','deleted'].includes(state.room.status));
+    }
+    function commandPermissionReason(action){
+      if(!state.room) return '';
+      if(state.room.status === 'archived') return '已归档工作台为只读状态。';
+      if(isSupervisorCurrentRoom()) return '当前身份可发言和 @Agent，但没有管理权限。';
+      if(!accessTokenForRoom(state.room.id)) return '需要有效的房间访问权限。';
+      return '';
+    }
+    function applyCommandPermission(button, allowed, action){
+      if(!button) return;
+      button.disabled = !allowed;
+      button.title = allowed ? '' : commandPermissionReason(action);
+      button.classList.toggle('permission-locked', !allowed);
+    }
+    function activeRooms(){
+      return state.rooms.filter(room => !['archived','deleted'].includes(room.status));
+    }
+    function archivedRooms(){
+      return state.rooms.filter(room => room.status === 'archived');
+    }
+    function visibleRooms(){
+      return state.viewMode === 'archived' ? archivedRooms() : activeRooms();
+    }
+    function cleanupStoredRoomAccess(roomId){
+      delete state.tokens[roomId];
+      delete state.supervisorTokens[roomId];
+      saveTokens();
+      saveSupervisorTokens();
+    }
     function esc(v){ return String(v ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;'); }
     async function api(path, options={}){
       const res = await fetch(path, options);
@@ -3179,6 +3527,13 @@ def index_html() -> str:
     }
     function authHeaders(roomId){ return { 'Content-Type':'application/json', Authorization:`Bearer ${accessTokenForRoom(roomId)}` }; }
     function showHall(){
+      state.viewMode = 'active';
+      document.getElementById('hallView').classList.remove('hidden');
+      document.getElementById('detailView').classList.add('hidden');
+      renderRooms();
+    }
+    function showArchivedRooms(){
+      state.viewMode = 'archived';
       document.getElementById('hallView').classList.remove('hidden');
       document.getElementById('detailView').classList.add('hidden');
       renderRooms();
@@ -3244,6 +3599,8 @@ def index_html() -> str:
         return total ? `待处理 ${total} 项负责人事项` : '负责人令牌已就绪';
       }
       if(member.status === 'invited') return '待接入 MCP';
+      if(member.status === 'disconnected') return '已离开，可由负责人撤销访问';
+      if(member.status === 'revoked') return '访问已撤销';
       const runs = (room.agentRuns || []).filter(run => run.connectorId === member.connectorId || run.agentName === member.name);
       const activeRun = runs.find(run => ['running','started'].includes(run.status));
       if(activeRun) return `运行中 · ${activeRun.id}`;
@@ -3269,6 +3626,7 @@ def index_html() -> str:
         }));
       const agentRows = connectors.map(connector => ({
         kind: connector.agentRole === 'supervisor' ? 'supervisor' : 'agent',
+        id: connector.id,
         name: connector.name,
         role: connector.agentRole,
         status: connector.status || 'connected',
@@ -3314,7 +3672,47 @@ def index_html() -> str:
           <span class="tag info">${esc(member.adapter || 'MCP')}</span>
           <span class="tag mono">${esc(memberIdentityLabel(member))}</span>
         </div>
+        ${renderCapabilityBadges(member)}
+        ${renderMemberActions(member)}
       </article>`;
+    }
+    function renderMemberActions(member){
+      if(member.kind !== 'agent' || !canManageCurrentRoom() || !member.connectorId || member.status === 'revoked') return '';
+      return `<div class="actions" style="margin-top:10px"><button type="button" class="danger" data-revoke-connector="${esc(member.connectorId)}" data-revoke-name="${esc(member.name)}">撤销访问</button></div>`;
+    }
+    function memberCapabilityBadges(member){
+      if(member.kind === 'owner') return [
+        { label:'可发言', capability:'message:create', cls:'info' },
+        { label:'可邀请', capability:'member:invite', cls:'online' },
+        { label:'可分配', capability:'task:create', cls:'online' },
+        { label:'可批准', capability:'decision:approve', cls:'online' }
+      ];
+      if(member.kind === 'supervisor') return [
+        { label:'可发言', capability:'message:create', cls:'info' },
+        { label:'可 @Agent', capability:'message:mention_agent', cls:'info' },
+        { label:'不可邀请', capability:'member:invite', cls:'permission-locked' }
+      ];
+      if(member.kind === 'human') return [
+        { label:'可发言', capability:'message:create', cls:'info' },
+        { label:'不可管理', capability:'room:manage', cls:'permission-locked' }
+      ];
+      if(member.role === 'reviewer') return [
+        { label:'可回消息', capability:'message:create', cls:'info' },
+        { label:'可 Finding', capability:'finding:create', cls:'online' },
+        { label:'按任务执行', capability:'task:assigned_run', cls:'waiting' }
+      ];
+      if(member.role === 'developer') return [
+        { label:'可回消息', capability:'message:create', cls:'info' },
+        { label:'可响应 Finding', capability:'finding:respond', cls:'online' },
+        { label:'按任务执行', capability:'task:assigned_run', cls:'waiting' }
+      ];
+      return [
+        { label:'可回消息', capability:'message:create', cls:'info' },
+        { label:'按任务执行', capability:'task:assigned_run', cls:'waiting' }
+      ];
+    }
+    function renderCapabilityBadges(member){
+      return `<div class="capability-badges">${memberCapabilityBadges(member).map(badge => `<span class="tag ${esc(badge.cls)}" data-capability="${esc(badge.capability)}">${esc(badge.label)}</span>`).join('')}</div>`;
     }
     function renderMembers(room, pendingMentions, pendingTasks, latestCursor){
       const rows = memberRows(room, pendingMentions, pendingTasks);
@@ -3377,7 +3775,8 @@ def index_html() -> str:
       const input = document.getElementById('topicInput');
       if(!input) return;
       const body = input.value;
-      sendSocket({ type:'message.create', body, mentions:extractMentionNames(body) });
+      const kind = isSupervisorCurrentRoom() ? 'supervisor_message' : 'owner_topic';
+      sendSocket({ type:'message.create', kind, body, mentions:extractMentionNames(body) });
     }
     function formatDateTime(value){
       if(!value) return '未知';
@@ -3451,14 +3850,43 @@ def index_html() -> str:
     async function loadRooms(){
       const data = await api('/api/workbenches');
       state.rooms = data.workbenches || [];
-      document.getElementById('roomCount').textContent = `${state.rooms.length} 个`;
+      document.getElementById('roomCount').textContent = `${visibleRooms().length} 个`;
+      document.getElementById('archivedRoomCount').textContent = archivedRooms().length;
       renderRooms();
+    }
+    function renderRoomLifecycleControls(room){
+      if(!state.tokens[room.id]){
+        return '<span class="tag">&#21482;&#35835;</span>';
+      }
+      if(room.status === 'archived'){
+        return `<span class="room-actions">
+          <button type="button" class="success" data-room-action="restore" data-room-id="${esc(room.id)}">&#24674;&#22797;</button>
+          <button type="button" class="danger" data-room-action="delete" data-room-id="${esc(room.id)}">&#24443;&#24213;&#21024;&#38500;</button>
+        </span>`;
+      }
+      if(room.status === 'deleted'){
+        return '';
+      }
+      return `<span class="room-actions"><button type="button" data-room-action="archive" data-room-id="${esc(room.id)}">&#24402;&#26723;</button></span>`;
     }
     function renderRooms(){
       const list = document.getElementById('roomList');
-      if(!state.rooms.length){ list.innerHTML = '<div class="empty">暂无工作台</div>'; return; }
-      list.innerHTML = state.rooms.map(room => `
-        <button class="workbench-row ${state.room && state.room.id === room.id ? 'active' : ''}" data-room="${esc(room.id)}">
+      const rooms = visibleRooms();
+      const hallNotice = document.getElementById('hallNotice');
+      if(hallNotice){
+        hallNotice.textContent = state.hallNotice || '';
+        hallNotice.classList.toggle('hidden', !state.hallNotice);
+      }
+      document.getElementById('archiveModeLabel').textContent = state.viewMode === 'archived' ? '已归档工作台' : '最近工作台';
+      document.getElementById('roomCount').textContent = `${rooms.length} 个`;
+      if(!rooms.length){
+        list.innerHTML = state.viewMode === 'archived'
+          ? '<div class="empty">暂无已归档工作台</div>'
+          : '<div class="empty">暂无工作台</div>';
+        return;
+      }
+      list.innerHTML = rooms.map(room => `
+        <div class="workbench-row ${state.room && state.room.id === room.id ? 'active' : ''}" role="button" tabindex="0" data-room="${esc(room.id)}">
           <span><strong>${esc(room.title)}</strong><p class="mono">${esc(room.provider || room.template || 'workbench')}</p></span>
           <span class="metric mono">${esc(formatDateTime(room.createdAt))}</span>
           <span class="tag ${room.status === 'open' ? 'online' : room.status === 'deleted' ? 'danger' : 'waiting'}">${esc(statusText[room.status] || room.status)}</span>
@@ -3467,8 +3895,58 @@ def index_html() -> str:
           <span class="metric">${esc(room.activeRunCount || 0)}</span>
           <span class="metric">${esc(room.pendingOwnerActions || 0)}</span>
           <span class="metric">${esc((room.connectorStatus && room.connectorStatus.active) || 0)}/${esc((room.connectorStatus && room.connectorStatus.total) || 0)}</span>
-        </button>`).join('');
-      list.querySelectorAll('[data-room]').forEach(btn => btn.addEventListener('click', () => selectRoom(btn.dataset.room)));
+          ${renderRoomLifecycleControls(room)}
+        </div>`).join('');
+      bindRoomLifecycleControls();
+    }
+    function bindRoomLifecycleControls(){
+      const list = document.getElementById('roomList');
+      list.querySelectorAll('[data-room]').forEach(row => {
+        row.addEventListener('click', event => {
+          if(event.target.closest('[data-room-action]')) return;
+          selectRoom(row.dataset.room).catch(alert);
+        });
+        row.addEventListener('keydown', event => {
+          if(event.target.closest('[data-room-action]')) return;
+          if(event.key === 'Enter' || event.key === ' '){
+            event.preventDefault();
+            selectRoom(row.dataset.room).catch(alert);
+          }
+        });
+      });
+      list.querySelectorAll('[data-room-action]').forEach(button => button.addEventListener('click', event => {
+        event.stopPropagation();
+        const roomId = button.dataset.roomId;
+        const action = button.dataset.roomAction;
+        if(action === 'archive') archiveRoomFromHall(roomId).catch(alert);
+        if(action === 'restore') restoreRoomFromHall(roomId).catch(alert);
+        if(action === 'delete') deleteRoomFromHall(roomId).catch(alert);
+      }));
+    }
+    async function archiveRoomFromHall(roomId){
+      await api(`/api/workbenches/${encodeURIComponent(roomId)}/archive`, { method:'POST', headers:authHeaders(roomId), body:JSON.stringify({}) });
+      if(state.room && state.room.id === roomId) state.room = null;
+      state.viewMode = 'active';
+      await loadRooms();
+    }
+    async function restoreRoomFromHall(roomId){
+      await api(`/api/workbenches/${encodeURIComponent(roomId)}/restore`, { method:'POST', headers:authHeaders(roomId), body:JSON.stringify({}) });
+      if(state.room && state.room.id === roomId) state.room = null;
+      state.viewMode = 'active';
+      await loadRooms();
+    }
+    async function deleteRoomFromHall(roomId){
+      const confirmed = confirm('彻底删除会从工作台列表移除这个工作台，但只会生成服务端 tombstone 和审计记录，不清理远端 Agent 机器、MCP 配置、日志或工作区文件。继续？');
+      if(!confirmed) return;
+      await api(`/api/workbenches/${encodeURIComponent(roomId)}`, {
+        method:'DELETE',
+        headers:authHeaders(roomId),
+        body:JSON.stringify({ confirm:true, reason:'owner removed archived workbench from hall UI' })
+      });
+      cleanupStoredRoomAccess(roomId);
+      if(state.room && state.room.id === roomId) state.room = null;
+      state.viewMode = 'archived';
+      await loadRooms();
     }
     async function createRoom(){
       const room = await api('/api/workbenches', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({
@@ -3491,6 +3969,46 @@ def index_html() -> str:
       renderDetail();
       connectSocket();
       showDetail();
+    }
+    async function reloadCurrentRoom(roomId){
+      state.room = await api(`/api/workbenches/${encodeURIComponent(roomId)}`, { headers:{ Authorization:`Bearer ${accessTokenForRoom(roomId)}` } });
+      renderRooms();
+      renderDetail();
+      connectSocket();
+      showDetail();
+    }
+    async function archiveCurrentRoom(){
+      if(!state.room) return;
+      const roomId = state.room.id;
+      await api(`/api/workbenches/${encodeURIComponent(roomId)}/archive`, { method:'POST', headers:authHeaders(roomId), body:JSON.stringify({}) });
+      state.viewMode = 'archived';
+      await loadRooms();
+      await reloadCurrentRoom(roomId);
+    }
+    async function restoreCurrentRoom(){
+      if(!state.room) return;
+      const roomId = state.room.id;
+      await api(`/api/workbenches/${encodeURIComponent(roomId)}/restore`, { method:'POST', headers:authHeaders(roomId), body:JSON.stringify({}) });
+      state.viewMode = 'active';
+      await loadRooms();
+      await reloadCurrentRoom(roomId);
+    }
+    async function deleteCurrentRoom(){
+      if(!state.room) return;
+      const roomId = state.room.id;
+      const confirmed = confirm('彻底删除会从工作台列表移除这个工作台，但只会生成服务端 tombstone 和审计记录，不清理远端 Agent 机器、MCP 配置、日志或工作区文件。继续？');
+      if(!confirmed) return;
+      await api(`/api/workbenches/${encodeURIComponent(roomId)}`, {
+        method:'DELETE',
+        headers:authHeaders(roomId),
+        body:JSON.stringify({ confirm:true, reason:'owner removed archived workbench from local UI' })
+      });
+      cleanupStoredRoomAccess(roomId);
+      state.room = null;
+      if(state.ws) state.ws.close();
+      state.viewMode = 'archived';
+      await loadRooms();
+      showArchivedRooms();
     }
     function renderMissingToken(roomId){
       state.room = null;
@@ -3577,16 +4095,15 @@ def index_html() -> str:
     function inviteText(invite, agentName, role){
       const mcpUrl = `${location.origin}/mcp`;
       return [
-        `请添加远程 MCP 服务：`,
+        `添加远程 MCP 服务：`,
         `name: lighthouse-agent-board`,
         `url: ${mcpUrl}`,
         `auth: Bearer ${invite.token}`,
         ``,
         `身份：${agentName} · ${agentRoleLabel(role)}`,
-        `添加后请调用 join_room，roomId=${state.room.id}。`,
-        `所有工作台消息都会进入 @${agentName} 的收件箱；明确 @${agentName} 的消息是高优先级并需要回复。`,
-        `消息不是执行权限；分配给你的任务必须 claim_task、start_run，然后 complete_task。`,
-        `普通回复用 post_message，评审结论用 post_finding，外部动作先 request_owner_confirmation。`
+        `添加后先调用 join_room，roomId=${state.room.id}。`,
+        `然后调用 get_agent_briefing 读取本房间规则、信任边界、当前状态和下一步工具。`,
+        `完成参与时调用 leave_room，然后停止 wait_room_events；如需彻底禁止再次接入，由负责人撤销访问。`
       ].join('\\n');
     }
     function openInviteModal(role='reviewer'){
@@ -3752,6 +4269,49 @@ def index_html() -> str:
       renderDetail();
     }
     function inviteDefaultAgent(){ openInviteModal('reviewer'); }
+    function openSupervisorLeaveModal(){
+      document.getElementById('supervisorLeaveModal').classList.remove('hidden');
+    }
+    function closeSupervisorLeaveModal(){
+      document.getElementById('supervisorLeaveModal').classList.add('hidden');
+    }
+    async function leaveSupervisorSession(){
+      if(!state.room) return;
+      const roomId = state.room.id;
+      await api(`/api/rooms/${encodeURIComponent(roomId)}/supervisor-session/leave`, {
+        method:'POST',
+        headers: authHeaders(roomId),
+        body: JSON.stringify({ reason:'supervisor left from workbench UI' })
+      });
+      closeSupervisorLeaveModal();
+      if(state.ws) state.ws.close();
+      delete state.supervisorTokens[roomId];
+      saveSupervisorTokens();
+      state.room = null;
+      state.hallNotice = '已退出监督者会话，本设备已清除该看板访问令牌。';
+      await loadRooms();
+      showHall();
+    }
+    function openAgentRevokeModal(connectorId, name){
+      state.pendingRevokeConnector = { id: connectorId, name };
+      document.getElementById('agentRevokeName').textContent = name || 'Agent';
+      document.getElementById('agentRevokeModal').classList.remove('hidden');
+    }
+    function closeAgentRevokeModal(){
+      document.getElementById('agentRevokeModal').classList.add('hidden');
+      state.pendingRevokeConnector = null;
+    }
+    async function revokeAgentAccess(){
+      if(!state.room || !state.pendingRevokeConnector) return;
+      const roomId = state.room.id;
+      await api(`/api/rooms/${encodeURIComponent(roomId)}/connectors/${encodeURIComponent(state.pendingRevokeConnector.id)}/revoke`, {
+        method:'POST',
+        headers: authHeaders(roomId),
+        body: JSON.stringify({ reason:'owner revoked Agent access from workbench UI' })
+      });
+      closeAgentRevokeModal();
+      await reloadCurrentRoom(roomId);
+    }
     function renderDetail(){
       const room = state.room;
       if(!room) return;
@@ -3772,14 +4332,37 @@ def index_html() -> str:
       }).length;
       const pendingTasks = tasks.filter(task => ['assigned','running'].includes(task.status)).length;
       const canManage = canManageCurrentRoom();
+      const canEditWorkbench = canManage && room.status !== 'archived' && room.status !== 'deleted';
+      const canArchiveWorkbench = canManage && !['archived','deleted'].includes(room.status);
+      const canRestoreWorkbench = canManage && room.status === 'archived';
+      const canPostMessage = canPostMessagesCurrentRoom();
+      const isSupervisor = isSupervisorCurrentRoom();
+      const detailLeaveSupervisor = document.getElementById('detailLeaveSupervisor');
       const detailCreateTask = document.getElementById('detailCreateTask');
       const detailInviteSupervisor = document.getElementById('detailInviteSupervisor');
       const detailInviteAgent = document.getElementById('detailInviteAgent');
-      detailCreateTask.hidden = !canManage;
-      detailInviteSupervisor.hidden = !canManage;
-      detailInviteAgent.hidden = !canManage;
-      const composerHtml = canManage
-        ? `<div class="field" style="margin-top:12px"><label>负责人发起话题</label><div class="composer-box"><textarea id="topicInput">请评审这个 MR 的鉴权风险，并给出可执行修复建议。</textarea><button class="primary" id="sendTopic">发送</button></div></div>${renderMentionBar(room)}`
+      const detailArchiveWorkbench = document.getElementById('detailArchiveWorkbench');
+      const detailRestoreWorkbench = document.getElementById('detailRestoreWorkbench');
+      const detailDeleteWorkbench = document.getElementById('detailDeleteWorkbench');
+      detailLeaveSupervisor.hidden = !isSupervisor || room.status === 'deleted';
+      detailCreateTask.hidden = !canEditWorkbench;
+      detailInviteSupervisor.hidden = !canEditWorkbench;
+      detailInviteAgent.hidden = !canEditWorkbench;
+      detailArchiveWorkbench.hidden = !canArchiveWorkbench;
+      detailRestoreWorkbench.hidden = !canRestoreWorkbench;
+      detailDeleteWorkbench.hidden = !canRestoreWorkbench;
+      applyCommandPermission(detailCreateTask, canEditWorkbench, 'task:create');
+      applyCommandPermission(detailInviteSupervisor, canEditWorkbench, 'member:invite_human');
+      applyCommandPermission(detailInviteAgent, canEditWorkbench, 'member:invite_agent');
+      applyCommandPermission(detailArchiveWorkbench, canArchiveWorkbench, 'room:archive');
+      applyCommandPermission(detailRestoreWorkbench, canRestoreWorkbench, 'room:restore');
+      applyCommandPermission(detailDeleteWorkbench, canRestoreWorkbench, 'room:delete');
+      const topicLabel = isSupervisorCurrentRoom() ? '监督者发起话题' : '负责人发起话题';
+      const topicDraft = isSupervisorCurrentRoom() ? '@Reviewer Agent ' : '请评审这个 MR 的鉴权风险，并给出可执行修复建议。';
+      const composerHtml = canPostMessage
+        ? `<div class="field" style="margin-top:12px"><label>${topicLabel}</label><div class="composer-box"><textarea id="topicInput">${topicDraft}</textarea><button class="primary" id="sendTopic">发送</button></div></div>${renderMentionBar(room)}`
+        : room.status === 'archived'
+          ? '<div class="empty">已归档工作台为只读状态，可恢复后继续协作。</div>'
         : '<div class="empty">监督者会话为只读模式，可查看工作台状态与审计日志。</div>';
       document.getElementById('detailBody').innerHTML = `
         <div class="detail-grid">
@@ -3812,6 +4395,9 @@ def index_html() -> str:
         </div>
         ${renderAuditPanel(events)}`;
       document.querySelectorAll('[data-mention]').forEach(btn => btn.addEventListener('click', () => insertMention(btn.dataset.mention)));
+      document.querySelectorAll('[data-revoke-connector]').forEach(btn => {
+        btn.addEventListener('click', () => openAgentRevokeModal(btn.dataset.revokeConnector, btn.dataset.revokeName));
+      });
       const sendTopic = document.getElementById('sendTopic');
       if(sendTopic) sendTopic.addEventListener('click', () => sendTopicMessage());
       document.querySelectorAll('[data-confirm]').forEach(btn => btn.addEventListener('click', () => sendSocket({ type:'finding.confirm', findingId:btn.dataset.confirm, decision:'accepted', body:'确认该修复方向。' })));
@@ -3833,11 +4419,16 @@ def index_html() -> str:
     }
     document.getElementById('createRoom').addEventListener('click', () => createRoom().catch(alert));
     document.getElementById('refreshRooms').addEventListener('click', () => loadRooms().catch(alert));
+    document.getElementById('showArchivedRooms').addEventListener('click', () => showArchivedRooms());
     document.getElementById('showHall').addEventListener('click', () => showHall());
     document.getElementById('backToHall').addEventListener('click', () => showHall());
+    document.getElementById('detailArchiveWorkbench').addEventListener('click', () => archiveCurrentRoom().catch(alert));
+    document.getElementById('detailRestoreWorkbench').addEventListener('click', () => restoreCurrentRoom().catch(alert));
+    document.getElementById('detailDeleteWorkbench').addEventListener('click', () => deleteCurrentRoom().catch(alert));
     document.getElementById('detailCreateTask').addEventListener('click', () => createTaskFromDetail().catch(alert));
     document.getElementById('detailInviteSupervisor').addEventListener('click', () => openSupervisorInviteModal());
     document.getElementById('detailInviteAgent').addEventListener('click', () => inviteDefaultAgent());
+    document.getElementById('detailLeaveSupervisor').addEventListener('click', () => openSupervisorLeaveModal());
     document.getElementById('inviteForm').addEventListener('submit', event => submitInviteForm(event).catch(alert));
     document.getElementById('inviteClose').addEventListener('click', () => closeInviteModal());
     document.getElementById('inviteCancel').addEventListener('click', () => closeInviteModal());
@@ -3846,6 +4437,18 @@ def index_html() -> str:
     document.getElementById('supervisorInviteClose').addEventListener('click', () => closeSupervisorInviteModal());
     document.getElementById('supervisorInviteCancel').addEventListener('click', () => closeSupervisorInviteModal());
     document.getElementById('supervisorInviteCopyButton').addEventListener('click', () => copySupervisorInviteUrl().catch(alert));
+    document.getElementById('supervisorLeaveForm').addEventListener('submit', event => {
+      event.preventDefault();
+      leaveSupervisorSession().catch(alert);
+    });
+    document.getElementById('supervisorLeaveClose').addEventListener('click', () => closeSupervisorLeaveModal());
+    document.getElementById('supervisorLeaveCancel').addEventListener('click', () => closeSupervisorLeaveModal());
+    document.getElementById('agentRevokeForm').addEventListener('submit', event => {
+      event.preventDefault();
+      revokeAgentAccess().catch(alert);
+    });
+    document.getElementById('agentRevokeClose').addEventListener('click', () => closeAgentRevokeModal());
+    document.getElementById('agentRevokeCancel').addEventListener('click', () => closeAgentRevokeModal());
     document.getElementById('inviteAgentRole').addEventListener('change', event => {
       const input = document.getElementById('inviteAgentName');
       if(!input.value || /^Agent-[A-Z0-9]{4}$/.test(input.value)) input.value = defaultAgentName();

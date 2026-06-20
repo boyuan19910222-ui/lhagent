@@ -71,6 +71,25 @@ and a next action.
 - Add run comparison for Reviewer verification after Developer fixes.
 - Add a compact "why this Agent is allowed to act" explanation on each task.
 
+## Room role permissions
+
+- Define a room-wide role and capability matrix before expanding supervisor,
+  invite, Agent-management, or task-routing flows.
+- Cover owner, supervisor, guest or human collaborator, Reviewer Agent,
+  Developer Agent, general Agent, sync adapter, and system/service identities.
+- Default rule: joining a room does not grant downstream invite authority.
+  Supervisors can participate in Workbench messages and mention Agents for
+  coordination, but human invites, Agent invites, Agent lifecycle controls,
+  task creation or assignment, owner decisions, room lifecycle actions, and
+  external-effect approval stay owner-gated unless explicitly delegated.
+- Separate capabilities for reading board state, posting messages, mentioning
+  Agents, creating tasks, claiming or starting runs, creating findings,
+  responding to findings, confirming findings, proposing handoffs, inviting
+  humans, inviting Agents, rotating or revoking identities, archiving or
+  deleting rooms, and approving external sync.
+- Make the eventual capability gates visible in UI copy, API checks, MCP tool
+  policy, audit events, and tests.
+
 ## Safety
 
 - Build a context packer that separates trusted task data from untrusted room,

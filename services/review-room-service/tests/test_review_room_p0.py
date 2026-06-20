@@ -241,11 +241,16 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(archive_response.status, 403)
         self.assertTrue(connector["connectorToken"].startswith("rrc_"))
 
-    async def test_supervisor_session_cannot_write_room_content(self):
-        _, workbench = await self.post_json("/api/workbenches", {"title": "MR: supervised read only"})
+    async def test_supervisor_session_can_write_messages_but_not_manage_room_content(self):
+        _, workbench = await self.post_json("/api/workbenches", {"title": "MR: supervised message only"})
+        _, connector = await self.post_json(
+            "/api/rooms/{}/connectors".format(workbench["id"]),
+            {"role": "reviewer", "name": "Reviewer Agent"},
+            workbench["ownerToken"],
+        )
         _, invite = await self.post_json(
             "/api/rooms/{}/supervisor-invites".format(workbench["id"]),
-            {"name": "Read Only"},
+            {"name": "Alice"},
             workbench["ownerToken"],
         )
         _, consumed = await self.post_json(
@@ -256,7 +261,7 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
 
         message_response, _ = await self.post_json(
             "/api/rooms/{}/messages".format(workbench["id"]),
-            {"body": "should not write"},
+            {"body": "@Reviewer Agent please review this context.", "payload": {"mentions": ["Reviewer Agent"]}},
             token,
         )
         finding_response, _ = await self.post_json(
@@ -272,15 +277,99 @@ class ReviewRoomP0AioHttpTest(unittest.IsolatedAsyncioTestCase):
         ws = await self.client.ws_connect("/ws/rooms/{}?token={}".format(workbench["id"], token))
         await ws.receive_json()
         await ws.receive_json()
-        await ws.send_json({"type": "message.create", "body": "should not write"})
+        await ws.send_json(
+            {
+                "type": "message.create",
+                "body": "@Reviewer Agent supervisor follow-up",
+                "mentions": ["Reviewer Agent"],
+            }
+        )
+        ws_message = await ws.receive_json()
+        await ws.send_json({"type": "finding.create", "claim": "should not write"})
         ws_error = await ws.receive_json()
         await ws.close()
 
-        self.assertEqual(message_response.status, 403)
+        self.assertEqual(message_response.status, 201)
         self.assertEqual(finding_response.status, 403)
         self.assertEqual(task_response.status, 403)
+        self.assertEqual(ws_message["type"], "message.created")
+        self.assertEqual(ws_message["message"]["senderName"], "Alice")
+        self.assertEqual(ws_message["message"]["kind"], "supervisor_message")
         self.assertEqual(ws_error["type"], "error")
-        self.assertIn("read-only", ws_error["error"])
+        self.assertIn("supervisor", ws_error["error"])
+        self.assertTrue(connector["connectorToken"].startswith("rrc_"))
+
+    async def test_supervisor_session_leave_invalidates_token_and_broadcasts_snapshot(self):
+        _, workbench = await self.post_json("/api/workbenches", {"title": "MR: supervisor leave"})
+        _, invite = await self.post_json(
+            "/api/rooms/{}/supervisor-invites".format(workbench["id"]),
+            {"name": "Alice"},
+            workbench["ownerToken"],
+        )
+        _, consumed = await self.post_json(
+            "/api/rooms/{}/supervisor-invites/consume".format(workbench["id"]),
+            {"token": invite["token"]},
+        )
+        owner_ws = await self.client.ws_connect("/ws/rooms/{}?token={}".format(workbench["id"], workbench["ownerToken"]))
+        await owner_ws.receive_json()
+        await owner_ws.receive_json()
+
+        leave_response, left = await self.post_json(
+            "/api/rooms/{}/supervisor-session/leave".format(workbench["id"]),
+            {"reason": "done observing"},
+            consumed["accessToken"],
+        )
+        snapshot = await asyncio.wait_for(owner_ws.receive_json(), timeout=1)
+        denied_read = await self.client.get(
+            "/api/workbenches/{}".format(workbench["id"]),
+            headers={"Authorization": "Bearer {}".format(consumed["accessToken"])},
+        )
+        await owner_ws.close()
+
+        self.assertEqual(leave_response.status, 200)
+        self.assertEqual(left["status"], "left")
+        self.assertEqual(snapshot["type"], "room.snapshot")
+        self.assertNotIn({"type": "human", "name": "Alice", "role": "supervisor"}, snapshot["room"]["participants"])
+        self.assertIn("supervisor.left", [event["type"] for event in snapshot["room"]["events"]])
+        self.assertEqual(denied_read.status, 403)
+
+    async def test_owner_revoke_connector_invalidates_agent_token_and_broadcasts_snapshot(self):
+        _, workbench = await self.post_json("/api/workbenches", {"title": "MR: revoke agent"})
+        _, connector = await self.post_json(
+            "/api/rooms/{}/connectors".format(workbench["id"]),
+            {"role": "reviewer", "name": "Reviewer Agent"},
+            workbench["ownerToken"],
+        )
+        owner_ws = await self.client.ws_connect("/ws/rooms/{}?token={}".format(workbench["id"], workbench["ownerToken"]))
+        await owner_ws.receive_json()
+        await owner_ws.receive_json()
+
+        revoke_response, revoked = await self.post_json(
+            "/api/rooms/{}/connectors/{}/revoke".format(workbench["id"], connector["id"]),
+            {"reason": "owner removed agent"},
+            workbench["ownerToken"],
+        )
+        snapshot = await asyncio.wait_for(owner_ws.receive_json(), timeout=1)
+        denied_message, _ = await self.post_json(
+            "/api/rooms/{}/messages".format(workbench["id"]),
+            {"body": "should fail"},
+            connector["connectorToken"],
+        )
+        denied_revoke, _ = await self.post_json(
+            "/api/rooms/{}/connectors/{}/revoke".format(workbench["id"], connector["id"]),
+            {"reason": "agent cannot revoke itself"},
+            connector["connectorToken"],
+        )
+        await owner_ws.close()
+
+        self.assertEqual(revoke_response.status, 200)
+        self.assertEqual(revoked["status"], "revoked")
+        self.assertIn("does not clean remote Agent machines", revoked["cleanupBoundary"])
+        self.assertEqual(snapshot["type"], "room.snapshot")
+        self.assertEqual(snapshot["room"]["connectors"][0]["status"], "revoked")
+        self.assertIn("mcp.agent_revoked", [event["type"] for event in snapshot["room"]["events"]])
+        self.assertEqual(denied_message.status, 403)
+        self.assertEqual(denied_revoke.status, 403)
 
     async def test_finding_mutation_routes_require_matching_role(self):
         _, workbench = await self.post_json("/api/workbenches", {"title": "MR: guarded findings"})

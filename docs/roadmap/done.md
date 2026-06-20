@@ -223,8 +223,8 @@ Notes:
   inspector when present.
 - The Activity / Audit Log is collapsed by default, expands on demand, and
   paginates newest-first at 20 events per page.
-- Supervisor sessions are read-only for board writes: REST message/finding/task
-  writes and WebSocket write events are rejected.
+- Supervisor sessions can post coordination messages and mention Agents, but
+  finding, task, invite, lifecycle, and owner-decision writes remain rejected.
 - Finding mutation routes are role-gated: Developer responses require a
   Developer connector, and owner confirmation or generic finding updates
   require the owner token.
@@ -368,6 +368,52 @@ Notes:
 
 - This proves server-side invalidation behavior. Remote machine cleanup remains
   a separate lifecycle concern.
+
+### Agent and supervisor room exit lifecycle
+
+Status: `Verified remote preview smoke on 2026-06-20`
+
+Evidence:
+
+- `python -m py_compile services\review-room-service\review_room_service.py services\review-room-service\review_room_mcp.py`
+- `python -m unittest discover -s services/review-room-service/tests -v`: 80
+  Python unittest tests passed.
+- `npm test`: OpenClaw Billing Guardian 16 Node tests passed; Agent Board
+  canonical service 80 Python unittest tests passed.
+- Remote deployment to `lighthouse-review-room.service` on
+  `ubuntu@124.222.24.34`; `http://124.222.24.34/health` returned HTTP 200.
+- Remote HTML smoke on `http://124.222.24.34` found `supervisorLeaveModal`,
+  `agentRevokeModal`, `leave_room`, and the owner revoke endpoint wiring.
+- Remote API/MCP smoke room `room_82bca931456c41e9` verified supervisor leave,
+  supervisor token invalidation, Developer `get_agent_briefing` role-specific
+  capabilities, MCP `leave_room`, blocked tools while disconnected, reconnect
+  with `join_room`, owner revoke blocking rejoin, and audit events; the smoke
+  room was deleted through the service API after verification.
+- `test_supervisor_leave_revokes_session_and_records_audit_event`
+- `test_mcp_agent_leave_disconnects_without_revoking_and_can_rejoin`
+- `test_owner_revoke_connector_blocks_token_and_records_cleanup_boundary`
+- `test_mcp_agent_can_leave_and_must_rejoin_before_tools_work`
+- `test_mcp_revoked_agent_cannot_rejoin_or_use_tools`
+- `test_mcp_agent_briefing_uses_role_specific_default_capabilities`
+- `test_supervisor_session_leave_invalidates_token_and_broadcasts_snapshot`
+- `test_owner_revoke_connector_invalidates_agent_token_and_broadcasts_snapshot`
+
+Notes:
+
+- Supervisor leave invalidates only the current supervisor session token,
+  removes the human participant, writes `supervisor.left`, broadcasts a room
+  snapshot, closes the local UI connection, and clears
+  `reviewRoomSupervisorTokens[roomId]`.
+- MCP `leave_room` / `review_room.leave_room` sets the connector to
+  `disconnected`; the same MCP token can call `join_room` to reconnect, while
+  other tools are blocked until rejoin.
+- Owner revoke sets the connector to `revoked`; the MCP token cannot rejoin,
+  read, post, wait, or execute tools after revocation.
+- Agent leave and owner revoke events record active task/run counts and the
+  cleanup boundary. Neither action cancels tasks/runs or cleans remote MCP
+  config, logs, shell history, caches, workspaces, or local files.
+- This is remote preview/API smoke evidence, not a full real remote-Agent
+  scenario.
 
 ### Reviewer-to-Developer handoff
 
