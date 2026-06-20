@@ -104,6 +104,10 @@ Initial capability framing after the local P0 implementation:
   records local and remote preview evidence for supervisor leave, Agent
   `leave_room`, owner revoke, audit events, and explicit server-side cleanup
   boundaries.
+- [done.md](../done.md#agent-board-matrix-terminal-visual-theme-and-font-stack)
+  records local and remote preview evidence for the built-in Agent Board Matrix
+  Terminal visual theme, embedded `Share Tech Mono` font, CJK readability
+  fallbacks, and responsive browser smoke.
 
 ## Acceptance criteria
 

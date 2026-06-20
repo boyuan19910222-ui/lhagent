@@ -83,6 +83,10 @@ P0 should prove:
   records the 2026-06-20 Agent/supervisor leave and revoke lifecycle: supervisor
   session leave, MCP `leave_room`, reconnect, owner revoke, blocked tools after
   revoke, audit events, and explicit remote-cleanup boundaries.
+- [done.md](../done.md#agent-board-matrix-terminal-visual-theme-and-font-stack)
+  records the 2026-06-20 Matrix Terminal visual theme and embedded font stack:
+  product-grade terminal styling, `Share Tech Mono`, CJK readability fallbacks,
+  local/remote browser smoke, and no API, MCP, or execution-semantic changes.
 - `python -m unittest discover experiments/review-room/service/tests` passed
   80 legacy Agent Board tests on 2026-06-14.
 

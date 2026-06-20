@@ -182,6 +182,29 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertNotIn("Create Task", html)
         self.assertNotIn("Invite Agent", html)
 
+    def test_home_page_uses_matrix_terminal_visual_theme(self):
+        html = index_html()
+
+        self.assertIn('data-theme="matrix-terminal"', html)
+        self.assertIn("matrix-terminal-shell", html)
+        self.assertIn("--matrix-green", html)
+        self.assertIn("--phosphor-glow", html)
+        self.assertIn("terminal-scanline", html)
+        self.assertIn("matrix-noise", html)
+        self.assertIn('class="matrix-noise"', html)
+        self.assertIn('class="terminal-scanline"', html)
+        self.assertIn("@media(prefers-reduced-motion:reduce)", html)
+
+    def test_home_page_uses_matrix_terminal_font_stack(self):
+        html = index_html()
+
+        self.assertIn("@font-face", html)
+        self.assertIn("Share Tech Mono", html)
+        self.assertIn("--font-terminal", html)
+        self.assertIn("--font-cjk", html)
+        self.assertIn("Noto Sans SC", html)
+        self.assertIn("Microsoft YaHei UI", html)
+
     def test_home_page_exposes_workbench_archive_lifecycle_controls(self):
         html = index_html()
 

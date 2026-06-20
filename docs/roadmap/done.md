@@ -415,6 +415,46 @@ Notes:
 - This is remote preview/API smoke evidence, not a full real remote-Agent
   scenario.
 
+### Agent Board Matrix Terminal visual theme and font stack
+
+Status: `Verified remote preview on 2026-06-20`
+
+Evidence:
+
+- [services/review-room-service/review_room_service.py](../../services/review-room-service/review_room_service.py)
+- [services/review-room-service/tests/test_review_room_service.py](../../services/review-room-service/tests/test_review_room_service.py)
+- `python -m py_compile services\review-room-service\review_room_service.py`
+- `python -m unittest services.review-room-service.tests.test_review_room_service`: 37
+  Python unittest tests passed.
+- `npm test`: OpenClaw Billing Guardian 16 Node tests passed; Agent Board
+  canonical service 82 Python unittest tests passed.
+- Local browser smoke on `http://127.0.0.1:8707`: desktop Hall, Workbench
+  detail, and 390px mobile rendered with `data-theme="matrix-terminal"`,
+  `Share Tech Mono` loaded, terminal and CJK font tokens present, no horizontal
+  overflow, and no console/runtime errors.
+- Remote deployment to `lighthouse-review-room.service` on
+  `ubuntu@124.222.24.34`; `http://124.222.24.34/health` returned HTTP 200.
+- Remote HTML/browser smoke on `http://124.222.24.34`: page contained
+  `@font-face`, `Share Tech Mono`, `--font-terminal`, `--font-cjk`,
+  `data-theme="matrix-terminal"`, `class="matrix-noise"`, and
+  `class="terminal-scanline"` with no combined texture-layer class; desktop and
+  390px mobile confirmed the font loaded with no horizontal overflow and no
+  console/runtime errors.
+- Remote backup before deployment:
+  `/home/ubuntu/review-room-service/backups/review_room_service.py.20260620-235257.matrix-font-cr.bak`.
+
+Notes:
+
+- The built-in P0 UI now uses a product-grade Matrix Terminal theme: near-black
+  surfaces, phosphor green tokens, low-intensity grid/noise/scanline texture,
+  green focus/selection glow, amber waiting state, and red dangerous actions.
+- `Share Tech Mono` is embedded as a WOFF2 data URI for terminal headings,
+  labels, metrics, tags, tabs, and buttons; readable Chinese text and form
+  controls keep CJK fallbacks such as `Noto Sans SC` and `Microsoft YaHei UI`.
+- This was a visual-theme and font-stack change only. It did not change APIs,
+  schemas, MCP tools, routes, room data, task execution semantics, onboarding
+  copy, or the MCP-only product boundary.
+
 ### Reviewer-to-Developer handoff
 
 Status: `Done in local P0`

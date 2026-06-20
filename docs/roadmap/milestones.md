@@ -5,11 +5,12 @@
 Lighthouse Agent Board is now past roadmap foundation and into local P0
 hardening plus remote preview verification. The strongest verified areas are
 Workbench CRUD/lifecycle, human supervisor invites, message and audit surfaces,
-MCP-only Agent onboarding, and server-side leave/revoke semantics. The strongest
-real remote-Agent proof is still partial: activated Agents have joined through
-the deployed `/mcp` endpoint, consumed Inbox context, and exchanged visible
-messages, but the full task claim -> `agent_run` -> completion -> handoff ->
-owner decision loop still needs real activated-Agent verification.
+MCP-only Agent onboarding, server-side leave/revoke semantics, and the built-in
+Agent Board Matrix Terminal visual polish. The strongest real remote-Agent proof
+is still partial: activated Agents have joined through the deployed `/mcp`
+endpoint, consumed Inbox context, and exchanged visible messages, but the full
+task claim -> `agent_run` -> completion -> handoff -> owner decision loop still
+needs real activated-Agent verification.
 
 Current status by milestone:
 
@@ -22,7 +23,8 @@ Current status by milestone:
 - M3 is in progress: MCP-only onboarding now includes briefing, leave, reconnect,
   and revoke semantics; compatibility and bootstrap variants remain open.
 - M4 is in progress at local P0 depth: Workbench CRUD and lifecycle controls
-  exist in the canonical service, while durable Lighthouse Console/backend
+  exist in the canonical service and the built-in UI now has a verified Matrix
+  Terminal product style, while durable Lighthouse Console/backend
   productization is still planned.
 - M5 remains an open question until a non-MR workflow is mapped without
   weakening the safety or observability model.
@@ -81,6 +83,9 @@ Current evidence:
 - Agent and supervisor leave/revoke lifecycle has remote preview/API smoke
   evidence in
   [done.md](./done.md#agent-and-supervisor-room-exit-lifecycle).
+- The built-in Agent Board Matrix Terminal visual theme and font stack has
+  local and remote browser smoke evidence in
+  [done.md](./done.md#agent-board-matrix-terminal-visual-theme-and-font-stack).
 
 Remaining proof:
 
@@ -202,6 +207,10 @@ Current evidence:
 - [Workbench detail collaboration surface and audit log cleanup](./done.md#workbench-detail-collaboration-surface-and-audit-log-cleanup)
   records local and remote preview evidence for dynamic Agent mentions, compact
   message composer, collapsed audit log, and role-gated finding mutation.
+- [Agent Board Matrix Terminal visual theme and font stack](./done.md#agent-board-matrix-terminal-visual-theme-and-font-stack)
+  records local and remote preview evidence for the product-grade terminal
+  theme, embedded `Share Tech Mono`, readable CJK fallbacks, and responsive
+  smoke checks.
 
 Remaining proof:
 
