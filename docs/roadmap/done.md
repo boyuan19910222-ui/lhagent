@@ -45,8 +45,8 @@ Evidence:
 - [services/review-room-service/tests/test_review_room_p0.py](../../services/review-room-service/tests/test_review_room_p0.py)
 - [docs/roadmap/tracks/lighthouse-productization.md](./tracks/lighthouse-productization.md)
 - `.venv/bin/python -m py_compile services/review-room-service/review_room_service.py`
-- `.venv/bin/python -m unittest services.review-room-service.tests.test_review_room_service`
-- `.venv/bin/python -m unittest services.review-room-service.tests.test_review_room_p0.ReviewRoomP0AioHttpTest.test_workbench_api_create_list_read_and_lifecycle services.review-room-service.tests.test_review_room_p0.ReviewRoomP0AioHttpTest.test_workbench_lifecycle_api_requires_owner_token_and_confirmation`
+- `.venv/bin/python -m unittest discover -s services/review-room-service/tests -p test_review_room_service.py`
+- `.venv/bin/python -m unittest discover -s services/review-room-service/tests -p test_review_room_p0.py -k test_workbench_api_create_list_read_and_lifecycle -k test_workbench_lifecycle_api_requires_owner_token_and_confirmation`
 - `npm test`: OpenClaw Billing Guardian 16 Node tests passed; Agent Board
   canonical service 51 Python unittest tests passed.
 - Browser smoke on `http://127.0.0.1:8707`: Workbench Hall opens, MR Review
@@ -118,8 +118,8 @@ Evidence:
 - [docs/roadmap/decisions.md](./decisions.md)
 - [docs/roadmap/tracks/connector-and-mcp.md](./tracks/connector-and-mcp.md)
 - `.venv/bin/python -m py_compile services/review-room-service/review_room_service.py`
-- `.venv/bin/python -m unittest services.review-room-service.tests.test_review_room_service`
-- `.venv/bin/python -m unittest services.review-room-service.tests.test_review_room_p0.ReviewRoomP0AioHttpTest.test_workbench_api_create_list_read_and_lifecycle services.review-room-service.tests.test_review_room_p0.ReviewRoomP0AioHttpTest.test_workbench_lifecycle_api_requires_owner_token_and_confirmation`
+- `.venv/bin/python -m unittest discover -s services/review-room-service/tests -p test_review_room_service.py`
+- `.venv/bin/python -m unittest discover -s services/review-room-service/tests -p test_review_room_p0.py -k test_workbench_api_create_list_read_and_lifecycle -k test_workbench_lifecycle_api_requires_owner_token_and_confirmation`
 - `npm test`: OpenClaw Billing Guardian 16 Node tests passed; Agent Board
   canonical service 53 Python unittest tests passed.
 - Documentation scan for deprecated onboarding terms returned no matches.
@@ -424,7 +424,7 @@ Evidence:
 - [services/review-room-service/review_room_service.py](../../services/review-room-service/review_room_service.py)
 - [services/review-room-service/tests/test_review_room_service.py](../../services/review-room-service/tests/test_review_room_service.py)
 - `python -m py_compile services\review-room-service\review_room_service.py`
-- `python -m unittest services.review-room-service.tests.test_review_room_service`: 37
+- `python -m unittest discover -s services/review-room-service/tests -p test_review_room_service.py -v`: 37
   Python unittest tests passed.
 - `npm test`: OpenClaw Billing Guardian 16 Node tests passed; Agent Board
   canonical service 82 Python unittest tests passed.
