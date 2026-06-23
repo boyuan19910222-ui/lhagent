@@ -252,10 +252,17 @@ class ReviewRoomStoreTest(unittest.TestCase):
         self.assertIn("supervisor_message", html)
         self.assertIn("message.create", html)
 
+    def test_home_page_keeps_room_detail_toolbar_collaboration_focused(self):
+        html = index_html()
+
+        self.assertNotIn("id=\"detailLeaveSupervisor\"", html)
+        self.assertNotIn("id=\"detailArchiveWorkbench\"", html)
+        self.assertNotIn("id=\"detailRestoreWorkbench\"", html)
+        self.assertNotIn("id=\"detailDeleteWorkbench\"", html)
+
     def test_home_page_exposes_supervisor_leave_and_agent_revoke_controls(self):
         html = index_html()
 
-        self.assertIn("id=\"detailLeaveSupervisor\"", html)
         self.assertIn("id=\"supervisorLeaveModal\"", html)
         self.assertIn("退出监督者会话", html)
         self.assertIn("退出后，本设备将不再访问此看板。看板内容、任务和 Agent 运行不会受到影响。", html)

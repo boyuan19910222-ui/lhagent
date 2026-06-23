@@ -3377,7 +3377,7 @@ def index_html() -> str:
           <h1 id="detailTitle">选择或创建工作台</h1>
           <p id="detailMeta">负责人令牌会保存在本机浏览器 localStorage。</p>
         </div>
-        <div class="actions"><span class="tag" id="socketState">未连接</span><button id="backToHall">返回大厅</button><button id="detailLeaveSupervisor" class="danger">退出看板</button><button id="detailArchiveWorkbench">归档</button><button id="detailRestoreWorkbench" class="success">恢复</button><button id="detailDeleteWorkbench" class="danger">彻底删除</button><button class="primary" id="detailCreateTask">创建目标</button><button id="detailInviteSupervisor">邀请监督者</button><button id="detailInviteAgent">邀请智能体</button></div>
+        <div class="actions"><span class="tag" id="socketState">未连接</span><button id="backToHall">返回大厅</button><button class="primary" id="detailCreateTask">创建目标</button><button id="detailInviteSupervisor">邀请监督者</button><button id="detailInviteAgent">邀请智能体</button></div>
       </div>
       <div id="detailBody"><div class="empty">还没有可展示的工作台。</div></div>
     </section>
@@ -4337,30 +4337,16 @@ def index_html() -> str:
       const pendingTasks = tasks.filter(task => ['assigned','running'].includes(task.status)).length;
       const canManage = canManageCurrentRoom();
       const canEditWorkbench = canManage && room.status !== 'archived' && room.status !== 'deleted';
-      const canArchiveWorkbench = canManage && !['archived','deleted'].includes(room.status);
-      const canRestoreWorkbench = canManage && room.status === 'archived';
       const canPostMessage = canPostMessagesCurrentRoom();
-      const isSupervisor = isSupervisorCurrentRoom();
-      const detailLeaveSupervisor = document.getElementById('detailLeaveSupervisor');
       const detailCreateTask = document.getElementById('detailCreateTask');
       const detailInviteSupervisor = document.getElementById('detailInviteSupervisor');
       const detailInviteAgent = document.getElementById('detailInviteAgent');
-      const detailArchiveWorkbench = document.getElementById('detailArchiveWorkbench');
-      const detailRestoreWorkbench = document.getElementById('detailRestoreWorkbench');
-      const detailDeleteWorkbench = document.getElementById('detailDeleteWorkbench');
-      detailLeaveSupervisor.hidden = !isSupervisor || room.status === 'deleted';
       detailCreateTask.hidden = !canEditWorkbench;
       detailInviteSupervisor.hidden = !canEditWorkbench;
       detailInviteAgent.hidden = !canEditWorkbench;
-      detailArchiveWorkbench.hidden = !canArchiveWorkbench;
-      detailRestoreWorkbench.hidden = !canRestoreWorkbench;
-      detailDeleteWorkbench.hidden = !canRestoreWorkbench;
       applyCommandPermission(detailCreateTask, canEditWorkbench, 'task:create');
       applyCommandPermission(detailInviteSupervisor, canEditWorkbench, 'member:invite_human');
       applyCommandPermission(detailInviteAgent, canEditWorkbench, 'member:invite_agent');
-      applyCommandPermission(detailArchiveWorkbench, canArchiveWorkbench, 'room:archive');
-      applyCommandPermission(detailRestoreWorkbench, canRestoreWorkbench, 'room:restore');
-      applyCommandPermission(detailDeleteWorkbench, canRestoreWorkbench, 'room:delete');
       const topicLabel = isSupervisorCurrentRoom() ? '监督者发起话题' : '负责人发起话题';
       const topicDraft = isSupervisorCurrentRoom() ? '@Reviewer Agent ' : '请评审这个 MR 的鉴权风险，并给出可执行修复建议。';
       const composerHtml = canPostMessage
@@ -4426,13 +4412,9 @@ def index_html() -> str:
     document.getElementById('showArchivedRooms').addEventListener('click', () => showArchivedRooms());
     document.getElementById('showHall').addEventListener('click', () => showHall());
     document.getElementById('backToHall').addEventListener('click', () => showHall());
-    document.getElementById('detailArchiveWorkbench').addEventListener('click', () => archiveCurrentRoom().catch(alert));
-    document.getElementById('detailRestoreWorkbench').addEventListener('click', () => restoreCurrentRoom().catch(alert));
-    document.getElementById('detailDeleteWorkbench').addEventListener('click', () => deleteCurrentRoom().catch(alert));
     document.getElementById('detailCreateTask').addEventListener('click', () => createTaskFromDetail().catch(alert));
     document.getElementById('detailInviteSupervisor').addEventListener('click', () => openSupervisorInviteModal());
     document.getElementById('detailInviteAgent').addEventListener('click', () => inviteDefaultAgent());
-    document.getElementById('detailLeaveSupervisor').addEventListener('click', () => openSupervisorLeaveModal());
     document.getElementById('inviteForm').addEventListener('submit', event => submitInviteForm(event).catch(alert));
     document.getElementById('inviteClose').addEventListener('click', () => closeInviteModal());
     document.getElementById('inviteCancel').addEventListener('click', () => closeInviteModal());
